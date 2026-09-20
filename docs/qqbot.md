@@ -181,6 +181,17 @@ curl -s "localhost:8765/qr/wait?timeout=120" | jq
 | 覆盖路径 | `--credentials <path>` 或环境变量 `YQA_QQ_CREDENTIALS` |
 | 多账户 | `--account <name>`；同一个文件里 `accounts.<name>` |
 
+> **`600` 只在 POSIX（Linux / macOS）上真的生效。**
+> Windows 的 `chmod` 只能切换只读位、改不动 ACL，而且 `0o600` 不带只读位，
+> 所以 `path.chmod(0o600)` 在那上面是**静默成功、什么都没改**，读回来仍是 `666`
+> （`scripts/qqbot_sim.py` 打印权限时就会看到这个）。代码本身是对的
+> （`credentials.py` → `_chmod_file`），也不是 bug——但请记住两点：
+>
+> 1. **不要把 Windows 开发机上的权限当安全证据**：正式部署在 Linux 上，那里才是真的 `600`。
+> 2. **不会有任何报错提醒你**：这句 `chmod` 在 Windows 上并不抛异常，
+>    而 `_chmod_file` 又 `except OSError: pass` 吞掉真失败，
+>    所以「没报错」不等于「权限设上了」——上线时请在 Linux 上用 `ls -l` 亲眼确认一次。
+
 ```jsonc
 {
   "version": 1,
@@ -419,7 +430,7 @@ uv run yqa qq serve --no-login               # 没凭证就直接报错，不要
 
 上线前逐条过一遍：
 
-- [ ] `~/.yuque/qqbot.json` 权限是 `600`，且**没有**被提交进 git（`.gitignore` 已含 `auth.json`，注意 `qqbot.json` 在 `~/.yuque/` 下，本来就不在仓库里）；
+- [ ] `~/.yuque/qqbot.json` 权限是 `600`（在 **Linux 上** `ls -l` 确认——Windows 上查不出来，见 §6 的说明），且**没有**被提交进 git（`.gitignore` 已含 `qqbot.json`，而它本来就在 `~/.yuque/` 下、不在仓库里）；
 - [ ] `qqbot.json` 里 `inbound.allow` 只有确实该有权限的人；
 - [ ] 会用 `/archive` 的管理员名单最小化（这条命令能删文档、移目录）；
 - [ ] 跑 `yqa qq doctor` 没有黄色告警；
