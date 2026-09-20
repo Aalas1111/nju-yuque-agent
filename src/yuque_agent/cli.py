@@ -31,6 +31,7 @@ from .config import DEFAULT_API_BASE, DEFAULT_HOST, DEFAULT_MODEL, DEFAULT_REPO,
 from .llm import LLMClient, LLMError
 from .outputs import build_plan_json
 from .prompts import PromptLoader
+from .qqbot.cli import qq_app, qq_doctor_rows
 from .runner import Runner, new_run_id
 from .watcher import Watcher
 from .yuque import YuqueClient, YuqueError
@@ -52,6 +53,13 @@ app = typer.Typer(
     help="让 LLM 全权接管一个语雀知识库：程序只做感知与留痕，判断权归 LLM。",
 )
 console = Console()
+
+app.add_typer(qq_app, name="qq")
+
+
+def _plain_log(text: str) -> None:
+    """原样打日志：``[watch]`` / ``[qqbot:notify]`` 这类前缀不能被 rich 当 markup 吃掉。"""
+    console.print(text, markup=False, highlight=False)
 
 
 def _settings(
@@ -103,6 +111,9 @@ def doctor(
     table.add_row("语雀 token", ok if settings.token else "[red]未找到（设 YQA_TOKEN）[/red]")
     table.add_row("LLM key", ok if settings.api_key else "[red]未找到（设 DEEPSEEK_API_KEY）[/red]")
     table.add_row("LLM 端点", f"{settings.api_base} · {settings.model}")
+
+    for key, value in qq_doctor_rows(settings):
+        table.add_row(key, value)
 
     for kind in ("polling", "archive"):
         try:
@@ -213,26 +224,69 @@ def run(
     max_ticks: Annotated[
         int | None, typer.Option("--max-ticks", help="跑几轮就退出（自测用）")
     ] = None,
+    qq: Annotated[
+        bool, typer.Option("--qq", help="每轮结束后把 outbox/notify 的通知投递到 QQ")
+    ] = False,
+    qq_account: Annotated[
+        str, typer.Option("--qq-account", help="用哪个 QQBot 账户投递")
+    ] = "default",
+    qq_no_login: Annotated[
+        bool,
+        typer.Option("--qq-no-login", help="没有缓存凭证时不要自动扫码登录，直接报错"),
+    ] = False,
 ) -> None:
     """常驻：轮询 + 每周六 00:00 自动归档。
 
     默认开启**静默期合并**：语雀手工建一篇文档会分几步产生变更
     （无标题空文档 → 改标题 → 写正文保存），不合并的话一篇文档就要唤醒好几次 LLM。
+
+    加 ``--qq`` 就顺便当投递方：每轮结束后把 ``outbox/notify/pending/`` 里的通知发到 QQ；
+    **没有缓存凭证时会先在终端里出示二维码**（手机 QQ 扫一下，凭证落盘后继续启动），
+    不想这样用 ``--qq-no-login``。
+    要收 QQ 命令（``/status`` ``/run``）用 ``yqa qq serve``。
     """
     settings = _settings(repo, workspace, dry_run, journal, model, interval, False)
     if quiet_seconds is not None:
         settings.quiet_seconds = quiet_seconds
     client, llm = _clients(settings)
+    bridge = None
+    qq_protocol = None
     try:
         runner = Runner(settings=settings, client=client, llm=llm)
-        Watcher(runner=runner, settings=settings, log=console.print).run_forever(
-            max_ticks=max_ticks
+        after_tick = None
+        if qq:
+            from .qqbot.bridge import NotifyBridge
+            from .qqbot.cli import make_sender
+            from .qqbot.config import QQBotConfig, default_config_path
+
+            sender, qq_protocol = make_sender(
+                account=qq_account,
+                dry_run=dry_run,
+                log=_plain_log,
+                login_if_needed=not qq_no_login,
+            )
+            qq_config = QQBotConfig.load(default_config_path(settings))
+            bridge = NotifyBridge(
+                notify_dir=settings.notify_dir,
+                sender=sender,
+                config=qq_config,
+                dry_run=dry_run,
+                log=_plain_log,
+            )
+            after_tick = bridge.drain
+            console.print(
+                f"[dim]QQ 投递已开启：每轮结束后扫 {settings.notify_dir / 'pending'}[/dim]"
+            )
+        Watcher(runner=runner, settings=settings, log=_plain_log).run_forever(
+            max_ticks=max_ticks, after_tick=after_tick
         )
     except KeyboardInterrupt:
         console.print("\n[dim]已停止。[/dim]")
     finally:
         client.close()
         llm.close()
+        if qq_protocol is not None:
+            qq_protocol.close()
 
 
 @app.command()

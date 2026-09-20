@@ -72,9 +72,15 @@ LLM 只剩「调用一个已经写好判断的程序」这一步。
 │  runs/<run_id>/session.jsonl  本次 run 的完整留痕（唯一事实来源）        │
 │  runs/<run_id>/result.json    本轮结论                                 │
 │  outbox/applications/         申请 JSON（交给「发起借用」的同学）        │
-│  outbox/notify/pending/       通知事件（交给 QQ 投递的同学）            │
+│  outbox/notify/pending/       通知事件（→ 投递层）                      │
 │  → journal：把 session 渲染后按时间戳写回语雀《工作日志》               │
 │                                                                      │
+└───────────────────────────┬──────────────────────────────────────────┘
+                            ▼  （可选，`yqa qq`）
+┌─ 投递层（程序，异步/外部）────────────────────────────────────────────┐
+│  QQBot：扫码登录取凭证 → 扫 pending/ 按 seq 发 QQ → 移进 done/           │
+│  入站：白名单命令（/status /pending /run /archive）→ 排进同一个 agent 队列│
+│  详见 docs/qqbot.md                                                   │
 └──────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -153,9 +159,13 @@ workspace/
 │   └── notify/
 │       ├── pending/*.json         待投递的事件
 │       ├── done/*.json            投递方挪进来即视为已投递
+│       ├── unrouted/*.json        （投递层）认不出人的事件，等人补映射
+│       ├── failed/*.json          （投递层）坏文件，不堵队列
 │       ├── .seq                   单调递增的序号计数器
-│       └── outbox.jsonl           只追加的审计流水（投递方**不要**读它）
-└── notes/                         LLM 自己的跨轮记忆（agent 可读可写；唯一允许 agent 写的目录）
+│       ├── outbox.jsonl           只追加的审计流水（投递方**不要**读它）
+│       └── delivery.jsonl         （投递层）投递审计：每条一行，含目标与结果
+├── notes/                         LLM 自己的跨轮记忆（agent 可读可写；唯一允许 agent 写的目录）
+└── qqbot.json                     （投递层）成员映射 + 入站白名单，见 docs/qqbot.md
 ```
 
 > 没有 `session.md`这回事：渲染是**按需**的（`yqa render <run_id>`），
@@ -328,6 +338,11 @@ crb plan --file plan.json --save
 ```
 
 `kind` 的取值由 LLM 决定，提示词里给**例子**而不是穷举清单。
+
+> **投递方已经在本仓库里实现了**：`src/yuque_agent/qqbot/bridge.py` + `yqa qq notify` / `yqa qq serve`，
+> 并已加了一条本项目特有的纪律——**发送失败就停下本轮**，不在 `pending/` 里跳着发，
+> 这样 `seq` 顺序不会被破坏。成员映射（语雀人名 → QQ openid）落在工作区 `qqbot.json` 里。
+> 完整说明见 [`qqbot.md`](qqbot.md)。
 
 ### 7.4 能力边界声明
 

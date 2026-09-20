@@ -1,0 +1,273 @@
+"""入站命令路由——**QQ 侧的能力边界也在这里**。
+
+本项目的研究立场是「安全的第一道闸门是本次会话注册了哪些工具」。
+QQ 侧同理：**能不能让 agent 干活，由配置里的白名单决定，不由提示词决定**。
+
+* ``/help`` ``/status`` ``/pending``：只读，白名单里的任何人都能用；
+* ``/run`` ``/archive``：会让 agent 跑 LLM（花 token）甚至改知识库结构，
+  **只有 ``inbound.admins`` 里的人能用**，而且有限流 + 单飞（正在跑就拒绝）；
+* 其他任何文本**不会**被当成提示词发给 LLM（那等于把能力边界让位给提示词），
+  只会回一句「我只认命令，发 /help 看看」。
+
+默认拒绝：``inbound.allow`` 为空时，**谁的命令都不接受**。
+"""
+
+from __future__ import annotations
+
+import re
+import time
+from collections.abc import Callable
+from dataclasses import dataclass
+from typing import Any, Protocol, runtime_checkable
+
+from .config import QQBotConfig
+from .events import InboundMessage
+
+_SLASH_RE = re.compile(r"^[/／!！]\s*(\S+)")
+
+
+@dataclass(frozen=True)
+class CommandSpec:
+    name: str
+    help: str
+    admin_only: bool = False
+    aliases: tuple[str, ...] = ()
+
+
+#: 命令表。``aliases`` 里放了中文写法，手机上不打斜杠也能用。
+COMMANDS: tuple[CommandSpec, ...] = (
+    CommandSpec("help", "看看我能做什么", aliases=("帮助", "?", "？", "h")),
+    CommandSpec("status", "看一眼知识库与 agent 的状态", aliases=("状态", "s")),
+    CommandSpec("pending", "还有几条通知没投递出去", aliases=("待投递", "通知", "p")),
+    CommandSpec(
+        "run",
+        "立刻跑一轮轮询（仅管理员；会花 token）",
+        admin_only=True,
+        aliases=("跑一轮", "once", "r"),
+    ),
+    CommandSpec(
+        "archive",
+        "立刻跑一次归档会话（仅管理员；会改知识库结构）",
+        admin_only=True,
+        aliases=("归档", "a"),
+    ),
+)
+
+_COMMAND_INDEX: dict[str, CommandSpec] = {}
+for _spec in COMMANDS:
+    _COMMAND_INDEX[_spec.name] = _spec
+    for _alias in _spec.aliases:
+        _COMMAND_INDEX[_alias] = _spec
+
+
+HELP_TEXT = "\n".join(
+    [
+        "我是语雀知识库的看门 agent，能做的事：",
+        *[
+            f"  /{spec.name} —— {spec.help}" + ("（仅管理员）" if spec.admin_only else "")
+            for spec in COMMANDS
+        ],
+        "我只认命令，不接受自由文本——判断权在 agent 自己的提示词里，不在这里。",
+    ]
+)
+
+
+@dataclass
+class CommandResult:
+    """一次入站消息的处理结果。"""
+
+    handled: bool
+    command: str = ""
+    reply: str = ""
+    reason: str = ""
+    admin: bool = False
+    silent: bool = False
+    """True = 故意不回（比如群里没在白名单里的人说话，不打扰大家）。"""
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "handled": self.handled,
+            "command": self.command,
+            "reply": self.reply,
+            "reason": self.reason,
+            "admin": self.admin,
+            "silent": self.silent,
+        }
+
+
+@runtime_checkable
+class AgentGateway(Protocol):
+    """命令路由需要的 agent 侧能力（由 :class:`~yuque_agent.qqbot.service.QQBotService` 实现）。"""
+
+    def status(self) -> dict[str, Any]: ...
+
+    def pending_notices(self) -> int: ...
+
+    def request_run(self, *, archive: bool, requested_by: str) -> dict[str, Any]: ...
+
+
+class CommandRouter:
+    """把一条入站消息变成一个动作 + 一句回复。"""
+
+    def __init__(
+        self,
+        *,
+        config: QQBotConfig,
+        gateway: AgentGateway,
+        log: Callable[[str], None] | None = None,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self.config = config
+        self.gateway = gateway
+        self.log = log
+        self._clock = clock
+        self._last_admin_call: dict[str, float] = {}
+
+    # -- 入口 -------------------------------------------------------------
+    def dispatch(self, msg: InboundMessage) -> CommandResult:
+        admin = self.config.is_admin(msg.sender_id)
+
+        if not self.config.is_allowed(msg.sender_id, msg.group_openid):
+            reason = f"不在白名单（sender={msg.sender_id or '?'} group={msg.group_openid or '-'}）"
+            self._log(f"[qqbot:cmd] 拒绝：{reason}")
+            if msg.kind == "group":
+                return CommandResult(handled=False, reason=reason, admin=admin, silent=True)
+            return CommandResult(
+                handled=False,
+                reason=reason,
+                admin=admin,
+                reply="你不在这个机器人的白名单里，找管理员把你加进 qqbot.json 的 inbound.allow。",
+            )
+
+        spec, args = _parse(msg.text)
+        if spec is None:
+            if not msg.text:
+                return CommandResult(handled=False, reason="空消息", admin=admin, silent=True)
+            return CommandResult(
+                handled=False,
+                reason="不是命令",
+                admin=admin,
+                reply="我只认命令。\n\n" + HELP_TEXT,
+            )
+
+        if spec.admin_only and not admin:
+            self._log(f"[qqbot:cmd] {msg.sender_id} 想跑 /{spec.name}，但他不是管理员")
+            return CommandResult(
+                handled=False,
+                command=spec.name,
+                reason="非管理员",
+                admin=False,
+                reply=f"/{spec.name} 是写操作，只有管理员能用。",
+            )
+
+        if spec.admin_only:
+            wait = self._rate_limit_wait(msg.sender_id)
+            if wait > 0:
+                return CommandResult(
+                    handled=False,
+                    command=spec.name,
+                    reason="被限流",
+                    admin=True,
+                    reply=f"刚跑过，{wait:.0f} 秒后再来（同一个人的写操作要限流）。",
+                )
+
+        reply = self._execute(spec, args, msg)
+        if spec.admin_only:
+            self._last_admin_call[msg.sender_id] = self._clock()
+        self._log(f"[qqbot:cmd] {msg.sender_id} → /{spec.name}")
+        return CommandResult(handled=True, command=spec.name, reply=reply, admin=admin)
+
+    # -- 各命令 -----------------------------------------------------------
+    def _execute(self, spec: CommandSpec, args: str, msg: InboundMessage) -> str:
+        if spec.name == "help":
+            return HELP_TEXT
+        if spec.name == "status":
+            return render_status(self.gateway.status())
+        if spec.name == "pending":
+            count = self.gateway.pending_notices()
+            if count <= 0:
+                return "通知都投递出去了，pending 是空的。"
+            return f"还有 {count} 条通知在 outbox/notify/pending/ 里等着投递。"
+        if spec.name == "run":
+            return _request_text(
+                self.gateway.request_run(archive=False, requested_by=msg.sender_id)
+            )
+        if spec.name == "archive":
+            return _request_text(self.gateway.request_run(archive=True, requested_by=msg.sender_id))
+        return f"命令 /{spec.name} 还没实现。"  # pragma: no cover - 命令表与分支一一对应
+
+    # -- 内部 -------------------------------------------------------------
+    def _rate_limit_wait(self, sender: str) -> float:
+        limit = max(0, int(self.config.inbound_rate_limit))
+        if limit <= 0:
+            return 0.0
+        last = self._last_admin_call.get(sender)
+        if last is None:
+            return 0.0
+        return max(0.0, limit - (self._clock() - last))
+
+    def _log(self, text: str) -> None:
+        if self.log is not None:
+            self.log(text)
+
+
+def _parse(text: str) -> tuple[CommandSpec | None, str]:
+    """``/status`` / ``状态`` → ``(CommandSpec, 参数)``；认不出来返回 ``(None, "")``。"""
+    raw = (text or "").strip()
+    if not raw:
+        return None, ""
+    match = _SLASH_RE.match(raw)
+    if match:
+        word, _, rest = match.group(1).partition(" ")
+        spec = _COMMAND_INDEX.get(word.lower()) or _COMMAND_INDEX.get(word)
+        return (spec, rest.strip()) if spec is not None else (None, "")
+    head, _, rest = raw.partition(" ")
+    spec = _COMMAND_INDEX.get(head.lower()) or _COMMAND_INDEX.get(head)
+    if spec is None:
+        return None, ""
+    return spec, rest.strip()
+
+
+def _request_text(payload: dict[str, Any]) -> str:
+    if payload.get("queued"):
+        return str(payload.get("message") or "已经排进队列，跑完我会把结果发给你。")
+    return str(payload.get("message") or "现在不方便跑，稍后再试。")
+
+
+def render_status(payload: dict[str, Any]) -> str:
+    """把 :meth:`AgentGateway.status` 的字典渲染成给人看的短消息。"""
+    lines: list[str] = []
+    repo = payload.get("repo") or "(未知知识库)"
+    lines.append(f"知识库：{repo}")
+    watching = payload.get("watching")
+    if watching is not None:
+        lines.append(f"轮询：{'在跑' if watching else '没在跑'}")
+    pending = payload.get("pending")
+    if pending is not None:
+        lines.append(f"待投递通知：{pending} 条")
+    last = payload.get("last_run")
+    if isinstance(last, dict) and last:
+        when = last.get("at") or "?"
+        kind = last.get("kind") or "?"
+        verdict = last.get("verdict") or "—"
+        summary = last.get("summary") or "(没有摘要)"
+        lines.append(f"最近一轮：{when} · {kind} · {verdict}")
+        lines.append(f"  {summary}")
+        if last.get("run_id"):
+            lines.append(f"  run: {last['run_id']}")
+    else:
+        lines.append("最近一轮：还没有跑过")
+    if payload.get("inbound") is not None:
+        lines.append(f"QQ 入站：{'开' if payload['inbound'] else '关'}")
+    return "\n".join(lines)
+
+
+__all__ = [
+    "COMMANDS",
+    "HELP_TEXT",
+    "AgentGateway",
+    "CommandResult",
+    "CommandRouter",
+    "CommandSpec",
+    "render_status",
+]

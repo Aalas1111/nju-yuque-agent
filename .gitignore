@@ -5,6 +5,8 @@
 .env
 *.key
 auth.json
+# QQBot 凭证（扫码登录的落点；也认 --credentials 指到别处）
+qqbot.json
 
 # Python
 .venv/
