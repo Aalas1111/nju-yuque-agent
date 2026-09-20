@@ -65,10 +65,22 @@ def cycle_boundary(
     start_weekday: int = DEFAULT_START_WEEKDAY,
     start_hour: int = DEFAULT_START_HOUR,
 ) -> datetime:
-    """最近一次（含今天）「周期翻转时刻」。同一周期内稳定不变。"""
+    """最近一次（含今天）「周期翻转时刻」。同一周期内稳定不变。
+
+    按 **``now`` 自己的时区** 算：把周期的起点日期贴上 ``now.tzinfo``。
+
+    > 坑（实测踩到过）：不能写成
+    > ``datetime.combine(day, dtime(hour=start_hour)).astimezone(now.tzinfo)``。
+    > ``datetime.combine()`` 产出的是 **naive** datetime，而 naive 的 ``.astimezone(tz)``
+    > 会**按系统本地时区**解释它——只有 ``now.tzinfo`` 恰好等于系统本地时区时才碰巧对。
+    > 生产里 ``now`` 来自 ``datetime.now().astimezone()``，正好满足这个条件，
+    > 所以 live 跑和测试都看不出来；一旦调用方传进别的时区（库调用、测试注入、
+    > 或将来显式指定时区）就会错到**隔壁周期**去（实测：传 UTC 会得到
+    > ``0905-0911`` 而不是 ``0912-0918``）。
+    """
     days_since = (now.weekday() - start_weekday) % 7
     day = now.date() - timedelta(days=days_since)
-    return datetime.combine(day, dtime(hour=start_hour)).astimezone(now.tzinfo)
+    return datetime.combine(day, dtime(hour=start_hour), tzinfo=now.tzinfo)
 
 
 def cycle_targets(

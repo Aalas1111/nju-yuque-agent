@@ -7,7 +7,7 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import UTC, date, datetime, timedelta, timezone
 
 import pytest
 
@@ -112,3 +112,51 @@ def test_older_cycles_sort_before_newer() -> None:
     newer = parse_cycle_title("0919-0925", today=today)
     assert older and newer
     assert older.start < newer.start
+
+
+# ------------------------------------------------- 时区（部署到别人的服务器时会踩）
+
+
+def test_cycle_always_contains_nows_own_date_in_any_timezone() -> None:
+    """`cycle_targets` / `cycle_boundary` 必须按 **now 自己的时区** 算。
+
+    回归：以前 `cycle_boundary` 写成
+    `datetime.combine(day, dtime(hour)).astimezone(now.tzinfo)`，
+    而 `combine()` 产出的是 **naive** datetime——naive 的 `.astimezone(tz)` 会按
+    **系统本地时区**解释它。生产里 `now = datetime.now().astimezone()`，tzinfo 恰好
+    就是系统本地时区，所以一直碰巧正确，测试也全用系统时区（`dt()` 走 `.astimezone()`），
+    于是这个 bug 完全没被盖住。
+
+    这条断言不依赖任何具体时区：**算出来的周期必须包含 now 自己的日期**。
+    """
+    zones = [
+        timezone(timedelta(hours=8), "CST"),  # 北京（生产目标）
+        UTC,  # 云服务器默认，很容易踩
+        timezone(timedelta(hours=-5), "EST"),  # 再来一个反方向的
+    ]
+    moments = [
+        "2026-09-19T00:01",
+        "2026-09-20T10:00",
+        "2026-09-22T12:00",
+        "2026-09-25T23:59",
+        "2026-09-26T00:01",
+    ]
+    for tz in zones:
+        for text in moments:
+            now = datetime.fromisoformat(text).replace(tzinfo=tz)
+            current, previous = cycle_targets(now)
+            assert current.contains(now.date()), (
+                f"时区 {tz} 下 {now} 算出的当前周期 {current.title} 不含它自己的日期"
+            )
+            assert previous.contains(now.date() - timedelta(days=7))
+            assert current.start == cycle_boundary(now).date()
+            assert current.end - current.start == timedelta(days=6)
+
+
+def test_cycle_boundary_keeps_the_timezone_of_now() -> None:
+    """边界时刻必须带 `now` 的时区，而不是被 system 本地时区带跑。"""
+    utc_tz = UTC
+    boundary = cycle_boundary(datetime(2026, 9, 20, 10, 0, tzinfo=utc_tz))
+    assert boundary.tzinfo is not None
+    assert boundary.utcoffset() == timedelta(0), f"应当仍是 UTC，实际 {boundary}"
+    assert (boundary.month, boundary.day, boundary.hour) == (9, 19, 0)
