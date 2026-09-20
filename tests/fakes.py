@@ -147,6 +147,9 @@ class FakeLLM:
             return self.script.pop(0)
         return LLMResponse(content="(script exhausted)", usage=Usage(1, 1, 2))
 
+    def close(self) -> None:
+        return None
+
 
 def call(name: str, **args: Any) -> LLMResponse:
     return LLMResponse(

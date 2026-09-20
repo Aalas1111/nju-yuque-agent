@@ -131,6 +131,14 @@ class Runner:
     prompt: PromptLoader = field(default_factory=PromptLoader)
     _state: State | None = field(default=None, repr=False)
 
+    #: 上一次 :meth:`poll_once` 为什么没唤醒 LLM，取值 ``"no_change"`` / ``"quiet_period"``，
+    #: 真的跑了就是空串。
+    #:
+    #: 为什么要有这个字段：``poll_once`` 返回 ``None`` 有**两种**原因——「没变化」和
+    #: 「还在静默期」。调用方如果一律说「知识库没有变化」，就会在静默期里说假话。
+    #: 实测踩到过：写完文档立刻 ``yqa once``，被报「没有变化」，让人以为程序坏了。
+    last_skip: str = ""
+
     # -- 状态 -------------------------------------------------------------
     @property
     def state(self) -> State:
@@ -181,6 +189,9 @@ class Runner:
     ) -> RunResult | None:
         """跑一轮轮询。没有变化、或还在静默期内，就返回 ``None``（静默，0 token）。
 
+        返回 ``None`` 时，:attr:`last_skip` 会告诉你**到底是哪种原因**
+        （``"no_change"`` / ``"quiet_period"``），调用方不要一律说「没有变化」。
+
         **静默期合并**（默认开启，``quiet_seconds``）：
 
         * 发现变化**先不叫 LLM**，并把基线快照摇在那里 —— 这就把后续的连续变更天然合并了；
@@ -197,6 +208,7 @@ class Runner:
         prev = self.state.snapshot
         current, changes = self.detect()
         dropped: list[DocSnapshot] = []
+        self.last_skip = ""
 
         if rescan:
             changes = Changes(
@@ -244,6 +256,7 @@ class Runner:
                         self.state.rounds += 1
                         self.state.last_poll_at = current.taken_at
                         self.save_state()
+                        self.last_skip = "quiet_period"
                         return None
 
         # ---- 走到这里：要么确实没变化，要么该真跑了 ----
@@ -259,6 +272,7 @@ class Runner:
         if changes.empty and not force:
             # 注意：**首次运行也是静默的**——那时报告本来就是空的（只建基线），
             # 叫醒 LLM 只会得到一句「无事可做」，纯粹是白烧 token。
+            self.last_skip = "no_change"
             return None
 
         run_id = new_run_id("polling", at=moment)

@@ -151,6 +151,17 @@ def _clients(settings: Settings) -> tuple[YuqueClient, LLMClient]:
     )
 
 
+def _poll_skip_message(runner: Runner, settings: Settings) -> str:
+    """本轮没唤醒 LLM 时，该对用户说什么。
+
+    ``poll_once`` 返回 ``None`` 有**两种**原因（没变化 / 还在静默期），
+    一律说「没有变化」就会在静默期里说假话。
+    """
+    if runner.last_skip == "quiet_period":
+        return f"i 知识库刚变过，还在 {settings.quiet_seconds}s 静默期内，本轮未唤醒 LLM。"
+    return "i 知识库没有变化，未唤醒 LLM。"
+
+
 @app.command()
 def once(
     repo: RepoOpt = DEFAULT_REPO,
@@ -167,19 +178,25 @@ def once(
     model: Annotated[str, typer.Option("--model")] = DEFAULT_MODEL,
     quiet: Annotated[bool, typer.Option("--quiet", "-q", help="没变化时不打印")] = False,
 ) -> None:
-    """跑一轮轮询。没有变化 → 什么都不做（0 token）。"""
+    """跑一轮轮询。没有变化 → 什么都不做（0 token）。
+
+    这是**人工命令**，所以会关掉静默期合并（``debounce=False``）：你刚写完文档
+    敲下 ``yqa once``，就该立刻看到结果，而不是被告知「没有变化」然后白等 45 秒。
+    静默期只对常驻轮询（``yqa run``）有意义——那里的变更来自语雀的分步投稿，
+    合并能把一篇文档从 13 次唤醒压到 1 次。
+    """
     settings = _settings(repo, workspace, dry_run, journal, model, 60, False)
     client, llm = _clients(settings)
     try:
         runner = Runner(settings=settings, client=client, llm=llm)
-        result = runner.poll_once(force=force, rescan=rescan)
+        result = runner.poll_once(force=force, rescan=rescan, debounce=False)
     finally:
         client.close()
         llm.close()
 
     if result is None:
         if not quiet:
-            console.print("[dim]i 知识库没有变化，未唤醒 LLM。[/dim]")
+            console.print(f"[dim]{_poll_skip_message(runner, settings)}[/dim]")
         return
     _print_result(result)
 
