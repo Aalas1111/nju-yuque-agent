@@ -157,7 +157,7 @@ def _dir_list(ctx: RunContext, args: dict[str, Any]) -> Any:
     """列出某个目录下的全部文档（不只是本轮变更过的）。"""
     wanted = str(args.get("dir") or "").strip()
     if not wanted:
-        raise ToolError("dir 必填，例如 '0921-0927' 或 '归档区/0914-0920'")
+        raise ToolError("dir 必填，例如 '0919-0925' 或 '归档区/0912-0918'")
     dir_by_doc = _doc_dirs(ctx)
     rows = []
     for meta in ctx.all_docs():
@@ -184,7 +184,7 @@ def _doc_dirs(ctx: RunContext) -> dict[int, str]:
 
     ``ctx.toc`` 里的节点带：
 
-    * 目录（TITLE）：``path`` 就是它自己，如 ``归档区/0914-0920``；
+    * 目录（TITLE）：``path`` 就是它自己，如 ``归档区/0912-0918``；
     * 文档（DOC）：``path`` 形如 ``父目录/文档名``，所以去掉最后一段就是所在目录；
       根目录下的文档 ``path`` 就是文档名本身，去最后一段后剩空串（= 根目录）。
     """
@@ -460,7 +460,7 @@ def _toc_create(ctx: RunContext, args: dict[str, Any]) -> Any:
 
 
 def _toc_move(ctx: RunContext, args: dict[str, Any]) -> Any:
-    """把一个目录节点移动到另一个目录下（例如把上周目录移进归档区）。"""
+    """把一个目录节点移动到另一个目录下（例如把上一周期的目录移进归档区）。"""
     node_uuid = _need(args, "node_uuid", STR)
     target_uuid = str(args.get("target_uuid") or "")
     if ctx.settings.dry_run:
@@ -531,7 +531,7 @@ COMMON_TOOLS: tuple[Tool, ...] = (
         "dir_list",
         "列出某个目录下的全部文档（不只是本轮变过的）。需要知道「同一时间段还有谁申请了教室」时用。",
         _params(
-            {"dir": {**STR, "description": "目录路径，如 '0921-0927' 或 '归档区/0914-0920'"}},
+            {"dir": {**STR, "description": "目录路径，如 '0919-0925' 或 '归档区/0912-0918'"}},
             ["dir"],
         ),
         _dir_list,

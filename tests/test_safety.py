@@ -7,11 +7,17 @@
 
 from __future__ import annotations
 
+import re
+
 import pytest
 
 from tests.fakes import Ctx
 from yuque_agent import tools
 from yuque_agent.config import Settings, safe_join
+from yuque_agent.prompts import PromptLoader
+
+#: 全部工具名（用于扫提示词里提到了哪些）
+ALL_TOOL_NAMES = set(tools.tool_names("archive"))
 
 
 @pytest.fixture()
@@ -144,3 +150,57 @@ def test_doc_delete_requires_reason(settings: Settings) -> None:
     result = tools.execute(env.ctx, "doc_delete", {"doc_id": 5})
     assert result["ok"] is False
     assert "reason" in result["error"]
+
+
+# ---------------------------------------------------------------- 文档漂移守卫
+
+
+def test_prompts_only_mention_registered_tools() -> None:
+    """提示词里提到的工具必须**真的在本轮注册**了。
+
+    为什么要有这条：提示词和工具注册表是两份各自演进的产物，
+    很容易漂移成「文档里写着某个工具、代码里根本没注册」——
+    LLM 会去调一个不存在的工具，而我们得靠报错才知道。
+    （同类漂移还有「设计文档写着某个字段/文件，代码里已经改了名字」，
+    那种只能靠人工核对；至少工具这一项可以自动守住。）
+    """
+    pattern = re.compile(r"`([a-z_]+)(?:\(|`)")
+    for kind in ("polling", "archive"):
+        text = PromptLoader().load(kind)
+        mentioned = {name for name in pattern.findall(text) if name in ALL_TOOL_NAMES}
+        allowed = set(tools.tool_names(kind))
+        assert not (mentioned - allowed), (
+            f"{kind} 提示词提到了本轮不注册的工具：{sorted(mentioned - allowed)}"
+        )
+
+
+def test_every_registered_tool_has_a_description_and_schema() -> None:
+    """每个工具都必须有描述与参数表——否则 LLM 不知道怎么用。"""
+    for kind in ("polling", "archive"):
+        for tool in tools.tools_for(kind):
+            assert tool.description.strip(), f"{tool.name} 没有描述"
+            schema = tool.schema()
+            assert schema["function"]["name"] == tool.name
+            assert schema["function"]["parameters"]["type"] == "object"
+
+
+def test_tool_grouping_is_frozen() -> None:
+    """把工具清单冻住：以后加/删工具，必须同时改这条测试与设计文档 §5。"""
+    assert tools.tool_names("polling") == [
+        "kb_tree",
+        "dir_list",
+        "doc_read",
+        "ws_list",
+        "ws_read",
+        "ws_write",
+        "emit_application",
+        "emit_notice",
+        "done",
+    ]
+    assert tools.tool_names("archive") == tools.tool_names("polling") + [
+        "toc_create",
+        "toc_move",
+        "toc_remove",
+        "doc_create",
+        "doc_delete",
+    ]

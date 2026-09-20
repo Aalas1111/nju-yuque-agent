@@ -37,12 +37,12 @@ class DocSnapshot:
     created_at: str
     author: str
     dir: str
-    """所在目录（人类可读路径，如 ``0921-0927`` / ``归档区/0914-0920``）。"""
+    """所在目录（人类可读路径，如 ``0919-0925`` / ``归档区/0912-0918``）。"""
     content_sha256: str = ""
     """正文指纹。**惰性填充**：只在「该文档本次变了」时才去读正文算一次。
 
     为什么需要它：**语雀在文档的目录位置发生变化时也会 bump ``updated_at``**
-    （实测：把周目录 move 一下，里面所有文档的 ``updated_at`` 都会变）。
+    （实测：把周期目录 move 一下，里面所有文档的 ``updated_at`` 都会变）。
     只用 ``updated_at`` 做 diff 会把「只动了目录」误报成「文档被改了」，
     进而给社员发一条莫名其妙的「你改了文档」通知。
 
@@ -281,7 +281,6 @@ def build_report(
         "kind": kind,
         "at": cur.taken_at,
         "repo": {"namespace": repo, "toc_sha": cur.toc_sha},
-        "prev_at": "",
         "first_run": changes.first_run,
         "toc_changed": changes.toc_changed,
         "toc": cur.toc,

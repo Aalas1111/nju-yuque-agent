@@ -37,16 +37,18 @@ LLM 只剩「调用一个已经写好判断的程序」这一步。
 
 **先记住一个概念：周期。**
 一个**申请周期 = 周六 00:00 ~ 下周五 23:59**，目录名就是这两天的日期（如 `0919-0925`）。
-因为教室必须提前 48 小时申请，一个周期里所有活动——包括周日活动的申请——最晚在周五就提了，
-**所以周六 00:00 一到，这个周期的申请就一定已经处理完毕**：这一刻既是周期翻转，也是归档时刻。
+因为教室必须**提前 2 天、最多 9 天**申请，一个周期里所有活动——包括周日活动的申请——
+最晚在周五就提了，**所以周六 00:00 一到，这个周期的申请就一定已经处理完毕**：
+这一刻既是周期翻转，也是归档时刻。
 
 ```
 ┌─ 感知层（程序，常驻，不含任何 LLM 调用）──────────────────────────────┐
 │                                                                      │
-│  watcher（轮询，默认 60s）                                            │
-│    拉 TOC + 文档列表 → 快照 → 与上一轮 diff → 「变更报告」              │
-│    无变化 → 本轮静默结束（0 token）                                    │
-│    有变化 → 唤醒 判断层（kind=polling）                                │
+│  watcher（轮询，默认 60s；发现变化后等 45s 静默期再叫 LLM）            │
+│    拉 TOC + 文档列表 → 快照 → 与上一轮 diff                           │
+│    三层筛子：updated_at → 正文哈希 → 占位标题+空正文                   │
+│    筛完为空 → 本轮静默结束（0 token）                                  │
+│    筛完还有东西 → 唤醒 判断层（kind=polling），看到的是**最终状态**      │
 │                                                                      │
 │  timer（时钟，每周六 00:00 = 周期翻转时刻）                             │
 │    无条件唤醒 判断层（kind=archive）—— 即使知识库一个字都没变            │
@@ -67,11 +69,11 @@ LLM 只剩「调用一个已经写好判断的程序」这一步。
 └───────────────────────────┬──────────────────────────────────────────┘
                             ▼  产出（结构化，落盘到工作区）
 ┌─ 留痕层（程序）──────────────────────────────────────────────────────┐
-│  session.jsonl   本次 run 的完整留痕（唯一事实来源）                    │
-│  session.md      渲染版（给人看）                                      │
-│  applications/   申请 JSON（交给「发起借用」的同学）                    │
-│  notify/pending/ 通知事件（交给 QQ 投递的同学）                        │
-│  → journal：把 session.md 按时间戳追加到语雀「工作日志」文档            │
+│  runs/<run_id>/session.jsonl  本次 run 的完整留痕（唯一事实来源）        │
+│  runs/<run_id>/result.json    本轮结论                                 │
+│  outbox/applications/         申请 JSON（交给「发起借用」的同学）        │
+│  outbox/notify/pending/       通知事件（交给 QQ 投递的同学）            │
+│  → journal：把 session 渲染后按时间戳写回语雀《工作日志》               │
 │                                                                      │
 └──────────────────────────────────────────────────────────────────────┘
 ```
@@ -82,7 +84,7 @@ LLM 只剩「调用一个已经写好判断的程序」这一步。
 
 | | `polling`（事件驱动） | `archive`（时钟驱动） |
 |---|---|---|
-| 触发 | 轮询发现 diff 且 diff 非空 | 每周六 **00:00**（= 周期翻转时刻，可配） |
+| 触发 | 轮询发现变化，**三层筛子剩下来的不为空**，且**静默期已过** | 每周六 **00:00**（= 周期翻转时刻，可配） |
 | 输入 | 变更报告 | 归档指令（含当前周期 + 完整目录树） |
 | 工具集 | 通用（**语雀侧接近只读**） | 通用 + 结构写工具 |
 | 为什么 | 社员随时在写文档，agent 不该同时有写权限（社员误操作拖拽 vs agent 误删，两边都容易出事） | 上一周期已收尾、下一周期还没开始，是**唯一安全的结构维护窗口** |
@@ -91,7 +93,7 @@ LLM 只剩「调用一个已经写好判断的程序」这一步。
 
 **一个周期 = 周六 00:00 ~ 下周五 23:59，目录名就是这两天的日期**（如 `0919-0925`）。
 
-为什么不是「周一~周日」：教室必须**提前 48 小时**申请，所以一个周期里所有活动
+为什么不是「周一~周日」：教室必须**提前 2 天、最多 9 天**申请，所以一个周期里所有活动
 ——包括周日活动的申请——最晚在周五就提了。**周六 00:00 一到，这个周期的申请就一定已经处理完毕。**
 把周期起点定在周六 00:00，就让**归档时刻与周期翻转时刻完全重合**，不再有任何日历错位。
 
@@ -107,11 +109,17 @@ LLM 只剩「调用一个已经写好判断的程序」这一步。
 ```
 教室借用申请
 ├── 指导文档（必读）     系统性文档，不动
+├── 工作日志            系统性文档，不动（程序自己写的）
 ├── 0919-0925           【当前周期】有且只有一个
 └── 归档区              永远在最末
     ├── 0912-0918       内部最新在上
     └── 0905-0911
 ```
+
+> **根目录允许三类东西**：① 系统性文档（《指导文档》《工作日志》）；
+> ② **有且只有一个**当前周期目录；③ 「归档区」（在最末）。
+> 纯目录变化不算「需要处理的事」（`Changes.empty` 只看文档级变更），
+> 所以这两篇系统性文档摆在那里不会惹麻烦。
 
 归档的判定规则（写进了 `prompts/archive.md`）：
 
@@ -127,12 +135,17 @@ LLM 只剩「调用一个已经写好判断的程序」这一步。
 
 ```
 workspace/
-├── state.json                     程序侧记忆：上一轮快照（TOC 结构 + 每篇文档的 updated_at / 正文哈希）
+├── state.json                     程序侧记忆：
+│                                   · 上一轮快照（TOC 结构 + 每篇文档的 updated_at / 正文哈希）
+│                                   · 静默期计时 pending_since / pending_polls
+│                                   · 归档水位线 last_archive_title
+│                                   · 《工作日志》doc_id（用于把它排除在变更信号之外）
 ├── runs/
-│   └── 20260921-000512-polling/
-│       ├── report.json            程序给 LLM 的输入原文
+│   └── 20260921-000512-polling-ab12/
+│       ├── payload.json           程序给 LLM 的输入原文（变更报告 / 归档指令）
 │       ├── session.jsonl          完整 session（唯一事实来源）
-│       └── session.md             渲染版
+│       ├── result.json            本轮结论（verdict / 用量 / 产出 / 停止原因）
+│       └── journal.json           写回《工作日志》的结果（加了 --journal 才有）
 ├── outbox/
 │   ├── applications/
 │   │   ├── <application_id>.json  一份受理的申请一个文件（只写一次，幂等）
@@ -140,9 +153,13 @@ workspace/
 │   └── notify/
 │       ├── pending/*.json         待投递的事件
 │       ├── done/*.json            投递方挪进来即视为已投递
-│       └── outbox.jsonl           只追加的审计流水
+│       ├── .seq                   单调递增的序号计数器
+│       └── outbox.jsonl           只追加的审计流水（投递方**不要**读它）
 └── notes/                         LLM 自己的跨轮记忆（agent 可读可写；唯一允许 agent 写的目录）
 ```
+
+> 没有 `session.md`这回事：渲染是**按需**的（`yqa render <run_id>`），
+> 或者由留痕层直接渲染后写进语雀《工作日志》。本地不落第二份副本，避免两份真相漂移。
 
 ---
 
@@ -153,39 +170,48 @@ workspace/
 
 ```json
 {
-  "run_id": "20260921-000512-polling",
+  "run_id": "20260920-101834-polling-7d44",
   "kind": "polling",
-  "at": "2026-09-21T00:05:12+08:00",
-  "repo": { "namespace": "lqogh0/jsjysq", "name": "教室借用申请" },
-  "prev_at": "2026-09-21T00:04:12+08:00",
-  "toc_changed": false,
+  "at": "2026-09-20T10:18:34+08:00",
+  "repo": { "namespace": "lqogh0/jsjysq", "toc_sha": "31ea039222dd55ca" },
+  "first_run": false,
+  "toc_changed": true,
   "toc": [
-    { "uuid": "…", "type": "TITLE", "title": "0921-0927", "depth": 1, "path": "0921-0927", "doc_count": 0 },
-    { "uuid": "…", "type": "TITLE", "title": "归档区",   "depth": 1, "path": "归档区",   "doc_count": 1 },
-    { "uuid": "…", "type": "TITLE", "title": "0914-0920", "depth": 2, "path": "归档区/0914-0920", "doc_count": 0 }
+    { "uuid": "iuyJTlAJ…", "type": "TITLE", "title": "0919-0925", "depth": 1, "path": "0919-0925", "doc_id": 0 },
+    { "uuid": "K54qeMCi…", "type": "DOC",   "title": "新生见面会", "depth": 2, "path": "0919-0925/新生见面会", "doc_id": 285808038 },
+    { "uuid": "WTnJHBJV…", "type": "TITLE", "title": "归档区", "depth": 1, "path": "归档区", "doc_id": 0 },
+    { "uuid": "0pJvJOV9…", "type": "TITLE", "title": "0912-0918", "depth": 2, "path": "归档区/0912-0918", "doc_id": 0 }
   ],
   "docs": {
     "added": [
       {
-        "doc_id": 1234567, "slug": "abc123", "title": "新生见面会",
-        "dir": "0921-0927",
-        "author": "张三", "created_at": "…", "updated_at": "…",
-        "preview": "申请人：张三\n活动日期：2026-09-16\n…（前 300 字，程序截断）"
+        "doc_id": 285808038, "slug": "dwweefuu…", "title": "新生见面会",
+        "dir": "0919-0925", "author": "张三",
+        "created_at": "2026-09-20T02:18:14.000Z", "updated_at": "2026-09-20T02:18:14.000Z",
+        "preview": "申请人：张三\n活动日期：2026-09-23\n…（前 300 字，程序截断）"
       }
     ],
     "updated": [
-      { "doc_id": 1234567, "…": "…", "prev_updated_at": "…", "preview": "…" }
+      { "doc_id": 285808038, "title": "新生见面会", "dir": "0919-0925",
+        "prev_title": "…", "prev_updated_at": "…", "prev_dir": "…", "preview": "…" }
     ],
     "removed": [
-      { "doc_id": 7654321, "title": "旧活动", "dir": "0921-0927", "last_seen_at": "…" }
+      { "doc_id": 7654321, "title": "旧活动", "dir": "0919-0925", "last_seen_at": "…" }
     ]
-  }
+  },
+  "counts": { "added": 1, "updated": 0, "removed": 0 },
+  "notes": [ "程序在想说的话都在这里（静默期合并了多少次、剔除了哪些占位文档…）" ],
+  "toc_only": [ { "doc_id": 1, "title": "只被挪了目录的文档" } ]
 }
 ```
 
 - `preview` 由程序截取前 300 字，目的是让 LLM **大多数情况下不必再调 `doc_read`**（省一轮往返，不是省判断）。
 - 需要全文（比如字段在 300 字之后）→ LLM 自己调 `doc_read`。
-- `toc` 全量给出，因为「文档在哪个目录」是判断依据之一（在归档区 = 别再处理）。
+- `toc` 全量给出（含 `doc_id`），因为「文档在哪个目录」是判断依据之一（在归档区 = 别再处理）。
+- `counts` 是**真实总数**；`docs.*` 可能因 `max_docs_per_run` 被截断，此时 `notes` 里会有说明。
+- `toc_only` 是「`updated_at` 变了但正文一字未改」的文档（只被挪了目录），
+  已经从 `docs.updated` 里剔除，只在这里留个痕迹。
+- `notes` 是程序对 LLM 说的话，**不是判定**——比如「这轮合并了 3 次轮询」。
 
 ---
 
@@ -193,27 +219,30 @@ workspace/
 
 ### 5.1 通用工具（polling 与 archive 都有）
 
-| 工具 | 作用 | 备注 |
+| 工具 | 参数 | 作用 |
 |---|---|---|
-| `kb_tree()` | 知识库目录树（uuid / 层级 / 每个目录的文档数） | 判断文档位置 |
-| `dir_list(dir)` | 列某目录下所有文档（含 updated_at） | |
-| `doc_read(doc_id, mode)` | 读文档正文。`mode=text` 纯文本 / `mode=raw` 原始 markdown | |
-| `ws_list(path)` | 列工作区文件 | 看历史留痕 |
-| `ws_read(path)` | 读工作区文件 | 读 `outbox/applications/` 判断是否已处理过 |
-| `ws_write(path, content)` | **写 `notes/` 下的文件**（跨轮记忆） | 路径被强制限制在 `notes/` 内 |
-| `emit_application(payload)` | 产出一份申请 JSON | 写 `outbox/applications/` |
-| `emit_notice(kind, payload)` | 产出一条通知事件 | 写 `outbox/notify/pending/` |
-| `done(summary, verdict)` | 结束本轮，给判定摘要 | 唯一的正常出口 |
+| `kb_tree()` | —— | 知识库目录树（uuid / 层级 / 每个目录的文档数） |
+| `dir_list(dir)` | `dir` 目录路径 | 列某目录下所有文档（不只是本轮变过的） |
+| `doc_read(doc)` | `doc` = doc_id 或 slug | 读全文 markdown（截断到 8000 字） |
+| `ws_list(path)` | 默认 `.` | 列工作区文件 |
+| `ws_read(path)` | | 读工作区文件（如 `outbox/applications/` 里的历史申请） |
+| `ws_write(path, content)` | | 写 `notes/` 下的文件（跨轮记忆）；路径被强制限制在 `notes/` 内 |
+| `emit_application(...)` | `doc_id` `activity_date` `campus` `start` `end` 必填；`doc_title` `activity_name` `building` `room` `people` `confidence` `normalizations` `warnings` `notes` 可选 | 产出一份申请 JSON（程序做查表归一化，见 §7.1） |
+| `emit_notice(...)` | `kind` `summary` `message` 必填；`doc_id` `doc_title` `member_name` `reasons` `warnings` 可选 | 产出一条通知事件 |
+| `done(verdict, summary)` | | 结束本轮，给判定摘要（唯一的正常出口） |
 
 ### 5.2 仅归档会话追加
 
-| 工具 | 作用 |
-|---|---|
-| `toc_create(title, parent)` | 新建目录节点（新建下一周目录） |
-| `toc_move(node_uuid, parent, index)` | 移动节点（上周目录 → 归档区） |
-| `toc_remove(node_uuid)` | 从目录移除节点（不删文档） |
-| `doc_create(title, body, parent)` | 新建文档 |
-| `doc_delete(doc_id)` | 删除文档 |
+| 工具 | 参数 | 作用 |
+|---|---|---|
+| `toc_create(title, target_uuid?)` | | 新建一个 TITLE 节点（下一周期目录） |
+| `toc_move(node_uuid, target_uuid?)` | | 移动节点；不带 `target_uuid` = 移到根目录末尾 |
+| `toc_remove(node_uuid, with_children?)` | | 从目录移除节点（**不删文档**） |
+| `doc_create(title, body?, parent_uuid?)` | | 新建文档（重建被删的《指导文档》） |
+| `doc_delete(doc_id, reason)` | `reason` **必填** | 删除文档，理由会写进工作日志被人复查 |
+
+> 客户端的 `yuque.toc_rename()`（实测 `editNode` 有效）**没有开放给 agent**——
+> 目录改名风险高又难判定，只留给人工/脚本（见 D9）。
 
 ### 5.3 三条硬性安全设计
 
@@ -228,18 +257,20 @@ workspace/
 ## 6. session 格式（JSONL，一行一事件）
 
 ```jsonl
-{"t":"run_start","run_id":"20260921-000512-polling","kind":"polling","at":"…","model":"deepseek-flash","repo":"lqogh0/jsjysq","tools":["kb_tree","doc_read","…"]}
-{"t":"system","content":"<prompts/polling.md 全文>"}
-{"t":"user","content":"<变更报告 JSON>","sha256":"…"}
-{"t":"assistant","step":1,"content":"…","reasoning":"…","tool_calls":[{"id":"c1","name":"doc_read","args":{"doc_id":1234567}}],"usage":{"in":1234,"out":56},"ms":2100}
-{"t":"tool","step":1,"call_id":"c1","name":"doc_read","args":{…},"ok":true,"result":{…},"ms":210}
-{"t":"assistant","step":2,"…":"…"}
-{"t":"tool","step":2,"call_id":"c2","name":"done","ok":true,"result":{"verdict":"accepted","summary":"…"}}
-{"t":"run_end","at":"…","steps":2,"verdict":"accepted","summary":"…","usage":{"in":…,"out":…},"error":null}
+{"t":"run_start","ts":"…","run_id":"20260920-101834-polling-7d44","kind":"polling","at":"…","model":"deepseek-flash","repo":"lqogh0/jsjysq","dry_run":false,"tools":["kb_tree","doc_read","…"]}
+{"t":"system","ts":"…","content":"<prompts/polling.md 全文>"}
+{"t":"user","ts":"…","content":"<变更报告 JSON>"}
+{"t":"assistant","ts":"…","step":1,"content":"…","reasoning":"…","tool_calls":[{"id":"c1","name":"doc_read","arguments":"{\"doc\": 285808038}"}],"usage":{"in":1234,"out":56,"total":1290,"cached":0},"finish_reason":"tool_calls","ms":2100}
+{"t":"tool","ts":"…","step":1,"call_id":"c1","name":"doc_read","args":{…},"ok":true,"result":{"ok":true,"result":{…},"ms":210},"ms":210}
+{"t":"assistant","ts":"…","step":2,"…":"…"}
+{"t":"run_end","ts":"…","at":"…","steps":2,"tool_calls":2,"verdict":"accepted","summary":"…","stop_reason":"done","error":"","usage":{…},"emitted":[…],"kb_writes":[]}
 ```
 
 - 存**原始** `reasoning_content`（DeepSeek 的思维链）——这正是「为什么它这么判」的证据。
-- `session.md` 是渲染版：把上面这些事件排成人能读的时间线，用于人工复查 + 写回语雀工作日志。
+- `run_start` 里的 `tools` 是**本轮实际注册的工具名单**——事后查「它当时到底有没有能力删文档」，看这一行就够。
+- 每写一行都 flush：进程被杀也留得下已经发生的部分（崩溃时的现场最值钱）。
+- 损坏的行跳过而不是整份作废（`read_events`）。
+- 渲染成人话是**按需**的：`yqa render <run_id>`，或由留痕层渲染后写进语雀《工作日志》。
 - session 是**唯一事实来源**：任何「它当时到底怎么想的」的疑问都以它为准。
 
 ---
@@ -306,7 +337,7 @@ crb plan --file plan.json --save
 
 ---
 
-## 7.5 两个「不要为噪声付钱」的设计（实测踩出来的）
+## 8. 两个「不要为噪声付钱」的设计（实测踩出来的）
 
 ### 静默期合并（debounce）
 
@@ -372,12 +403,12 @@ crb plan --file plan.json --save
 
 ---
 
-## 8. 提示词（举例式，不穷举）
+## 9. 提示词（举例式，不穷举）
 
 `prompts/polling.md` 的写法约定：
 
 1. 交代身份与目标（你是这个知识库的负责人）；
-2. 交代**必须知道的事实**（48 小时限制、08:00–22:20、午饭时段、节次表、周目录含义）；
+2. 交代**必须知道的事实**（可借日期 = 今天+2~+9 天、08:00–22:20、午饭时段、节次表、周期含义）；
 3. 交代**工作流**（先看变更报告 → 只读你有疑问的那几篇 → 产出 → done）；
 4. **给例子**，不给穷举规则：
    - 好例子：标准填法
@@ -390,13 +421,14 @@ crb plan --file plan.json --save
 
 ---
 
-## 9. 待决问题
+## 10. 待决问题
 
 | # | 问题 | 现状 |
 |---|---|---|
 | D1 | ~~归档时间与目录命名错位~~ | **已解决**：归档时刻改为**周六 00:00**，目录命名改为**申请周期**（周六 00:00 ~ 下周五 23:59，如 `0919-0925`）。归档时刻与周期翻转**完全重合**，错位消失。见 `week.cycle_targets` |
 | D2 | 语雀「知识库文档模板」只能人工设置（OpenAPI 不支持），模板内容需手工贴进去 | 待人工（源文件已备好：`src/yuque_agent/kb/template.md`） |
-| D3 | ~~工作日志写在哪~~ | **已定**：同知识库新建《工作日志》文档，**刻意不挂进目录**（挂进去会破坏「根目录只有一个周目录+归档区」的不变式，还会诱导归档会话把它当垃圾清掉） |
+| D3 | ~~工作日志写在哪~~ | **已定**：同知识库新建《工作日志》文档，**正常挂进目录**（社员看得到它，才能确认自己的文档到底有没有被处理）。
+但**程序必须把它从变更信号里剔除**（`ignore_doc_titles` + `State.journal_doc_id`），否则会自激循环——见 §8。归档提示词里也写明它是**系统性文档，不许动** |
 | D4 | 恶意批量文档攻击的防护（一次 diff 出现数百篇） | 初版不做，已有开关：`max_docs_per_run` / `max_doc_reads_per_round` / `max_steps` / `max_tool_calls` |
 | D5 | 全量轮询 vs 语雀 webhook | 已定：纯轮询（webhook 需要公网入口，本地/内网跑不了） |
 | D6 | LLM 的思考语言 | DeepSeek 的 `reasoning_content` 是**英文**（提示词是中文，模型仍用英文思考）。不影响判断质量，但工作日志里的「思考」一栏会是英文。待观察 |
@@ -406,7 +438,7 @@ crb plan --file plan.json --save
 
 ---
 
-## 10. 开发期踩到并写进代码的坑
+## 11. 开发期踩到并写进代码的坑
 
 这几条都是**真金白银踩出来的**，直接决定了架构：
 
@@ -416,5 +448,5 @@ crb plan --file plan.json --save
 | P2 | 语雀在**目录位置发生变化**时也会 bump 文档的 `updated_at` | **必须**加「正文哈希」第二道筛子，否则会给社员误发「你改了文档」的通知。见 `snapshot.enrich_and_refine` |
 | P3 | 语雀目录**读写有秒级延迟**，写完立刻读看不到 | 写后 `wait_toc_settled()`；提示词里明确写「不要因为看不到就重试」（否则会重复建目录） |
 | P4 | 按节点自身的 `path` 当文档所在目录是**错的**（那会变成「父目录/文档名」） | 抽出 `yuque.doc_dir_map()` 统一处理；根目录下的文档 `dir == ""` |
-| P5 | 把《工作日志》挂进目录根会破坏归档会话的「根目录只有一个周目录」不变式，agent 可能把它当垃圾删掉 | 留痕文档**不入目录** |
+| P5 | 把《工作日志》挂进目录后，**它自己就成了知识库里的一个文档** → 程序写日志的动作变成下一轮的变更信号 → **自激循环**（实测：一篇文档触发 13 次 run，其中 8 次是这个循环） | 解法**不是**「把日志挪出目录/砍掉可见性」，而是**把自己的写入排除在信号之外**：`ignore_doc_titles` + `State.journal_doc_id`。同时 `Changes.empty` 不看 `toc_changed`（否则新建文档必然会加目录节点，把过滤全抵消）。 |
 | P6 | Windows 控制台是 GBK，rich 打 emoji 直接 `UnicodeEncodeError` 崩掉 | 入口 `_force_utf8()`；控制台文案不用 emoji（markdown 里照常用） |
