@@ -50,6 +50,7 @@ _force_utf8()
 
 app = typer.Typer(
     add_completion=False,
+    rich_markup_mode="markdown",
     help="让 LLM 全权接管一个语雀知识库：程序只做感知与留痕，判断权归 LLM。",
 )
 console = Console()
@@ -165,7 +166,13 @@ def _poll_skip_message(runner: Runner, settings: Settings) -> str:
 @app.command()
 def once(
     repo: RepoOpt = DEFAULT_REPO,
-    force: Annotated[bool, typer.Option("--force", help="无视 diff，强制唤醒 LLM")] = False,
+    force: Annotated[
+        bool,
+        typer.Option(
+            "--force",
+            help="无视 diff，即使没有变化也唤醒 LLM（给存量文档做体检时用）",
+        ),
+    ] = False,
     rescan: Annotated[
         bool,
         typer.Option("--rescan", help="无视快照，把现有全部文档重新评估一遍（会重发通知）"),
@@ -184,6 +191,15 @@ def once(
     敲下 ``yqa once``，就该立刻看到结果，而不是被告知「没有变化」然后白等 45 秒。
     静默期只对常驻轮询（``yqa run``）有意义——那里的变更来自语雀的分步投稿，
     合并能把一篇文档从 13 次唤醒压到 1 次。
+
+    ``--force`` 和静默期的边界（容易搞混，所以写在这里）：
+
+    * **在命令行这一层**：``once`` 已经关掉了静默期，所以 ``--force`` 不 ``--force``
+      都会真跑，只要你敲了命令。
+    * **在 ``Runner.poll_once`` 这一层**：``force=True`` **不**绕过静默期
+      —— ``--force`` 的含义是「无视 diff」，不是「无视静默期」。这是有意设计，
+      由 ``tests/test_debounce.py::test_force_bypasses_nothing_but_still_needs_quiet`` 锁住。
+      如果你绕开 CLI 直接调 ``poll_once(force=True)``，静默期内仍然不会跑。
     """
     settings = _settings(repo, workspace, dry_run, journal, model, 60, False)
     client, llm = _clients(settings)

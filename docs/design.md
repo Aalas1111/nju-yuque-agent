@@ -382,6 +382,13 @@ crb plan --file plan.json --save
 > 同时 `Runner.last_skip` 会如实区分 `"no_change"` / `"quiet_period"`，
 > 提示语不再可能说假话。
 
+**`--force` 和静默期的边界**（容易搞混）：`--force` 的含义是「无视 **diff**」，
+不是「无视**静默期**」——这是有意设计，由
+`test_debounce.py::test_force_bypasses_nothing_but_still_needs_quiet` 锁住。
+所以在 `Runner.poll_once` 这一层，`force=True` 在静默期内仍然不会跑。
+但在**命令行**这一层就不一样了：`yqa once` 自己就关了静默期，所以 `once` 和
+`once --force` 只要敲下去都会真跑。两层语义不同，写在这里以免下次又踩。
+
 ### 忽略自己写的文档（防自激）
 
 《工作日志》就存在被监控的知识库里。程序写完日志后，下一轮轮询会看到

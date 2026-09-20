@@ -48,7 +48,11 @@ from .protocol import QQBotError, QQBotProtocol
 from .qr import has_qr_support, save_png, support_note, terminal_qr
 from .service import QQBotService
 
-qq_app = typer.Typer(help="QQBot 接入：扫码登录 / 通知投递 / 常驻服务", no_args_is_help=True)
+qq_app = typer.Typer(
+    help="QQBot 接入：扫码登录 / 通知投递 / 常驻服务",
+    no_args_is_help=True,
+    rich_markup_mode="markdown",
+)
 console = Console()
 
 AccountOpt = Annotated[str, typer.Option("--account", "-a", help="账户名（默认 default）")]
