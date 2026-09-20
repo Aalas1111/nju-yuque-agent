@@ -205,7 +205,10 @@ crb plan --file plan.json --save
 ```
 outbox/notify/pending/000012-rejected-9f2c1a0b.json   待投递
 outbox/notify/done/000012-rejected-9f2c1a0b.json      投递方挪进来 = 已投递
+outbox/notify/unrouted/*.json                         认不出人的（投递方实现，等人补映射）
+outbox/notify/failed/*.json                           坏文件（投递方实现，不堵队列）
 outbox/notify/outbox.jsonl                            只追加的审计流水
+outbox/notify/delivery.jsonl                          投递方的审计流水（投递方实现）
 ```
 
 **消费约定**：
@@ -215,6 +218,12 @@ outbox/notify/outbox.jsonl                            只追加的审计流水
 3. 崩了重启就重新扫 `pending/`，天然**至少一次**（宁可重复也别漏）；
 4. 目录是同机共享的，**qqbot 与 agent 部署在同一台机器上最省事**；
 5. `outbox.jsonl` 用来审计，**不要**既读它又挪文件，否则会重复投递。
+
+> 📌 **本仓库现在自带一个投递方实现**（`yqa qq notify` / `yqa qq serve`，
+> 代码在 `src/yuque_agent/qqbot/`），上面这套约定一个字都没改。
+> 它额外做的三件事：认不出人 → `unrouted/`、坏文件 → `failed/`、发送失败**停下本轮**
+> 以保住 `seq` 顺序。身份映射（语雀人名 → QQ openid）放在工作区 `qqbot.json`。
+> 详细说明与故障排查见 [`qqbot.md`](qqbot.md)。
 
 ### 3.2 字段
 
@@ -255,6 +264,11 @@ outbox/notify/outbox.jsonl                            只追加的审计流水
 
 agent 给的是语雀侧身份（`member.name` = 文档里手填的申请人），
 **语雀身份 → QQ 号的映射由 qqbot 负责**，agent 不做这个映射。
+
+自带的投递方（`yqa qq notify` / `yqa qq serve`）把这张表放在工作区 `qqbot.json` 的
+`notify.members` 里（人名 → `c2c:<user_openid>` / `group:<group_openid>`），
+并提供「兜底目标」与「认不出就挪进 `unrouted/` 等人处理」两种策略，
+见 [`qqbot.md`](qqbot.md) §3.3。
 
 ---
 

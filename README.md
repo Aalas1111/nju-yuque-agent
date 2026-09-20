@@ -60,8 +60,14 @@
 ┌─ 留痕层（程序）────────────────────────────────────────────────┐
 │  runs/<run_id>/session.jsonl  完整留痕（唯一事实来源）            │
 │  outbox/applications/*.json   申请（交给负责提交的同学）          │
-│  outbox/notify/pending/*.json 通知事件（交给 QQ 投递的同学）      │
+│  outbox/notify/pending/*.json 通知事件（交给投递层）              │
 │  → 渲染成 markdown，按时间戳写回语雀《工作日志》                  │
+└───────────────────────────┬────────────────────────────────────┘
+                            ▼
+┌─ 投递层（程序，可选，`yqa qq`）────────────────────────────────┐
+│  扫 outbox/notify/pending/ → 按 seq 发到 QQ → 移进 done/        │
+│  QQ → agent：白名单命令 /status /pending /run /archive           │
+│  扫码登录：`yqa qq login`——手机 QQ 扫一下，AppSecret 自动落盘      │
 └────────────────────────────────────────────────────────────────┘
 ```
 
@@ -75,8 +81,9 @@
 |---|---|
 | [`docs/handoff.md`](docs/handoff.md) | **给合作方**：两个对外契约（申请 JSON / 通知事件）+ 本 agent 明确的「不做」清单 + 待确认事项 |
 | [`docs/design.md`](docs/design.md) | **给维护者**：架构、周期定义、工具分级、提示词写法、踩过的坑 |
+| [`docs/qqbot.md`](docs/qqbot.md) | **给 QQBot 接入方**：扫码登录全流程（含本地 HTTP 接口）、通知投递、入站命令的能力边界、故障排查 |
 | [`docs/test-report.md`](docs/test-report.md) | **给验收者**：五轮端到端测试的证据、发现的 7 个 bug、复现方式 |
-| [`examples/`](examples/) | 申请 / 通知 / `plan.json` 的样例（脱敏），直接看格式最快 |
+| [`examples/`](examples/) | 申请 / 通知 / `plan.json` / `qqbot.json` 的样例（脱敏），直接看格式最快 |
 
 ---
 
@@ -94,6 +101,8 @@ uv run yqa doctor
 | `YQA_TOKEN` / `YUQUE_TOKEN` | 语雀 token（归档需要写权限：`repo` + `doc`） | `~/.yuque/auth.json` |
 | `YQA_LLM_KEY` / `DEEPSEEK_API_KEY` | LLM API key | `~/.pi/agent/auth.json` |
 | `YQA_REPO` | 知识库 namespace，默认 `lqogh0/jsjysq` | |
+| `YQA_QQ_APPID` / `YQA_QQ_SECRET` | QQ 机器人凭证（跑过 `yqa qq login` 就不用设） | `~/.yuque/qqbot.json` |
+| `YQA_QQ_CREDENTIALS` / `YQA_QQ_CONFIG` | QQBot 凭证文件 / `qqbot.json` 的路径 | 工作区默认位置 |
 
 ## 用法
 
@@ -111,7 +120,33 @@ uv run yqa render <run_id>        # 把某次 run 的 session 渲染成人话
 uv run yqa journal <run_id>       # 把某次 run 写回语雀《工作日志》
 uv run yqa export-plan -o plan.json --defaults '{...}'   # 汇总成下游可直接吃的 plan.json
 uv run yqa sync-guide             # 把 kb/guide.md 上传为知识库《指导文档（必读）》
+uv run yqa run --qq               # 常驻轮询，顺带把通知投递到 QQ
 ```
+
+### QQBot 接入（可选）
+
+```bash
+uv run yqa qq login               # 手机 QQ 扫码绑定机器人（也可 --png / --http 127.0.0.1:8765）
+uv run yqa qq config --init       # 生成 qqbot.json 模板：成员映射 + 入站白名单
+uv run yqa qq doctor              # 自检：凭证 / 配置 / 二维码 / 网关
+uv run yqa qq notify --dry-run    # 看会发给谁（不发送、不移动文件）
+uv run yqa qq notify              # 把 outbox/notify/pending/ 里的通知投出去
+uv run yqa qq serve               # 常驻：轮询语雀 + 投递通知 + 收 QQ 命令
+```
+
+> **第一次直接 `yqa qq serve` 就行**：没有 `~/.yuque/qqbot.json` 时它会在终端出示二维码，
+> 手机 QQ 扫一下，凭证自动落盘，然后继续启动（`yqa run --qq` 同理）。
+> 想关掉这个行为（systemd / cron）加 `--no-login`。
+
+* **通知投递**遵守 [`docs/handoff.md`](docs/handoff.md) §3 的目录协议：
+  按 `seq` 升序发；发了就移进 `done/`；认不出人的进 `unrouted/`；坏文件进 `failed/`；
+  发送失败留在 `pending/` 下轮重试（至少一次）。
+* **入站命令**默认拒绝：`qqbot.json` 里的 `inbound.allow` 为空 = 谁都不能用命令；
+  `/run` 与 `/archive` 只有 `inbound.admins` 能用，并且限流 + 单飞。
+  任何自由文本都不会被送去问 LLM。
+* **扫码登录**是完整的官方绑定流程：`create_bind_task` → 出示二维码 → 轮询 →
+  AES-256-GCM 解密 AppSecret → 写入 `~/.yuque/qqbot.json`（600）。
+  详见 [`docs/qqbot.md`](docs/qqbot.md)。
 
 > **给下游两份契约（申请 JSON / 通知事件）的完整说明见 [`docs/handoff.md`](docs/handoff.md)。**
 > 其中 `activity` 对象就是 `crb` 的 `Activity` 原样，`yqa export-plan` 的输出可以直接
@@ -138,7 +173,21 @@ src/yuque_agent/
 ├── school.py     学校词汇表：校区代码、教学楼代码、节次表、可借日期窗口（查表，不归 LLM）
 ├── journal.py    session → markdown → 语雀《工作日志》
 ├── week.py       周目录日期计算
-└── kb/           guide.md / template.md（知识库内容源文件）
+├── kb/           guide.md / template.md（知识库内容源文件）
+└── qqbot/        ★ QQBot 接入层（`yqa qq …`）
+    ├── protocol.py    QQ 开放平台协议（同步移植参考实现）：扫码绑定 / access_token / REST
+    ├── login.py       扫码登录流程 + 两阶段 start/wait/cancel
+    ├── login_http.py  本地 HTTP 登录接口（网页/后端可调）
+    ├── qr.py          二维码渲染（终端 / PNG / data URL，缺 qrcode 时降级）
+    ├── credentials.py 凭证落盘（~/.yuque/qqbot.json，600，多账户）
+    ├── client.py      token 缓存 + 发消息（C2C / 群）
+    ├── bridge.py      通知投递桥（pending → done/unrouted/failed + 审计）
+    ├── config.py      qqbot.json：成员映射 + 入站白名单
+    ├── commands.py    入站命令路由（默认拒绝 / 管理员 / 限流）
+    ├── events.py      入站事件归一化
+    ├── gateway.py     WebSocket 网关（IDENTIFY/RESUME/心跳/重连）
+    ├── service.py     常驻编排：agent 线程 + 通知泵 + 网关
+    └── cli.py         `yqa qq` 子命令
 ```
 
 ## 开发

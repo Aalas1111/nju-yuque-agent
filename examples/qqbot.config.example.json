@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "source": "yuque-agent",
+
+  "notify": {
+    "_comment": "unmapped: default = 认不出人时发给 default_target；skip = 挪到 outbox/notify/unrouted/ 等人处理",
+    "unmapped": "default",
+    "default_target": {
+      "scope": "group",
+      "targetId": "把社团群的 group_openid 填这里",
+      "note": "群 openid 可以从一条群消息事件里的 group_openid 拿到"
+    },
+    "members": {
+      "张三": {
+        "scope": "c2c",
+        "targetId": "把张三的 user_openid 填这里",
+        "note": "语雀侧人名 → QQ 号；名字就是文档里手填的申请人"
+      },
+      "李四": {
+        "scope": "group",
+        "targetId": "也可以把某个人固定发到某个群",
+        "note": ""
+      }
+    }
+  },
+
+  "inbound": {
+    "_comment": "allow 为空 = 谁都不能用命令（默认拒绝）；admins 是 allow 的子集，只有他们能 /run 与 /archive",
+    "enabled": true,
+    "allow": ["把管理员的 user_openid 填这里"],
+    "admins": ["把管理员的 user_openid 填这里"],
+    "groups": ["群聊里要用命令的话，把群 openid 也填这里"],
+    "rate_limit_seconds": 30
+  }
+}

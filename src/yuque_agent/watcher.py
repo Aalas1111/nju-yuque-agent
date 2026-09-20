@@ -33,6 +33,12 @@ class Watcher:
     settings: Settings
     log: LogFn = print
 
+    last_result: RunResult | None = None
+    """最近一次真的跑了 LLM 的结果（``None`` = 没变化/在静默期）。QQ 状态查询用它。"""
+
+    last_kind: str = ""
+    """最近一次结果的类型：``polling`` / ``archive``。"""
+
     # -- 归档时机 ---------------------------------------------------------
     def scheduled_archive_at(self, now: datetime) -> datetime:
         """最近一次（含今天）周期翻转时刻。同一周期内保持不变。"""
@@ -67,6 +73,8 @@ class Watcher:
         if self.archive_due(now):
             self.log(f"[{now:%H:%M:%S}] [archive] 到周期翻转时刻，唤醒归档会话")
             result = self.runner.archive_once(now=now)
+            self.last_result = result
+            self.last_kind = "archive"
             lines.append(_summarize("archive", result))
             for line in lines:
                 self.log(line)
@@ -75,6 +83,8 @@ class Watcher:
         result = self.runner.poll_once(now=now, debounce=self.settings.quiet_seconds > 0)
         if result is None:
             return lines
+        self.last_result = result
+        self.last_kind = "polling"
         lines.append(_summarize("polling", result))
         for line in lines:
             self.log(line)
@@ -82,8 +92,17 @@ class Watcher:
 
     # -- 常驻 -------------------------------------------------------------
     def run_forever(
-        self, *, max_ticks: int | None = None, sleep: Callable[[float], None] = time.sleep
+        self,
+        *,
+        max_ticks: int | None = None,
+        sleep: Callable[[float], None] = time.sleep,
+        after_tick: Callable[[], None] | None = None,
     ) -> None:
+        """常驻循环。
+
+        ``after_tick`` 每轮结束后调用一次（用于把 ``outbox/notify`` 投出去这类
+        「跟本轮结果无关」的杂活）。它抛异常不会终止常驻进程。
+        """
         ticks = 0
         self.log(
             f"[watch] 开始常驻：每 {self.settings.interval}s 轮询 {self.settings.repo}；"
@@ -98,6 +117,11 @@ class Watcher:
                 self.tick()
             except Exception as exc:  # noqa: BLE001 - 常驻进程不能因为一次失败就死
                 self.log(f"[watch] 本轮异常（已忽略并继续）：{type(exc).__name__}: {exc}")
+            if after_tick is not None:
+                try:
+                    after_tick()
+                except Exception as exc:  # noqa: BLE001
+                    self.log(f"[watch] 收尾任务异常（已忽略并继续）：{type(exc).__name__}: {exc}")
             ticks += 1
             if max_ticks is not None and ticks >= max_ticks:
                 self.log(f"已达 max_ticks={max_ticks}，退出")

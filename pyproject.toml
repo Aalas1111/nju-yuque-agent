@@ -13,6 +13,13 @@ dependencies = [
     "pydantic>=2.7",
     "rich>=13.7",
     "typer>=0.12",
+    # QQBot 接入（yqa qq …）：
+    #   cryptography —— 扫码绑定后用 AES-256-GCM 解密 AppSecret（官方协议要求）
+    #   qrcode[pil]  —— 把二维码画进终端 / 存 PNG / 给本地登录页当 data URL
+    #   websockets   —— 收 QQ 消息的 WebSocket 网关（只投递通知时用不到）
+    "cryptography>=41",
+    "qrcode[pil]>=7.4",
+    "websockets>=12",
 ]
 
 [dependency-groups]
