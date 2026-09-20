@@ -152,6 +152,32 @@ uv run yqa qq serve               # 常驻：轮询语雀 + 投递通知 + 收 Q
 > 其中 `activity` 对象就是 `crb` 的 `Activity` 原样，`yqa export-plan` 的输出可以直接
 > `crb plan --file plan.json --save`。
 
+### 部署（服务器）
+
+```bash
+uv sync
+uv run yqa doctor                 # 先看自检表，尤其「时区」与「知识库 / 写权限」两行
+export YQA_TOKEN=<语雀写权限令牌>      # 或放 ~/.yuque/auth.json
+export DEEPSEEK_API_KEY=<key>
+uv run yqa run --interval 60 --quiet-seconds 45 --journal   # 要 QQ 就换 yqa qq serve
+```
+
+| 项 | 要求 |
+|---|---|
+| Python | 3.12（用 `uv` 管理） |
+| CPU / 内存 | 1 核 1G 够用——这不是算力活，是「等消息」的活 |
+| 磁盘 | 5G，但 **`workspace/` 必须持久化**（它存「处理到哪了」，丢了会重复发通知），别放临时盘 |
+| **时区** | **不需要配**：程序钉死 `Asia/Shanghai`，服务器是 UTC 也没关系（见 `docs/design.md` §2.2） |
+| 出网 | `api.yuque.com`、`api.deepseek.com`（要 QQ 再加 `bots.qq.com`、`api.sgroup.qq.com`） |
+| 入网端口 | **不需要开公网端口** |
+| 常驻 | 要能长期挂进程（systemd / supervisor / screen），**不能用 serverless** |
+| 时钟 | NTP 正常（归档是时钟驱动的） |
+| 凭证 | 这台机器上会放**两个**：语雀写权限令牌 + DeepSeek key（都在 `~/.yuque/`） |
+
+建议用 systemd 托管并用 `Restart=always`——开发期用 `nohup` 跑时那个进程**自己死过一次**。
+QQ 的扫码登录要在**有终端**的地方做一次（`yqa qq login`），凭证可以拷到服务器；
+否则用 `--no-login` 明确表示「不要自动登录」，免得在 systemd 里傻等二维码。
+
 ---
 
 ## 目录

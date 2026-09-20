@@ -20,6 +20,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from . import clock
 from .yuque import DocMeta, TocNode, YuqueClient, YuqueError, doc_dir_map
 
 PREVIEW_CHARS = 300
@@ -137,7 +138,7 @@ class Changes:
 
 def take_snapshot(client: YuqueClient, *, now: datetime | None = None) -> Snapshot:
     """拉一次全量快照（目录 + 文档列表）。共 2 类请求 + 分页。"""
-    stamp = (now or datetime.now().astimezone()).isoformat()
+    stamp = (now or clock.now()).isoformat()
     toc_nodes: list[TocNode] = client.toc()
     metas: list[DocMeta] = client.docs()
 

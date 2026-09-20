@@ -15,13 +15,14 @@ import json
 import time
 from collections.abc import Iterator
 from dataclasses import dataclass, field
-from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from . import clock
+
 
 def now_iso() -> str:
-    return datetime.now().astimezone().isoformat(timespec="seconds")
+    return clock.stamp()
 
 
 @dataclass

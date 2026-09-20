@@ -37,6 +37,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from .. import clock
 from .protocol import QQBotError
 
 #: 凭证文件默认位置（与 ``~/.yuque/auth.json`` 同一目录，方便一起备份）。
@@ -268,7 +269,7 @@ def account_from_bind(
     now: datetime | None = None,
 ) -> QQBotAccount:
     """把扫码绑定结果组装成待落盘的账户。"""
-    stamp = (now or datetime.now().astimezone()).isoformat(timespec="seconds")
+    stamp = (now or clock.now()).isoformat(timespec="seconds")
     return QQBotAccount(
         app_id=app_id,
         app_secret=app_secret,

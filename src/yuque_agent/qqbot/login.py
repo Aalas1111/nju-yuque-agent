@@ -32,6 +32,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
+from .. import clock
 from .protocol import (
     BindTask,
     QQBotError,
@@ -435,7 +436,7 @@ class QrLoginManager:
 
 
 def _stamp() -> str:
-    return datetime.now().astimezone().isoformat(timespec="seconds")
+    return clock.stamp()
 
 
 __all__ = [

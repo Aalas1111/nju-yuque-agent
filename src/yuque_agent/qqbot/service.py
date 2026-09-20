@@ -31,9 +31,9 @@ import uuid
 from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime
 from typing import Any
 
+from .. import clock
 from ..config import Settings
 from ..runner import Runner
 from ..watcher import Watcher
@@ -358,7 +358,7 @@ def _summarize(result: Any, elapsed: float) -> str:
 
 
 def _stamp() -> str:
-    return datetime.now().astimezone().isoformat(timespec="seconds")
+    return clock.stamp()
 
 
 __all__ = ["DEFAULT_NOTIFY_INTERVAL", "AgentGateway", "AgentRequest", "QQBotService"]

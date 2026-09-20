@@ -19,6 +19,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 
+from . import clock
 from .agent import RunResult
 from .config import Settings
 from .runner import Runner
@@ -67,7 +68,7 @@ class Watcher:
 
     # -- 单步 -------------------------------------------------------------
     def tick(self, now: datetime | None = None) -> list[str]:
-        now = now or datetime.now().astimezone()
+        now = now or clock.now()
         lines: list[str] = []
 
         if self.archive_due(now):

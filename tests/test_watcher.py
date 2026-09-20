@@ -16,6 +16,7 @@ from datetime import datetime
 
 import pytest
 
+from yuque_agent import clock
 from yuque_agent.agent import RunResult
 from yuque_agent.config import Settings
 from yuque_agent.runner import State
@@ -23,7 +24,14 @@ from yuque_agent.watcher import Watcher
 
 
 def dt(text: str) -> datetime:
-    return datetime.fromisoformat(text).astimezone()
+    """测试里的「现在」**必须用生产时区**（Asia/Shanghai）构造。
+
+    不能写成 ``datetime.fromisoformat(text).astimezone()``——那是系统本地时区，
+    跑在 UTC 机器上的 CI 里注入的时刻就和生产路径不是同一个时区了，
+    测出来的东西和线上不是一回事。
+    """
+    parsed = datetime.fromisoformat(text)
+    return parsed.replace(tzinfo=clock.TZ) if parsed.tzinfo is None else parsed.astimezone(clock.TZ)
 
 
 @dataclass
@@ -44,7 +52,7 @@ class FakeRunner:
         # 模仿真 Runner：把水位线推进到「当前周期」
         from yuque_agent.week import cycle_targets
 
-        moment = now or datetime.now().astimezone()
+        moment = now or clock.now()
         current, _ = cycle_targets(moment)
         self.state.last_archive_title = current.title
         return RunResult(run_id=f"a{self.archives}", kind="archive", verdict="nothing_to_do")

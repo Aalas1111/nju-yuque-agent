@@ -13,13 +13,21 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 
 from tests.fakes import FakeLLM, FakeYuque, call, make_meta, make_toc
+from yuque_agent import clock
 from yuque_agent.config import Settings
 from yuque_agent.llm import LLMResponse, ToolCall, Usage
 from yuque_agent.runner import Runner
 
 
 def dt(text: str) -> datetime:
-    return datetime.fromisoformat(text).astimezone()
+    """测试里的「现在」**必须用生产时区**（Asia/Shanghai）构造。
+
+    不能写成 ``datetime.fromisoformat(text).astimezone()``——那是系统本地时区，
+    跑在 UTC 机器上的 CI 里注入的时刻就和生产路径不是同一个时区了，
+    测出来的东西和线上不是一回事。
+    """
+    parsed = datetime.fromisoformat(text)
+    return parsed.replace(tzinfo=clock.TZ) if parsed.tzinfo is None else parsed.astimezone(clock.TZ)
 
 
 def done_response() -> LLMResponse:

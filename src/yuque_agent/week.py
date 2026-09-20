@@ -23,6 +23,8 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from datetime import time as dtime
 
+from . import clock
+
 DEFAULT_START_WEEKDAY = 5
 """周期起始日：0=周一 … 5=周六 … 6=周日。"""
 
@@ -73,7 +75,7 @@ def cycle_boundary(
     > ``datetime.combine(day, dtime(hour=start_hour)).astimezone(now.tzinfo)``。
     > ``datetime.combine()`` 产出的是 **naive** datetime，而 naive 的 ``.astimezone(tz)``
     > 会**按系统本地时区**解释它——只有 ``now.tzinfo`` 恰好等于系统本地时区时才碰巧对。
-    > 生产里 ``now`` 来自 ``datetime.now().astimezone()``，正好满足这个条件，
+    > 生产里 ``now`` 来自 :func:`yuque_agent.clock.now`，正好满足这个条件，
     > 所以 live 跑和测试都看不出来；一旦调用方传进别的时区（库调用、测试注入、
     > 或将来显式指定时区）就会错到**隔壁周期**去（实测：传 UTC 会得到
     > ``0905-0911`` 而不是 ``0912-0918``）。
@@ -115,7 +117,7 @@ def parse_cycle_title(title: str, *, today: date | None = None) -> Week | None:
     match = _TITLE_RE.match((title or "").strip())
     if not match:
         return None
-    anchor = today or date.today()
+    anchor = today or clock.today()
     month, day = int(match.group(1)), int(match.group(2))
     end_month, end_day = int(match.group(3)), int(match.group(4))
     wraps = (end_month, end_day) < (month, day)

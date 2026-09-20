@@ -28,10 +28,10 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from . import clock
 from .config import Settings
 
 APPLICATION_SCHEMA_VERSION = "2.0"
@@ -67,7 +67,7 @@ class ContractError(ValueError):
 
 
 def now_iso() -> str:
-    return datetime.now().astimezone().isoformat(timespec="seconds")
+    return clock.stamp()
 
 
 # ---------------------------------------------------------------- 申请

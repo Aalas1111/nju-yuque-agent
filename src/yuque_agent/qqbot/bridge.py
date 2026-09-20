@@ -26,10 +26,10 @@ import shutil
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from .. import clock
 from .client import MessageSender
 from .config import QQBotConfig
 
@@ -256,7 +256,7 @@ class NotifyBridge:
         try:
             self.notify_dir.mkdir(parents=True, exist_ok=True)
             record = {
-                "at": datetime.now().astimezone().isoformat(timespec="seconds"),
+                "at": clock.stamp(),
                 **result.to_dict(),
             }
             with self.audit_path.open("a", encoding="utf-8") as handle:

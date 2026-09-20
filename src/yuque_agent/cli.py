@@ -25,7 +25,7 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
-from . import __version__
+from . import __version__, clock
 from . import journal as journal_mod
 from .config import DEFAULT_API_BASE, DEFAULT_HOST, DEFAULT_MODEL, DEFAULT_REPO, Settings
 from .llm import LLMClient, LLMError
@@ -112,6 +112,14 @@ def doctor(
     table.add_row("语雀 token", ok if settings.token else "[red]未找到（设 YQA_TOKEN）[/red]")
     table.add_row("LLM key", ok if settings.api_key else "[red]未找到（设 DEEPSEEK_API_KEY）[/red]")
     table.add_row("LLM 端点", f"{settings.api_base} · {settings.model}")
+    # 时区是**钉死**的：这个项目所有「今天 / 周六 00:00」都按上海算，
+    # 不看服务器设置。所以这里把两件事都显示出来，方便一眼确认。
+    server_tz = clock.server_tz_name()
+    table.add_row(
+        "时区",
+        f"[green]{clock.TZ_NAME} +08:00[/green]（写死，不受服务器设置影响；"
+        f"服务器当前 = {server_tz}）",
+    )
 
     for key, value in qq_doctor_rows(settings):
         table.add_row(key, value)

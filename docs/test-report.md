@@ -118,7 +118,7 @@ T9 那一轮，我顺手把校区写成「苏州」但教学楼仍写「仙II区
 | 2 | ~~归档功能只做了 dry-run 验证~~ | —— | **已补**：招录测试见 §7 |
 | 3 | LLM 的 `reasoning_content` 是**英文**（提示词是中文） | 工作日志的「思考」一栏是英文 | 不影响判断；待观察是否要在提示词里要求中文思考 |
 | 4 | 测试文档仍在知识库里（8 篇） | 你需要人工清一下 | `uv run python scripts/kb_sim.py clean`（按 `workspace/_sim_manifest.json` 删） |
-| 5 | 尚未部署到服务器 | —— | 服务器到位后：`uv sync && yqa run -i 60 --journal`，建议 systemd / 计划任务托管 |
+| 5 | 尚未部署到服务器 | —— | 服务器到位后照 README「部署（服务器）」一节做：`uv sync && yqa doctor && yqa run -i 60 --quiet-seconds 45 --journal`，建议 systemd + `Restart=always` 托管 |
 | 6 | 恶意批量文档攻击未做防护 | 一次 diff 灌几百篇会烧 token | 已有 `max_docs_per_run` / `max_doc_reads_per_round` 开关；初版不做 |
 
 ---

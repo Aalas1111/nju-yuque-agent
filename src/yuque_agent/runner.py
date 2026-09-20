@@ -14,6 +14,7 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
+from . import clock
 from . import journal as journal_mod
 from .agent import RunResult, run_agent, session_path_for
 from .config import Settings
@@ -102,7 +103,7 @@ def save_state(state: State, path: Path) -> None:
 
 
 def new_run_id(kind: str, *, at: datetime | None = None) -> str:
-    stamp = (at or datetime.now().astimezone()).strftime("%Y%m%d-%H%M%S")
+    stamp = clock.compact_stamp(at)
     return f"{stamp}-{kind}-{secrets.token_hex(2)}"
 
 
@@ -204,7 +205,7 @@ class Runner:
         ``rescan=True``：**无视快照**，把现有全部文档当成「新增」重新评估一遍。
         用于「state 丢了要恢复」或「换了提示词想把存量重跑一遍」。它会重发通知。
         """
-        moment = now or datetime.now().astimezone()
+        moment = now or clock.now()
         prev = self.state.snapshot
         current, changes = self.detect()
         dropped: list[DocSnapshot] = []
@@ -320,7 +321,7 @@ class Runner:
 
         ``now`` 可由调用方注入（常驻循环与测试都传固定时刻，路径才可复现）。
         """
-        moment = now or datetime.now().astimezone()
+        moment = now or clock.now()
         current = self.snapshot_now()
         payload = build_archive_instruction(
             run_id_prefix="",
@@ -462,6 +463,6 @@ def _guide_body() -> str:
 
 def current_cycle_title(today: datetime | None = None) -> str:
     """当前周期的目录名（仅用于日志/自检展示）。"""
-    anchor = today or datetime.now().astimezone()
+    anchor = today or clock.now()
     current, _ = cycle_targets(anchor)
     return current.title

@@ -13,6 +13,10 @@ dependencies = [
     "pydantic>=2.7",
     "rich>=13.7",
     "typer>=0.12",
+    # tzdata —— 把时区钉死在 Asia/Shanghai（见 clock.py）。
+    #   Linux 上 zoneinfo 用系统 /usr/share/zoneinfo，它用不上；
+    #   但 Windows 没有系统 IANA 库，没它就 import 就炸。加上它，两边行为一致。
+    "tzdata>=2024.1",
     # QQBot 接入（yqa qq …）：
     #   cryptography —— 扫码绑定后用 AES-256-GCM 解密 AppSecret（官方协议要求）
     #   qrcode[pil]  —— 把二维码画进终端 / 存 PNG / 给本地登录页当 data URL
