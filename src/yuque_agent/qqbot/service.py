@@ -216,7 +216,11 @@ class QQBotService:
             if request.kind == "archive":
                 result = self.runner.archive_once()
             else:
-                result = self.runner.poll_once(force=request.force)
+                # ``debounce=False``：``/run`` 是**人工命令**（管理员在手机上敲的），
+                # 跟 ``yqa once`` 同理——敲了就该立刻看到结果，不该被静默期吃掉后
+                # 回头告诉他「没有变化」（那是假话）。
+                # 静默期只对常驻轮询有意义（合并语雀分步投稿产生的噪声）。
+                result = self.runner.poll_once(force=request.force, debounce=False)
         except Exception as exc:  # noqa: BLE001 - 失败也要回话，别让用户干等
             self._log(f"[qqbot:serve] 执行失败：{type(exc).__name__}: {exc}")
             self._announce(request, f"跑失败了：{type(exc).__name__}: {exc}")

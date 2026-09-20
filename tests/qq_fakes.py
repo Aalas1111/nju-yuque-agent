@@ -233,12 +233,14 @@ class FakeRunner:
         self.polls = 0
         self.archives = 0
         self.force_flags: list[bool] = []
+        self.debounce_flags: list[bool] = []
 
     def poll_once(
         self, *, force: bool = False, rescan: bool = False, now: Any = None, debounce: bool = True
     ):
         self.polls += 1
         self.force_flags.append(force)
+        self.debounce_flags.append(debounce)
         if self.poll_results:
             return self.poll_results.pop(0)
         return None

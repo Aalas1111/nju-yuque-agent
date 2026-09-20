@@ -63,6 +63,9 @@ def test_request_run_is_queued_and_executed_by_worker(tmp_path: Path) -> None:
         service.stop()
         worker.join(timeout=5)
     assert runner.force_flags == [True]  # /run 是「无视 diff 也要跑」
+    # 而且必须**关掉静默期**：/run 是管理员在手机上敲的人工命令，敲了就该立刻看到结果，
+    # 不该被静默期吃掉后回头告诉他「这一轮没有变化」（那是假话）。
+    assert runner.debounce_flags == [False]
 
 
 def test_second_request_is_rejected_while_busy(tmp_path: Path) -> None:
