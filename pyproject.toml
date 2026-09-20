@@ -1,0 +1,44 @@
+[project]
+name = "yuque-agent"
+version = "0.0.0"
+description = "让 LLM 全权接管一个语雀知识库：程序只做感知与留痕，判断权归 LLM"
+readme = "README.md"
+requires-python = ">=3.12"
+license = "MIT"
+authors = [{ name = "NOVA Contributors" }]
+keywords = ["yuque", "语雀", "agent", "llm", "agent-safety"]
+
+dependencies = [
+    "httpx[socks]>=0.27",
+    "pydantic>=2.7",
+    "rich>=13.7",
+    "typer>=0.12",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.5",
+]
+
+[project.scripts]
+yqa = "yuque_agent.cli:main"
+
+[build-system]
+requires = ["uv_build>=0.9.28,<0.10.0"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+source-include = ["tests/**", "docs/**", "scripts/**"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+ignore = ["E501", "B008"]

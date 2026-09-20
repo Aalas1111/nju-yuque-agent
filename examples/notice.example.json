@@ -1,0 +1,20 @@
+{
+  "schema_version": "1.0",
+  "_comment": "一条通知事件。message 已经是渲染好的中文正文，QQ 里直接发这一条就行。见 docs/handoff.md。",
+  "seq": 12,
+  "notice_id": "9f2c1a0b",
+  "created_at": "2026-09-20T10:19:24+08:00",
+  "kind": "rejected",
+  "repo": "lqogh0/jsjysq",
+  "doc": {
+    "doc_id": 1234568,
+    "title": "社团例会",
+    "url": "https://nova.yuque.com/lqogh0/jsjysq/xxxxxxxxxxxx"
+  },
+  "member": { "name": "孙七" },
+  "summary": "「社团例会」活动时间起止写反了",
+  "message": "「社团例会」这份申请我没法提交：活动时间写的是 17:00-16:00，结束时间比开始时间还早，应该是写反了。如果确实是想 16:00 开始、17:00 结束，改成 16:00-17:00 就行。改完把文档保存一下，我会自动重新看一遍，不用再做别的。",
+  "reasons": ["活动时间 17:00-16:00，结束早于开始"],
+  "warnings": [],
+  "extra": {}
+}

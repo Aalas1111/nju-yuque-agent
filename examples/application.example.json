@@ -1,0 +1,51 @@
+{
+  "schema_version": "2.0",
+  "application_id": "2026-09-23-1234567",
+  "_comment": "一份「要素齐备」的教室借用申请。activity 对象就是 crb 的 Activity 原样，下游可直接吃。见 docs/handoff.md。",
+  "created_at": "2026-09-20T10:18:40+08:00",
+  "source": {
+    "repo": "lqogh0/jsjysq",
+    "doc_id": 1234567,
+    "title": "新生见面会",
+    "author": "张三",
+    "dir": "0919-0925",
+    "content_sha256": "25dce296a459…"
+  },
+  "activity": {
+    "title": "新生见面会",
+    "date": "2026-09-23",
+    "period": "7-8",
+    "people": 25,
+    "campus": "3",
+    "building": "12",
+    "room_type": null,
+    "preferred_room": "仙I-201"
+  },
+  "raw": {
+    "activity_name": "新生见面会",
+    "date": "2026-09-23",
+    "start": "16:10",
+    "end": "18:00",
+    "campus": "仙林",
+    "building": "仙II区",
+    "room": "仙I-201",
+    "people": 25
+  },
+  "derived": {
+    "campus_name": "仙林",
+    "campus_code": "3",
+    "ksjc": 7,
+    "jsjc": 8,
+    "building_code": "12",
+    "building_note": "教学楼「仙II区」→ JXLDM=12",
+    "people_source": "document"
+  },
+  "agent": {
+    "run_id": "20260920-101834-polling-7d44",
+    "verdict": "accepted",
+    "confidence": "high",
+    "notes": ["教室未填写，按随机分配处理"]
+  },
+  "normalizations": ["「下午4点到6点」→ 16:00-18:00"],
+  "warnings": []
+}

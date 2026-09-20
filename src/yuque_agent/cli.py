@@ -1,0 +1,405 @@
+"""命令行入口。
+
+常用：
+
+```bash
+yqa doctor                      # 自检：token / 权限 / 知识库 / 模型 / 提示词
+yqa once                        # 跑一轮轮询（没有变化就什么都不做）
+yqa once --force                # 无视 diff，强制唤醒一次
+yqa archive                     # 手动跑一次归档会话
+yqa run                         # 常驻轮询 + 每周六自动归档
+yqa sessions                    # 看本地留了哪些 run
+yqa render <run_id>             # 把某次 run 的 session 渲染成人话
+```
+"""
+
+from __future__ import annotations
+
+import json
+import sys
+from pathlib import Path
+from typing import Annotated
+
+import typer
+from rich.console import Console
+from rich.panel import Panel
+from rich.table import Table
+
+from . import __version__
+from . import journal as journal_mod
+from .config import DEFAULT_API_BASE, DEFAULT_HOST, DEFAULT_MODEL, DEFAULT_REPO, Settings
+from .llm import LLMClient, LLMError
+from .outputs import build_plan_json
+from .prompts import PromptLoader
+from .runner import Runner, new_run_id
+from .watcher import Watcher
+from .yuque import YuqueClient, YuqueError
+
+
+def _force_utf8() -> None:
+    """Windows 控制台默认 GBK，打中文/符号会 UnicodeEncodeError；尽力切到 UTF-8。"""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[union-attr]
+        except (AttributeError, ValueError):
+            pass
+
+
+_force_utf8()
+
+app = typer.Typer(
+    add_completion=False,
+    help="让 LLM 全权接管一个语雀知识库：程序只做感知与留痕，判断权归 LLM。",
+)
+console = Console()
+
+
+def _settings(
+    repo: str,
+    workspace: Path,
+    dry_run: bool,
+    journal: bool,
+    model: str,
+    interval: int,
+    verbose: bool,
+) -> Settings:
+    settings = Settings.from_env(
+        repo=repo,
+        workspace=workspace,
+        model=model,
+        interval=interval,
+        dry_run=dry_run,
+        journal=journal,
+        verbose=verbose,
+    )
+    return settings
+
+
+RepoOpt = Annotated[str, typer.Option("--repo", "-r", help="知识库 namespace")]
+
+
+@app.command()
+def version() -> None:
+    """打印版本。"""
+    console.print(f"yuque-agent {__version__}")
+
+
+@app.command()
+def doctor(
+    repo: RepoOpt = DEFAULT_REPO,
+    workspace: Annotated[Path, typer.Option("--workspace", "-w")] = Path("workspace"),
+    model: Annotated[str, typer.Option("--model")] = DEFAULT_MODEL,
+) -> None:
+    """自检：凭证、权限、知识库连通、提示词、工作区。"""
+    settings = _settings(repo, workspace, False, False, model, 60, False)
+    table = Table(title="yuque-agent 自检", show_lines=False)
+    table.add_column("项", style="bold")
+    table.add_column("结果")
+
+    ok = "[green]OK[/green]"
+    table.add_row("python", sys.version.split()[0])
+    table.add_row("repo", settings.repo)
+    table.add_row("workspace", str(settings.root.resolve()))
+    table.add_row("语雀 token", ok if settings.token else "[red]未找到（设 YQA_TOKEN）[/red]")
+    table.add_row("LLM key", ok if settings.api_key else "[red]未找到（设 DEEPSEEK_API_KEY）[/red]")
+    table.add_row("LLM 端点", f"{settings.api_base} · {settings.model}")
+
+    for kind in ("polling", "archive"):
+        try:
+            PromptLoader().load(kind)
+            table.add_row(f"提示词 {kind}", ok)
+        except Exception as exc:  # noqa: BLE001
+            table.add_row(f"提示词 {kind}", f"[red]{exc}[/red]")
+
+    if settings.token:
+        try:
+            with YuqueClient(
+                host=settings.host, token=settings.token, repo=settings.repo
+            ) as client:
+                info = client.repo_info()
+                table.add_row("知识库", f"{ok} {info.get('name')}（{info.get('items_count')} 篇）")
+                table.add_row("scope", client.scopes or "(未返回)")
+                toc = client.toc()
+                docs = client.docs()
+                table.add_row("目录节点 / 文档", f"{len(toc)} / {len(docs)}")
+                scopes = {s.strip() for s in (client.scopes or "").split(",")}
+                can_write = bool(scopes & {"repo", "doc", "group"})
+                table.add_row("写权限", ok if can_write else "[yellow]无（归档会失败）[/yellow]")
+        except YuqueError as exc:
+            table.add_row("知识库", f"[red]{exc}[/red]")
+
+    console.print(table)
+
+
+def _clients(settings: Settings) -> tuple[YuqueClient, LLMClient]:
+    return (
+        YuqueClient(
+            host=settings.host, token=settings.token, repo=settings.repo, dry_run=settings.dry_run
+        ),
+        LLMClient(base_url=settings.api_base, api_key=settings.api_key, model=settings.model),
+    )
+
+
+@app.command()
+def once(
+    repo: RepoOpt = DEFAULT_REPO,
+    force: Annotated[bool, typer.Option("--force", help="无视 diff，强制唤醒 LLM")] = False,
+    rescan: Annotated[
+        bool,
+        typer.Option("--rescan", help="无视快照，把现有全部文档重新评估一遍（会重发通知）"),
+    ] = False,
+    workspace: Annotated[Path, typer.Option("--workspace", "-w")] = Path("workspace"),
+    dry_run: Annotated[bool, typer.Option("--dry-run", help="所有写操作只记录不执行")] = False,
+    journal: Annotated[
+        bool, typer.Option("--journal", help="把 session 写回语雀《工作日志》")
+    ] = False,
+    model: Annotated[str, typer.Option("--model")] = DEFAULT_MODEL,
+    quiet: Annotated[bool, typer.Option("--quiet", "-q", help="没变化时不打印")] = False,
+) -> None:
+    """跑一轮轮询。没有变化 → 什么都不做（0 token）。"""
+    settings = _settings(repo, workspace, dry_run, journal, model, 60, False)
+    client, llm = _clients(settings)
+    try:
+        runner = Runner(settings=settings, client=client, llm=llm)
+        result = runner.poll_once(force=force, rescan=rescan)
+    finally:
+        client.close()
+        llm.close()
+
+    if result is None:
+        if not quiet:
+            console.print("[dim]i 知识库没有变化，未唤醒 LLM。[/dim]")
+        return
+    _print_result(result)
+
+
+@app.command()
+def archive(
+    repo: RepoOpt = DEFAULT_REPO,
+    workspace: Annotated[Path, typer.Option("--workspace", "-w")] = Path("workspace"),
+    dry_run: Annotated[bool, typer.Option("--dry-run", help="所有写操作只记录不执行")] = False,
+    journal: Annotated[
+        bool, typer.Option("--journal", help="把 session 写回语雀《工作日志》")
+    ] = False,
+    model: Annotated[str, typer.Option("--model")] = DEFAULT_MODEL,
+) -> None:
+    """手动跑一次归档会话（带结构写工具的那个）。"""
+    settings = _settings(repo, workspace, dry_run, journal, model, 60, False)
+    client, llm = _clients(settings)
+    try:
+        runner = Runner(settings=settings, client=client, llm=llm)
+        result = runner.archive_once()
+    finally:
+        client.close()
+        llm.close()
+    _print_result(result)
+
+
+@app.command()
+def run(
+    repo: RepoOpt = DEFAULT_REPO,
+    interval: Annotated[int, typer.Option("--interval", "-i", help="轮询间隔（秒）")] = 60,
+    quiet_seconds: Annotated[
+        int | None,
+        typer.Option(
+            "--quiet-seconds",
+            help="静默期（秒）：发现变化后先不叫 LLM，等知识库安静这么久再一次性处理；0=关闭",
+        ),
+    ] = None,
+    workspace: Annotated[Path, typer.Option("--workspace", "-w")] = Path("workspace"),
+    dry_run: Annotated[bool, typer.Option("--dry-run")] = False,
+    journal: Annotated[bool, typer.Option("--journal")] = False,
+    model: Annotated[str, typer.Option("--model")] = DEFAULT_MODEL,
+    max_ticks: Annotated[
+        int | None, typer.Option("--max-ticks", help="跑几轮就退出（自测用）")
+    ] = None,
+) -> None:
+    """常驻：轮询 + 每周六 00:00 自动归档。
+
+    默认开启**静默期合并**：语雀手工建一篇文档会分几步产生变更
+    （无标题空文档 → 改标题 → 写正文保存），不合并的话一篇文档就要唤醒好几次 LLM。
+    """
+    settings = _settings(repo, workspace, dry_run, journal, model, interval, False)
+    if quiet_seconds is not None:
+        settings.quiet_seconds = quiet_seconds
+    client, llm = _clients(settings)
+    try:
+        runner = Runner(settings=settings, client=client, llm=llm)
+        Watcher(runner=runner, settings=settings, log=console.print).run_forever(
+            max_ticks=max_ticks
+        )
+    except KeyboardInterrupt:
+        console.print("\n[dim]已停止。[/dim]")
+    finally:
+        client.close()
+        llm.close()
+
+
+@app.command()
+def sessions(
+    workspace: Annotated[Path, typer.Option("--workspace", "-w")] = Path("workspace"),
+    repo: RepoOpt = DEFAULT_REPO,
+) -> None:
+    """列出本地留档的所有 run。"""
+    settings = _settings(repo, workspace, False, False, DEFAULT_MODEL, 60, False)
+    runs = sorted(settings.runs_dir.glob("*/session.jsonl")) if settings.runs_dir.exists() else []
+    if not runs:
+        console.print("[dim]还没有任何 run。[/dim]")
+        return
+    table = Table(title=f"{len(runs)} 个 run")
+    table.add_column("run_id")
+    table.add_column("大小")
+    table.add_column("路径")
+    for path in runs:
+        table.add_row(path.parent.name, f"{path.stat().st_size} B", str(path.parent))
+    console.print(table)
+
+
+@app.command()
+def render(
+    run_id: Annotated[str, typer.Argument(help="run_id 或 session.jsonl 的路径")],
+    workspace: Annotated[Path, typer.Option("--workspace", "-w")] = Path("workspace"),
+    repo: RepoOpt = DEFAULT_REPO,
+    out: Annotated[Path | None, typer.Option("--out", "-o", help="写入文件而不是打印")] = None,
+) -> None:
+    """把某次 run 的 session 渲染成人话。"""
+    settings = _settings(repo, workspace, False, False, DEFAULT_MODEL, 60, False)
+    path = Path(run_id)
+    if not path.is_file():
+        path = settings.runs_dir / run_id / "session.jsonl"
+    if not path.is_file():
+        console.print(f"[red]找不到 session：{run_id}[/red]")
+        raise typer.Exit(1)
+    text = journal_mod.render_session(path)
+    if out:
+        out.write_text(text, encoding="utf-8")
+        console.print(f"已写入 {out}")
+    else:
+        console.print(text)
+
+
+@app.command()
+def journal(
+    run_id: Annotated[str, typer.Argument(help="run_id")],
+    repo: RepoOpt = DEFAULT_REPO,
+    workspace: Annotated[Path, typer.Option("--workspace", "-w")] = Path("workspace"),
+    dry_run: Annotated[bool, typer.Option("--dry-run")] = False,
+) -> None:
+    """把某次 run 的 session 写回语雀《工作日志》。"""
+    settings = _settings(repo, workspace, dry_run, True, DEFAULT_MODEL, 60, False)
+    path = settings.runs_dir / run_id / "session.jsonl"
+    if not path.is_file():
+        console.print(f"[red]找不到 session：{path}[/red]")
+        raise typer.Exit(1)
+    with YuqueClient(
+        host=settings.host, token=settings.token, repo=settings.repo, dry_run=settings.dry_run
+    ) as client:
+        outcome = journal_mod.journal_or_warn(client, settings, path)
+    if outcome.get("ok"):
+        console.print(f"[green][OK] 已写入《{settings.journal_title}》[/green] {outcome}")
+    else:
+        console.print(f"[red][FAIL] {outcome.get('error')}[/red]")
+        raise typer.Exit(1)
+
+
+@app.command("export-plan")
+def export_plan(
+    repo: RepoOpt = DEFAULT_REPO,
+    workspace: Annotated[Path, typer.Option("--workspace", "-w")] = Path("workspace"),
+    out: Annotated[Path | None, typer.Option("--out", "-o", help="写入文件；默认打印")] = None,
+    defaults: Annotated[str, typer.Option("--defaults", help="defaults 对象的 JSON 字符串")] = "",
+) -> None:
+    """把 `outbox/applications/` 汇总成下游可直接吃的 `plan.json`。
+
+    下游用法（以 crb 为例）：
+
+        yqa export-plan -o plan.json --defaults '{"JYDWDM":"400760","JSJYLXDM":"02"}'
+        crb plan --file plan.json          # 先看方案
+        crb plan --file plan.json --save   # 再存草稿
+    """
+    settings = _settings(repo, workspace, False, False, DEFAULT_MODEL, 60, False)
+    parsed: dict = {}
+    if defaults:
+        try:
+            parsed = json.loads(defaults)
+        except ValueError as exc:
+            console.print(f"[red]--defaults 不是合法 JSON：{exc}[/red]")
+            raise typer.Exit(1) from exc
+    plan = build_plan_json(settings, defaults=parsed)
+    text = json.dumps(plan, ensure_ascii=False, indent=2)
+    if out:
+        out.write_text(text, encoding="utf-8")
+        console.print(f"[green]已写入 {out}[/green]（{len(plan['activities'])} 条活动）")
+    else:
+        console.print_json(text)
+
+
+@app.command("sync-guide")
+def sync_guide(
+    repo: RepoOpt = DEFAULT_REPO,
+    dry_run: Annotated[bool, typer.Option("--dry-run")] = False,
+) -> None:
+    """把 `kb/guide.md` 上传/更新为知识库里的《指导文档（必读）》。"""
+    settings = _settings(repo, Path("workspace"), dry_run, False, DEFAULT_MODEL, 60, False)
+    body = (Path(__file__).parent / "kb" / "guide.md").read_text(encoding="utf-8")
+    title = "指导文档（必读）"
+    with YuqueClient(
+        host=settings.host, token=settings.token, repo=settings.repo, dry_run=settings.dry_run
+    ) as client:
+        existing = next((m for m in client.docs() if m.title == title), None)
+        if existing is None:
+            if settings.dry_run:
+                console.print("[yellow]dry-run：将新建《指导文档（必读）》[/yellow]")
+                return
+            created = client.create_doc(title=title, body=body)
+            doc_id = int((created or {}).get("id") or 0)
+            if doc_id:
+                client.toc_add(doc_ids=[doc_id])
+            console.print(f"[green][OK] 已新建《{title}》（doc_id={doc_id}）[/green]")
+        else:
+            if settings.dry_run:
+                console.print(
+                    f"[yellow]dry-run：将更新《{title}》（doc_id={existing.doc_id}）[/yellow]"
+                )
+                return
+            client.update_doc(existing.doc_id, body=body)
+            console.print(f"[green][OK] 已更新《{title}》（doc_id={existing.doc_id}）[/green]")
+
+
+def _print_result(result) -> None:
+    payload = result.to_dict()
+    usage = payload["usage"]
+    head = f"{result.verdict or '—'} · {result.summary or '(无摘要)'}"
+    console.print(Panel(head, title=f"{result.kind} · {result.run_id}", style="green"))
+    console.print(
+        f"steps={payload['steps']} · tools={payload['tool_calls']} · "
+        f"tokens(in/out)={usage['in']}/{usage['out']} · stop={payload['stop_reason']}"
+    )
+    if payload["emitted"]:
+        console.print("产出：")
+        for item in payload["emitted"]:
+            console.print(f"  · {item.get('type')} → {item.get('path') or item.get('notice_id')}")
+    if payload["kb_writes"]:
+        console.print("语雀写操作：")
+        for item in payload["kb_writes"]:
+            console.print(f"  · {item}")
+    if payload.get("journal"):
+        console.print(f"工作日志：{payload['journal']}")
+    if payload["error"]:
+        console.print(f"[red][!] {payload['error']}[/red]")
+    console.print(f"[dim]session: {payload['session_path']}[/dim]")
+
+
+def main() -> None:
+    try:
+        app()
+    except (YuqueError, LLMError) as exc:
+        console.print(f"[red]{type(exc).__name__}: {exc}[/red]")
+        raise SystemExit(1) from exc
+
+
+if __name__ == "__main__":
+    main()
+
+
+__all__ = ["app", "main", "new_run_id", "DEFAULT_HOST", "DEFAULT_API_BASE"]
