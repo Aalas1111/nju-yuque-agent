@@ -19,17 +19,26 @@ from yuque_agent import tools
 from yuque_agent.config import Settings
 
 
-def toc_node(node_type: str, title: str, path: str, doc_id: int = 0, depth: int = 1) -> dict:
-    """目录树节点——**这里的形状要和变更报告里的 ``toc`` 一致**（dict，不是 TocNode）。
+def toc_node(
+    node_type: str,
+    title: str,
+    path: str,
+    doc_id: int = 0,
+    depth: int = 1,
+    parent: str = "",
+) -> dict:
+    """目录树节点——**形状要和变更报告里的 ``toc`` 一致**（dict，不是 TocNode）。
 
-    `_doc_dirs` 就是从它身上算「文档在哪个目录」的。
+    `_doc_dirs` 靠 **`parent_uuid`** 算「文档在哪个目录」，
+    而不是去切 `path` 字符串（标题里可以带 `/`，切不得）。
     """
     return {
-        "uuid": f"u-{path}",
+        "uuid": f"u-{title}",
         "type": node_type,
         "title": title,
         "depth": depth,
         "path": path,
+        "parent_uuid": f"u-{parent}" if parent else "",
         "doc_id": doc_id,
     }
 
@@ -43,16 +52,19 @@ def ctx(tmp_path) -> Ctx:
         toc_node("DOC", "指导文档（必读）", "指导文档（必读）", 100),
         toc_node("DOC", "工作日志", "工作日志", 101),
         toc_node("TITLE", "0919-0925", "0919-0925"),
-        toc_node("DOC", "新生见面会", "0919-0925/新生见面会", 1, depth=2),
+        toc_node("DOC", "新生见面会", "0919-0925/新生见面会", 1, depth=2, parent="0919-0925"),
+        # 标题里带 `/` 的文档（真机上真的出现过）
+        toc_node("DOC", "带/斜杠的标题", "0919-0925/带/斜杠的标题", 3, depth=2, parent="0919-0925"),
         toc_node("TITLE", "归档区", "归档区"),
-        toc_node("TITLE", "0912-0918", "归档区/0912-0918", depth=2),
-        toc_node("DOC", "读书会", "归档区/0912-0918/读书会", 2, depth=3),
+        toc_node("TITLE", "0912-0918", "归档区/0912-0918", depth=2, parent="归档区"),
+        toc_node("DOC", "读书会", "归档区/0912-0918/读书会", 2, depth=3, parent="0912-0918"),
     ]
     metas = [
         make_meta(100, "指导文档（必读）", updated_at="2026-09-20T01:00:00Z"),
         make_meta(101, "工作日志", updated_at="2026-09-20T02:00:00Z"),
         make_meta(1, "新生见面会", updated_at="2026-09-20T03:00:00Z"),
         make_meta(2, "读书会", updated_at="2026-09-20T04:00:00Z"),
+        make_meta(3, "带/斜杠的标题", updated_at="2026-09-20T05:00:00Z"),
     ]
     return Ctx.build(settings, toc=toc, client_kwargs={"doc_metas": metas})
 
@@ -64,7 +76,24 @@ def titles(result: dict) -> set[str]:
 def test_lists_only_docs_in_that_directory(ctx: Ctx) -> None:
     result = tools.execute(ctx.ctx, "dir_list", {"dir": "0919-0925"})
     assert result["ok"] is True
-    assert titles(result["result"]) == {"新生见面会"}, "根目录的文档不该出现在周期目录里（曾经会）"
+    assert titles(result["result"]) == {"新生见面会", "带/斜杠的标题"}, (
+        "根目录的文档不该出现在周期目录里（曾经会）"
+    )
+
+
+def test_title_containing_a_slash_does_not_break_the_dir(ctx: Ctx) -> None:
+    """**回归**：文档标题里带 ``/`` 时，不能靠切 ``path`` 字符串算目录。
+
+    真机上真出现过：有人把文档改名成「测试1（我不申请了/(ㄒoㄒ)/~~）」，
+    于是 ``path.split("/")[:-1]`` 得到的目录是
+    ``0919-0925/测试1（我不申请了/(ㄒoㄒ)`` —— 这篇文档从此谁问都查不到，
+    `yqa reset-test-data` 也因此漏掉了它。
+    现在改为看 ``parent_uuid``，与 :func:`yuque.doc_dir_map` 同一套算法。
+    """
+    dirs = tools._doc_dirs(ctx.ctx)
+    assert dirs[3] == "0919-0925", f"带斜杠的标题被算到了 {dirs[3]!r}"
+    result = tools.execute(ctx.ctx, "dir_list", {"dir": "0919-0925"})
+    assert "带/斜杠的标题" in titles(result["result"])
 
 
 def test_nested_dir_does_not_leak_root_docs(ctx: Ctx) -> None:

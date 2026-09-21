@@ -163,6 +163,11 @@ def take_snapshot(client: YuqueClient, *, now: datetime | None = None) -> Snapsh
             "title": n.title,
             "depth": n.depth,
             "path": n.path,
+            # 带上父子关系：算「文档在哪个目录」必须用它，**不能去切 ``path`` 字符串**。
+            # 实测踩到过：有人的文档标题里带 ``/``（「测试1（我不申请了/(ㄒoㄒ)/~~）」），
+            # 按 ``path.split('/')`` 切出来的目录就是垃圾，于是工具把这篇文档
+            # 当成不在任何目录里。
+            "parent_uuid": n.parent_uuid,
             "doc_id": n.doc_id,
         }
         for n in toc_nodes

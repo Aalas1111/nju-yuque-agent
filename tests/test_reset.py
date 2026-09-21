@@ -33,7 +33,7 @@ def build_client() -> FakeYuque:
         ("测试乙", "DOC", 2, "0919-0925"),
         ("归档区", "TITLE", 0, ""),
         ("0912-0918", "TITLE", 0, "归档区"),
-        ("老申请", "DOC", 3, "归档区/0912-0918"),
+        ("老申请", "DOC", 3, "0912-0918"),
     )
     return FakeYuque(
         toc_nodes=toc,

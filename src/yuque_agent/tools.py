@@ -189,21 +189,26 @@ def _dir_list(ctx: RunContext, args: dict[str, Any]) -> Any:
 
 
 def _doc_dirs(ctx: RunContext) -> dict[int, str]:
-    """``doc_id -> 所在目录路径``，从本轮目录树直接算（不额外打接口）。
+    """``doc_id -> 所在目录路径``（根目录是空串）。
 
-    ``ctx.toc`` 里的节点带：
+    实现上和 :func:`yuque.doc_dir_map` 是同一套算法：**看节点的 ``parent_uuid``**，
+    而不是去切 ``path`` 字符串。
 
-    * 目录（TITLE）：``path`` 就是它自己，如 ``归档区/0912-0918``；
-    * 文档（DOC）：``path`` 形如 ``父目录/文档名``，所以去掉最后一段就是所在目录；
-      根目录下的文档 ``path`` 就是文档名本身，去最后一段后剩空串（= 根目录）。
+    为什么不切 ``path``：文档的 ``path`` 是「父目录/文档标题」拼出来的，
+    而**标题里可以带 ``/``**。实测踩到过：有人的文档叫
+    「测试1（我不申请了/(ㄒoㄒ)/~~）」，按 ``path.split("/")[:-1]`` 切出来的目录
+    是 ``0919-0925/测试1（我不申请了/(ㄒoㄒ)`` —— 于是这篇文档既不在周期目录里、
+    也不在任何地方，谁问都查不到它。
     """
+    by_uuid = {str(item.get("uuid") or ""): item for item in ctx.toc}
     out: dict[int, str] = {}
     for item in ctx.toc:
         doc_id = int(item.get("doc_id") or 0)
         if not doc_id:
             continue
-        parts = str(item.get("path") or "").split("/")
-        out[doc_id] = "/".join(parts[:-1])
+        parent = by_uuid.get(str(item.get("parent_uuid") or ""))
+        parent_is_dir = bool(parent) and parent.get("type") == "TITLE"
+        out[doc_id] = str(parent.get("path") or "") if parent_is_dir else ""
     return out
 
 

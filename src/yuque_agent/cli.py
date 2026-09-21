@@ -36,7 +36,7 @@ from .qqbot.cli import qq_app, qq_doctor_rows
 from .runner import Runner, load_state, new_run_id, save_state
 from .watcher import Watcher
 from .week import cycle_targets
-from .yuque import YuqueClient, YuqueError
+from .yuque import YuqueClient, YuqueError, doc_dir_map
 
 
 def _force_utf8() -> None:
@@ -470,13 +470,12 @@ _SYSTEM_DOC_TITLES = ("指导文档（必读）", "指导文档")
 
 
 def _doc_dir_map(client: YuqueClient) -> dict[int, str]:
-    """``doc_id -> 所在目录路径``（根目录是空串）。跟 tools._doc_dirs 一个算法。"""
-    out: dict[int, str] = {}
-    for node in client.toc():
-        if not node.doc_id:
-            continue
-        out[int(node.doc_id)] = "/".join(str(node.path or "").split("/")[:-1])
-    return out
+    """``doc_id -> 所在目录路径``（根目录是空串）。
+
+    直接用 :func:`yuque.doc_dir_map`（它看 ``parent_uuid``，不切路径字符串——
+    文档标题里可以带 ``/``）。
+    """
+    return doc_dir_map(client.toc())
 
 
 def _wipe_dir(path: Path, *, pattern: str = "*.json") -> list[str]:
