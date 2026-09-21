@@ -170,7 +170,21 @@ def test_yes_clears_local_artifacts(env: dict[str, Any]) -> None:
     assert list((settings.notify_dir / "pending").glob("*.json")) == []
     assert (settings.notify_dir / ".seq").read_text() == "0"
     assert (settings.notify_dir / "outbox.jsonl").read_text() == ""
-    assert list(settings.notes_dir.glob("*.json")) == []
+    assert list(settings.notes_dir.iterdir()) == []
+
+
+def test_notes_of_any_extension_are_cleared(env: dict[str, Any]) -> None:
+    """**回归**：notes/ 是 LLM 的跨轮记忆，格式由它自己定。
+
+    实测它写过 ``notes/accepted_docs.md``（markdown，不是 json）。
+    重置时如果只删 ``*.json``，就会把「哪些文档已受理过」的记忆留着——
+    下次跑的时候 agent 会以为那些申请还在。
+    """
+    (env["settings"].notes_dir / "accepted_docs.md").write_text("# 已受理\n", encoding="utf-8")
+
+    run_reset(env, "--yes")
+
+    assert list(env["settings"].notes_dir.iterdir()) == [], "notes/ 里啥都不该剩"
 
 
 def test_runs_are_kept_by_default(env: dict[str, Any]) -> None:

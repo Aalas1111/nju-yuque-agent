@@ -566,7 +566,10 @@ def reset_test_data(
             ("outbox/notify/done", settings.notify_dir / "done", "*.json"),
             ("outbox/notify/unrouted", settings.notify_dir / "unrouted", "*.json"),
             ("outbox/notify/failed", settings.notify_dir / "failed", "*.json"),
-            ("notes", settings.notes_dir, "*.json"),
+            # notes/ 是 LLM 的跨轮记忆，**格式由它自己定**（实测写过 .md）。
+            # 所以这里不能只删 *.json——否则测试文档的记忆会留着，
+            # 下次跑的时候 agent 会以为那些申请还在。
+            ("notes", settings.notes_dir, "*"),
         ]
         console.print("\n[bold]二、本地将清空的产出[/bold]")
         for label, path, pattern in local_plan:
