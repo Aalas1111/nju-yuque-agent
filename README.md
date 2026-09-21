@@ -79,10 +79,11 @@
 
 | 文件 | 给谁看 |
 |---|---|
+| [`docs/deploy.md`](docs/deploy.md) | **给运维**：机器要求、目录布局、systemd 单元、运维注意、上线验收清单 |
 | [`docs/handoff.md`](docs/handoff.md) | **给合作方**：两个对外契约（申请 JSON / 通知事件）+ 本 agent 明确的「不做」清单 + 待确认事项 |
 | [`docs/design.md`](docs/design.md) | **给维护者**：架构、周期定义、工具分级、提示词写法、踩过的坑 |
 | [`docs/qqbot.md`](docs/qqbot.md) | **给 QQBot 接入方**：扫码登录全流程（含本地 HTTP 接口）、通知投递、入站命令的能力边界、故障排查 |
-| [`docs/test-report.md`](docs/test-report.md) | **给验收者**：五轮端到端测试的证据、发现的 7 个 bug、复现方式 |
+| [`docs/test-report.md`](docs/test-report.md) | **给验收者**：六轮端到端测试（含真服务器部署）的证据、发现的 8 个 bug、复现方式 |
 | [`examples/`](examples/) | 申请 / 通知 / `plan.json` / `qqbot.json` 的样例（脱敏），直接看格式最快 |
 
 ---
@@ -173,6 +174,9 @@ uv run yqa run --interval 60 --quiet-seconds 45 --journal   # 要 QQ 就换 yqa 
 | 常驻 | 要能长期挂进程（systemd / supervisor / screen），**不能用 serverless** |
 | 时钟 | NTP 正常（归档是时钟驱动的） |
 | 凭证 | 这台机器上会放**两个**：语雀写权限令牌 + DeepSeek key（都在 `~/.yuque/`） |
+
+> **完整的部署步骤（目录布局 / systemd 单元 / 运维注意 / 验收清单）见
+> [`docs/deploy.md`](docs/deploy.md)。**
 
 建议用 systemd 托管并用 `Restart=always`——开发期用 `nohup` 跑时那个进程**自己死过一次**。
 QQ 的扫码登录要在**有终端**的地方做一次（`yqa qq login`），凭证可以拷到服务器；
