@@ -145,6 +145,7 @@ uv run yqa qq serve               # 常驻：轮询语雀 + 投递通知 + 收 Q
 * **通知投递**遵守 [`docs/handoff.md`](docs/handoff.md) §3 的目录协议：
   按 `seq` 升序发；发了就移进 `done/`；认不出人的进 `unrouted/`；坏文件进 `failed/`；
   发送失败留在 `pending/` 下轮重试（至少一次）。
+* **运行中的播报**：一次 run 里**只有助手文本会成为消息**（一段一条，不流式），工具调用只用来回答「现在在干什么」；上一条消息之后 `--progress-idle` 秒（默认 60）没动静就发一条「⏳ 正在进行：…」保活。同一条 `msg_id` 用递增 `msg_seq` 连发。`--no-progress` 可关。
 * **入站命令**默认拒绝：`qqbot.json` 里的 `inbound.allow` 为空 = 谁都不能用命令；
   `/run` 与 `/archive` 只有 `inbound.admins` 能用，并且限流 + 单飞。
   任何自由文本都不会被送去问 LLM。

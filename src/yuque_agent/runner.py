@@ -187,6 +187,7 @@ class Runner:
         rescan: bool = False,
         now: datetime | None = None,
         debounce: bool = True,
+        observer: Any = None,
     ) -> RunResult | None:
         """跑一轮轮询。没有变化、或还在静默期内，就返回 ``None``（静默，0 token）。
 
@@ -313,10 +314,10 @@ class Runner:
                 "本轮的**唯一目的就是把产物重新生成一遍**。"
                 "（这会导致重复通知，所以 rescan 不是日常命令。）"
             )
-        return self._execute(run_id=run_id, kind="polling", payload=report)
+        return self._execute(run_id=run_id, kind="polling", payload=report, observer=observer)
 
     # -- 归档入口 ---------------------------------------------------------
-    def archive_once(self, *, now: datetime | None = None) -> RunResult:
+    def archive_once(self, *, now: datetime | None = None, observer: Any = None) -> RunResult:
         """时钟驱动：与轮询无关，**即使知识库一个字都没变也会跑**。
 
         ``now`` 可由调用方注入（常驻循环与测试都传固定时刻，路径才可复现）。
@@ -332,7 +333,7 @@ class Runner:
         )
         run_id = new_run_id("archive", at=moment)
         payload["run_id"] = run_id
-        result = self._execute(run_id=run_id, kind="archive", payload=payload)
+        result = self._execute(run_id=run_id, kind="archive", payload=payload, observer=observer)
 
         self.state.last_archive_at = moment.isoformat(timespec="seconds")
         self.state.last_archive_title = str(payload.get("cycle_title") or "")
@@ -340,7 +341,9 @@ class Runner:
         return result
 
     # -- 执行 -------------------------------------------------------------
-    def _execute(self, *, run_id: str, kind: str, payload: dict[str, Any]) -> RunResult:
+    def _execute(
+        self, *, run_id: str, kind: str, payload: dict[str, Any], observer: Any = None
+    ) -> RunResult:
         self.settings.ensure_dirs()
         if self.settings.dry_run:
             # dry-run 下写操作不会真的生效，而 agent 会去读回来确认 ——
@@ -378,6 +381,7 @@ class Runner:
                 session=session,
                 max_steps=self.settings.max_steps,
                 max_tool_calls=self.settings.max_tool_calls,
+                observer=observer,
             )
 
         (run_dir / "result.json").write_text(

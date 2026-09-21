@@ -337,6 +337,45 @@ QQ 群/私聊 ──" /run"──▶ 网关(WS) ──▶ events.parse_event ─
 
 ---
 
+### 4.5 运行中的播报：分段发送 + 保活心跳
+
+QQ 的开放平台**不是流式接口**：没有 token 级推送，一次 REST 调用就是一条完整消息。
+所以这里不用参考实现里那套 `StreamSession`（C2C 打字机，走另一组 `stream_messages` 接口），
+而是按接口真实形状来：
+
+| 规则 | 说明 |
+|---|---|
+| **一段助手输出 = 一条消息** | LLM 一次回复的 `content` 本来就是非流式拿到完整的，拿全了整段发出去，再继续下一步 |
+| **工具调用不发消息** | 它只用来回答「现在在干什么」，喂给保活文案 |
+| **空闲超时发保活** | 上一条消息之后 `--progress-idle` 秒（默认 60）没动静，就发 `⏳ 正在进行：<当前工具/步骤>` |
+| **同一条 `msg_id`、`msg_seq` 递增** | 这是 QQ 被动回复窗口内连发多条的正规姿势；窗口过期才需要退回主动消息 |
+
+一次 `/run` 在 QQ 里长这样（离线演示，`msg_id` 全程不变）：
+
+```
+[+0.0s] msg_seq=1  收到，已排队跑一轮轮询；跑完我把结论发给你。
+[+0.0s] msg_seq=2  我先读一下这篇申请文档。
+[+0.6s] msg_seq=3  ⏳ 正在进行：调用 doc_read
+[+1.2s] msg_seq=4  ⏳ 正在进行：调用 emit_application
+[+1.4s] msg_seq=5  要素齐了，我已经产出申请，交给负责提交的同学。
+[+1.4s] msg_seq=6  跑完了：受理了《新生见面会》…
+```
+
+开关（都在 `yqa qq serve` 上）：
+
+```bash
+uv run yqa qq serve                          # 默认：分段播报 + 60s 保活
+uv run yqa qq serve --progress-idle 30       # 30 秒没动静就报一次「正在进行」
+uv run yqa qq serve --progress-idle 0        # 关保活，只分段
+uv run yqa qq serve --no-progress            # 全关：只在跑完回一条结论
+uv run yqa qq serve --progress-min-interval 5   # 两条消息至少隔 5 秒（防刷屏）
+```
+
+> 单条消息超过 1200 字会**按行**切成多条（单行本身超长才会硬切）——这是接口长度硬限制，
+> 不是「流式」；切点永远不落在行中间。
+
+---
+
 ## 5. 常驻服务
 
 ```
@@ -359,6 +398,7 @@ uv run yqa qq serve --no-watch               # 不轮询，只投通知 + 收命
 uv run yqa qq serve --notify-interval 2      # 通知投得更勤
 uv run yqa qq serve --dry-run --journal      # 演练/写日志
 uv run yqa qq serve --no-login               # 没凭证就直接报错，不要弹二维码（给 systemd/cron）
+uv run yqa qq serve --no-progress            # 不播报运行中的分段与保活（只在跑完回一条结论）
 ```
 
 **启动阶段的顺序**（照这个顺序排查最省事）：
@@ -462,6 +502,7 @@ uv run pytest tests/test_qq_*.py -v
 | `test_qq_commands.py` | 默认拒绝、白名单、群门禁、管理员、限流、自由文本不进 LLM |
 | `test_qq_config.py` | 配置读写、成员解析、兜底、体检 |
 | `test_qq_service.py` | 队列与单飞、结果回推、通知泵、入站回复 |
+| `test_qq_progress.py` | 分段发送（一段一条 / 超长按行切）、保活心跳、`msg_seq` 递增、observer 翻译、agent 循环副作用隔离 |
 | `test_qq_cli.py` | `config/status/doctor/notify/logout/login` 的 CLI 冒烟（含完整登录落盘） |
 
 假件都在 `tests/qq_fakes.py`（假 transport / 假协议 / 假发送器 / 造通知文件）。

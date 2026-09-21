@@ -183,12 +183,15 @@ class RecordingSender:
         self.sent: list[tuple[Target, str]] = []
         self.fail_times = fail_times
         self.calls = 0
+        self.calls_detail: list[dict[str, Any]] = []
+        """完整调用记录（含 kwargs，例如 msg_seq）——``sent`` 保持两元组不变。"""
 
     def send_text(self, target: Target, content: str, **kwargs: Any) -> dict[str, Any]:
         self.calls += 1
         if self.calls <= self.fail_times:
             raise QQBotError("模拟发送失败")
         self.sent.append((target, content))
+        self.calls_detail.append({"target": target, "content": content, "kwargs": kwargs})
         return {"id": f"m-{self.calls}"}
 
     def get_access_token(self, **_kwargs: Any) -> str:
@@ -223,30 +226,55 @@ class FakeRunResult:
 
 
 class FakeRunner:
-    """按脚本返回 run 结果；``poll_results`` 里的 ``None`` 表示「没变化」。"""
+    """按脚本返回 run 结果；``poll_results`` 里的 ``None`` 表示「没变化」。
+
+    ``events`` 模拟 agent 循环里的 observer 事件（``[(kind, fields), …]``），每轮跑之前依次发出去，
+    这样「分段播报 + 保活心跳」的接线也能离线测。
+    """
 
     def __init__(
-        self, *, poll_results: list[Any] | None = None, archive_result: Any = None
+        self,
+        *,
+        poll_results: list[Any] | None = None,
+        archive_result: Any = None,
+        events: list[tuple[str, dict[str, Any]]] | None = None,
     ) -> None:
         self.poll_results = list(poll_results or [])
         self.archive_result = archive_result
+        self.events = list(events or [])
         self.polls = 0
         self.archives = 0
         self.force_flags: list[bool] = []
         self.debounce_flags: list[bool] = []
+        self.observers: list[Any] = []
+
+    def _emit(self, observer: Any) -> None:
+        self.observers.append(observer)
+        if observer is None:
+            return
+        for kind, fields in self.events:
+            observer(kind, **fields)
 
     def poll_once(
-        self, *, force: bool = False, rescan: bool = False, now: Any = None, debounce: bool = True
+        self,
+        *,
+        force: bool = False,
+        rescan: bool = False,
+        now: Any = None,
+        debounce: bool = True,
+        observer: Any = None,
     ):
         self.polls += 1
         self.force_flags.append(force)
         self.debounce_flags.append(debounce)
+        self._emit(observer)
         if self.poll_results:
             return self.poll_results.pop(0)
         return None
 
-    def archive_once(self, *, now: Any = None):
+    def archive_once(self, *, now: Any = None, observer: Any = None):
         self.archives += 1
+        self._emit(observer)
         return (
             self.archive_result
             if self.archive_result is not None

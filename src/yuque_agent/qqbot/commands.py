@@ -17,7 +17,7 @@ from __future__ import annotations
 import re
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
 from .config import QQBotConfig
@@ -84,6 +84,9 @@ class CommandResult:
     silent: bool = False
     """True = 故意不回（比如群里没在白名单里的人说话，不打扰大家）。"""
 
+    data: dict[str, Any] = field(default_factory=dict)
+    """gateway 的原始返回（``/run`` ``/archive`` 用它带回 request_id / queued）。"""
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "handled": self.handled,
@@ -92,6 +95,7 @@ class CommandResult:
             "reason": self.reason,
             "admin": self.admin,
             "silent": self.silent,
+            "data": self.data,
         }
 
 
@@ -103,7 +107,13 @@ class AgentGateway(Protocol):
 
     def pending_notices(self) -> int: ...
 
-    def request_run(self, *, archive: bool, requested_by: str) -> dict[str, Any]: ...
+    def request_run(
+        self,
+        *,
+        archive: bool,
+        requested_by: str,
+        reply_target: Any = None,
+    ) -> dict[str, Any]: ...
 
 
 class CommandRouter:
@@ -171,30 +181,42 @@ class CommandRouter:
                     reply=f"刚跑过，{wait:.0f} 秒后再来（同一个人的写操作要限流）。",
                 )
 
-        reply = self._execute(spec, args, msg)
+        reply, data = self._execute(spec, args, msg)
         if spec.admin_only:
             self._last_admin_call[msg.sender_id] = self._clock()
         self._log(f"[qqbot:cmd] {msg.sender_id} → /{spec.name}")
-        return CommandResult(handled=True, command=spec.name, reply=reply, admin=admin)
+        return CommandResult(handled=True, command=spec.name, reply=reply, admin=admin, data=data)
 
     # -- 各命令 -----------------------------------------------------------
-    def _execute(self, spec: CommandSpec, args: str, msg: InboundMessage) -> str:
+    def _execute(
+        self, spec: CommandSpec, args: str, msg: InboundMessage
+    ) -> tuple[str, dict[str, Any]]:
+        """返回 ``(回给用户的话, gateway 的原始返回)``。
+
+        ``/run`` ``/archive`` 的原始返回里带着 ``request_id`` / ``queued``，
+        服务层要用它把「回执 + 后续分段播报」挂到同一个发送器上。
+        """
         if spec.name == "help":
-            return HELP_TEXT
+            return HELP_TEXT, {}
         if spec.name == "status":
-            return render_status(self.gateway.status())
+            return render_status(self.gateway.status()), {}
         if spec.name == "pending":
             count = self.gateway.pending_notices()
             if count <= 0:
-                return "通知都投递出去了，pending 是空的。"
-            return f"还有 {count} 条通知在 outbox/notify/pending/ 里等着投递。"
+                return "通知都投递出去了，pending 是空的。", {}
+            return f"还有 {count} 条通知在 outbox/notify/pending/ 里等着投递。", {}
         if spec.name == "run":
-            return _request_text(
-                self.gateway.request_run(archive=False, requested_by=msg.sender_id)
+            payload = self.gateway.request_run(
+                archive=False, requested_by=msg.sender_id, reply_target=msg.reply_target
             )
+            return _request_text(payload), payload
         if spec.name == "archive":
-            return _request_text(self.gateway.request_run(archive=True, requested_by=msg.sender_id))
-        return f"命令 /{spec.name} 还没实现。"  # pragma: no cover - 命令表与分支一一对应
+            payload = self.gateway.request_run(
+                archive=True, requested_by=msg.sender_id, reply_target=msg.reply_target
+            )
+            return _request_text(payload), payload
+        # pragma: no cover - 命令表与分支一一对应
+        return f"命令 /{spec.name} 还没实现。", {}
 
     # -- 内部 -------------------------------------------------------------
     def _rate_limit_wait(self, sender: str) -> float:

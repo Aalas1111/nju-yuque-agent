@@ -32,8 +32,12 @@ class FakeGateway:
     def pending_notices(self) -> int:
         return 2
 
-    def request_run(self, *, archive: bool = False, requested_by: str = "") -> dict[str, Any]:
-        self.calls.append({"archive": archive, "requested_by": requested_by})
+    def request_run(
+        self, *, archive: bool = False, requested_by: str = "", reply_target: Any = None
+    ) -> dict[str, Any]:
+        self.calls.append(
+            {"archive": archive, "requested_by": requested_by, "reply_target": reply_target}
+        )
         if not self.queued:
             return {"queued": False, "message": "agent 正在忙，等它跑完再来。"}
         return {"queued": True, "message": "收到，已排队跑一轮轮询；跑完我把结论发给你。"}
@@ -151,7 +155,9 @@ def test_admin_can_queue_a_run() -> None:
     assert result.handled is True
     assert result.admin is True
     assert "已排队" in result.reply
-    assert gateway.calls == [{"archive": False, "requested_by": "u-admin"}]
+    assert gateway.calls[0]["archive"] is False
+    assert gateway.calls[0]["requested_by"] == "u-admin"
+    assert gateway.calls[0]["reply_target"] is not None  # 带上 msg_id，播报才能做被动回复
 
 
 def test_non_admin_cannot_run() -> None:

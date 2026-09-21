@@ -18,6 +18,7 @@ LLM 说要用什么工具  →  我们执行  →  把结果塞回去  →  重�
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -73,8 +74,19 @@ def run_agent(
     session: SessionRecorder,
     max_steps: int = 24,
     max_tool_calls: int = 60,
+    observer: Callable[..., Any] | None = None,
 ) -> RunResult:
-    """跑一轮。``payload`` 是给 LLM 的「变更报告 / 归档指令」。"""
+    """跑一轮。``payload`` 是给 LLM 的「变更报告 / 归档指令」。
+
+    ``observer`` 是可选的旁路回调，用来把「这一轮正在发生什么」播报出去
+    （QQ 侧的分段发送与保活心跳就挂在它上面）。它收到的都是**事实**：
+
+    * ``("assistant", step=..., content=..., tool_calls=[...])`` —— 一步助手输出结束；
+    * ``("tool", step=..., name=..., args=...)`` —— 即将执行某个工具；
+    * ``("run_end", result=...)`` —— 本轮结束。
+
+    **观测者绝不能影响这一轮**：它抛异常会被吞掉，只记进 session。
+    """
     result = RunResult(run_id=ctx.run_id, kind=ctx.kind, session_path=str(session.path))
     system = prompt.load(ctx.kind)
     schemas = tool_schemas(ctx.kind)
@@ -118,6 +130,14 @@ def run_agent(
                 finish_reason=response.finish_reason,
                 ms=watch.ms(),
             )
+            _observe(
+                observer,
+                session,
+                "assistant",
+                step=step,
+                content=response.content or "",
+                tool_calls=[c.name for c in response.tool_calls],
+            )
 
             if not response.wants_tools:
                 # LLM 自己停了，没说 done —— 也算一轮结束，但要记下来
@@ -128,6 +148,7 @@ def run_agent(
 
             for call in response.tool_calls:
                 args = call.arguments()
+                _observe(observer, session, "tool", step=step, name=call.name, args=args)
                 if "__parse_error__" in args:
                     payload_result = {"ok": False, "error": args["__parse_error__"]}
                     ms = 0
@@ -179,8 +200,24 @@ def run_agent(
             emitted=result.emitted,
             kb_writes=result.kb_writes,
         )
+        _observe(observer, session, "run_end", result=result)
 
     return result
+
+
+def _observe(
+    observer: Callable[..., Any] | None,
+    session: SessionRecorder,
+    kind: str,
+    **fields: Any,
+) -> None:
+    """把事件转给观测者。观测者坏了不能影响这一轮——只留痕。"""
+    if observer is None:
+        return
+    try:
+        observer(kind, **fields)
+    except Exception as exc:  # noqa: BLE001 - 旁路回调，绝不影响主流程
+        session.event("observer_error", kind=kind, error=f"{type(exc).__name__}: {exc}")
 
 
 def _bounded(value: dict[str, Any]) -> dict[str, Any]:

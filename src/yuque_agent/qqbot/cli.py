@@ -44,6 +44,7 @@ from .credentials import (
 )
 from .login import QrLoginFlow, QrLoginManager, QrLoginResult
 from .login_http import LoginHttpServer
+from .progress import ProgressOptions
 from .protocol import QQBotError, QQBotProtocol
 from .qr import has_qr_support, save_png, support_note, terminal_qr
 from .service import QQBotService
@@ -844,6 +845,21 @@ def qq_serve(
             "--no-login", help="没有缓存凭证时不要自动扫码登录，直接报错（给 systemd 用）"
         ),
     ] = False,
+    no_progress: Annotated[
+        bool,
+        typer.Option("--no-progress", help="不播报运行中的分段与保活，只在跑完回一条结论"),
+    ] = False,
+    progress_idle: Annotated[
+        float,
+        typer.Option(
+            "--progress-idle",
+            help="上一条消息后多久没动静就发一条保活（秒）；0=关保活",
+        ),
+    ] = 60.0,
+    progress_min_interval: Annotated[
+        float,
+        typer.Option("--progress-min-interval", help="两条消息之间的最小间隔（秒），防刷屏"),
+    ] = 2.0,
     dry_run: Annotated[bool, typer.Option("--dry-run", help="写操作只记录不执行")] = False,
     journal: Annotated[bool, typer.Option("--journal", help="把 session 写回工作日志")] = False,
     model: Annotated[str, typer.Option("--model")] = DEFAULT_MODEL,
@@ -899,12 +915,17 @@ def qq_serve(
         qq_client=client,
         log=plain_log,
         notify_interval=notify_interval,
+        progress_options=ProgressOptions(
+            idle_seconds=progress_idle, min_interval_seconds=progress_min_interval
+        ),
+        progress_enabled=not no_progress,
     )
     console.print(
         Panel(
             f"知识库 {settings.repo}\n"
             f"轮询 {'开' if not no_watch else '关'}（每 {interval}s，静默期 {settings.quiet_seconds}s）\n"
             f"通知泵 每 {notify_interval}s 扫一次 outbox/notify/pending/\n"
+            f"分段播报 {'关（--no-progress）' if no_progress else f'开（保活 {progress_idle:.0f}s）'}\n"
             f"QQ 入站 {'关（--no-inbound）' if no_inbound else ('开' if client else '关（未绑定）')}"
             f" · 白名单 {len(config.inbound_allow)} 人 / 管理员 {len(config.inbound_admins)} 人",
             title="yqa qq serve",
