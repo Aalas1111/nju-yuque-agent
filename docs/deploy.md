@@ -92,6 +92,12 @@ ExecStart=/usr/local/bin/uv run --no-sync yqa run \
 Restart=always
 RestartSec=15
 
+# `systemctl stop` 时 Python 以 143（128+SIGTERM）退出，systemd 默认把它记成
+# 「Failed with result 'exit-code'」。那是**正常停止**，不是故障——不声明的话，
+# 每次重启 / 自动更新都会在日志里留一串假 "Failed"，把真故障淹掉。
+# （这个项目的整个立场就是「日志得能信」，所以不能有这种噪音。）
+SuccessExitStatus=143
+
 # 加固：这个进程不需要新特权、不需要改系统
 NoNewPrivileges=true
 PrivateTmp=true
@@ -130,6 +136,22 @@ journalctl -u yuque-agent -f          # 看日志
 
 **③ 日志走 journald，已设持久化。**
 否则默认只存在内存里、重启就没了——而这个项目的整个立场就是「留痕」。
+
+**③.5 这台机器会自动做安全更新，会重启你的服务。**
+实测：`unattended-upgrades` + `needrestart` 在凌晨升级了库，顺手把
+`yuque-agent` 和 `ssh` 都重启了（06:47~06:59 之间反复几次，因为同时升级了多个包）。
+`status=143` = 正常 SIGTERM，不是崩溃。所以单元里要写：
+
+```ini
+SuccessExitStatus=143
+```
+
+不写的话每次正常停止都会被记成 `Failed with result 'exit-code'`，
+日志里一串假故障——真出事的时候反而看不出来。
+
+另外这类升级偶尔会**短暂断网**（systemd-resolved 被重启），
+实测在日志里看到过一次 `YuqueError: 网络请求失败（ConnectError）`——
+watcher 按设计吞掉并继续了，下一轮就恢复。**这类错误看一次就行，不用管。**
 
 **④ 真正的证据在 `runs/*/session.jsonl`**，不在 stdout。每次 run 的完整
 LLM 输入/输出/思考/工具参数都在那里，那是唯一事实来源。
