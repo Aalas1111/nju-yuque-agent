@@ -480,3 +480,38 @@ yqa doctor 全绿：token / LLM key / 知识库 / 写权限 / 提示词 / 时区
 
 服务单元 `/etc/systemd/system/yuque-agent.service`，状态目录 `/var/lib/yuque-agent`，
 凭证 `/home/yuque/.yuque/`（600）。日志走 journald（已设持久化），`journalctl -u yuque-agent -f`。
+
+### 11.6 Bug 8：社员申请被受理后收不到任何消息（`accepted` 通知从来没被产出过）
+
+端到端验收时发现的：测试申请被判 `accepted`、申请 JSON 也产出了，但
+`outbox/notify/pending/` 是**空的**——一条通知都没有。
+
+追下去发现是一条**契约与提示词之间的漂移**：
+
+| 地方 | 怎么说的 |
+|---|---|
+| `outputs.NOTICE_KINDS` | 词汇表里**有** `accepted` |
+| `docs/handoff.md` §3.3 | 有 `accepted`：「要素齐备、已产出申请」，要求提示「文档已锁定，改也无效」 |
+| `kb/guide.md`（社员看的《指导文档》） | 明确承诺：「要素齐全 → 整理成标准申请交给负责提交的同学 → **QQ：『已受理』+ 时间/校区**」 |
+| `prompts/polling.md` | **一次都没提过 `accepted`**（grep 零命中）；产出说明写的是「可以受理 → `emit_application(...)`」 |
+| `emit_application` 的实现 | 只写申请，**不会**顺带发通知 |
+
+于是：**指导文档刚跟社员承诺「受理了会收到 QQ」，而系统一条都不会发。**
+社员提交完就石沉大海，只能自己去学校系统里瞎找。
+
+顺带发现同一类漂移还有一处：`rejected` 在提示词里也是零命中——
+「需要退回」那一节全用散文写「退回」，没给出契约里的 kind 名。
+LLM 只能靠猜（猜 `rejected` 大概率对，但这是碰运气，不是设计）。
+
+**修法**：
+- 提示词里「可以受理」改成「`emit_application(...)`，**并且一定要配一条
+  `emit_notice(kind="accepted", ...)`**」，并写清理由（指导文档承诺过）与文案要求；
+- 各节标题补上对应的 kind 名（`rejected` / `unrecognized` / `tampered`），
+  另补一句 `info` 的用法；
+- 新增两条**守卫测试**（`tests/test_safety.py`）：
+  ① 契约 `NOTICE_KINDS` 里的每个 kind 都必须在提示词里出现；
+  ② 「可以受理」那一行必须同时要求发 `accepted` 通知；
+  ③ 把「指导文档的承诺」与「契约/提示词的能力」连起来断言。
+
+这类漂移**不会报错**，只会静默地少发消息——所以只能靠测试盯着。
+已验证这三条在旧提示词上会失败。

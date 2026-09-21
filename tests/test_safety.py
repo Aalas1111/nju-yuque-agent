@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import pathlib
 import re
 
 import pytest
@@ -14,6 +15,7 @@ import pytest
 from tests.fakes import Ctx
 from yuque_agent import tools
 from yuque_agent.config import Settings, safe_join
+from yuque_agent.outputs import NOTICE_KINDS
 from yuque_agent.prompts import PromptLoader
 
 #: 全部工具名（用于扫提示词里提到了哪些）
@@ -182,6 +184,58 @@ def test_every_registered_tool_has_a_description_and_schema() -> None:
             schema = tool.schema()
             assert schema["function"]["name"] == tool.name
             assert schema["function"]["parameters"]["type"] == "object"
+
+
+def test_prompt_tells_the_llm_about_every_notice_kind() -> None:
+    """契约里承诺的每一种通知，提示词都必须交代怎么用。
+
+    **这条守卫是真机部署时补的**：`handoff.md` 的契约词汇表里有 ``accepted``，
+    《指导文档》也向社员承诺了「受理了会收到 QQ」，但 ``prompts/polling.md`` 里
+    **一次都没提过 accepted**（grep 零命中），`emit_application` 也不会顺带发通知。
+    结果：社员申请被受理后**收不到任何消息**，而指导文档刚跟他承诺过会收到。
+
+    这类「契约里有、提示词里没有」的漂移不会报错，只会静默地少发消息。
+    """
+    text = PromptLoader().load("polling")
+    missing = [kind for kind in NOTICE_KINDS if kind not in text]
+    assert not missing, (
+        f"提示词没交代这些 kind，LLM 永远不会产出它们：{missing}\n"
+        f"（契约见 outputs.NOTICE_KINDS 与 docs/handoff.md §3.3）"
+    )
+
+
+def test_accepted_notice_is_tied_to_emit_application() -> None:
+    """受理必须**同时**产申请 + 发通知。
+
+    只发 `emit_application` 不发 `accepted` 通知，社员就什么也收不到——
+    这正是部署时踩到的那个缺口。
+    """
+    text = PromptLoader().load("polling")
+    line = next(
+        (ln for ln in text.splitlines() if "emit_application" in ln and "可以受理" in ln), None
+    )
+    assert line is not None, "提示词里找不到「可以受理」的产出说明"
+    assert "emit_notice" in line and "accepted" in line, (
+        f"「可以受理」那一行必须同时要求发 accepted 通知，实际：{line.strip()}"
+    )
+
+
+def test_guide_promises_match_what_the_system_can_do() -> None:
+    """《指导文档》对社员的承诺，必须是系统真能做到的。
+
+    指导文档里写着「要素齐全 → QQ：『已受理』+ 时间/校区」——这就是 `accepted`
+    通知存在的理由。这条断言把「对社员的承诺」和「代码/提示词的能力」连起来。
+    """
+    import yuque_agent
+
+    guide = (pathlib.Path(yuque_agent.__file__).parent / "kb" / "guide.md").read_text(
+        encoding="utf-8"
+    )
+    assert "已受理" in guide, "指导文档应当告诉社员会被通知"
+    assert "accepted" in NOTICE_KINDS, "指导文档承诺了已受理通知，契约里就必须有"
+    assert "accepted" in PromptLoader().load("polling"), (
+        "指导文档承诺了通知，提示词就必须让 LLM 真的发出来"
+    )
 
 
 def test_tool_grouping_is_frozen() -> None:
