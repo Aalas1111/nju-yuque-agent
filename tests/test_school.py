@@ -81,6 +81,15 @@ def test_suzhou_buildings() -> None:
         ("13:00", "15:00", (5, 5)),  # 15:00 正好是第 6 节开始，不重叠（与旧《指导文档》一致）
         ("18:30", "20:20", (9, 10)),
         ("21:30", "22:20", (12, 12)),
+        # ---- 边界：正好贴上某一节的边，**不算重叠** ----
+        # 需求方实地问过的两个例子：
+        ("08:00", "10:10", (1, 2)),  # 10:10 正好是第 3 节开始 → 不含第 3 节
+        ("08:50", "10:00", (2, 2)),  # 08:50 正好是第 1 节结束 → 不含第 1 节
+        ("08:00", "09:00", (1, 1)),  # 09:00 正好是第 2 节开始 → 不含第 2 节
+        # 但只要**越过**边界一点点，整节都算上（容忍零头，宁可借多）：
+        ("08:00", "09:10", (1, 2)),
+        ("11:50", "14:30", (4, 5)),  # 跨午休，两头各覆盖一节
+        ("18:00", "19:00", (9, 9)),  # 18:00-18:30 是课间，只落到第 9 节
     ],
 )
 def test_periods_for(start: str, end: str, span: tuple[int, int]) -> None:
@@ -92,6 +101,8 @@ def test_periods_for(start: str, end: str, span: tuple[int, int]) -> None:
     [
         ("17:00", "16:00"),  # 填反
         ("12:30", "13:30"),  # 完全落在午休，对不上任何节次
+        ("08:50", "09:00"),  # 完全落在课间空档（不是午休，但同样不排课）
+        ("09:50", "10:10"),  # 同上
         ("25:00", "26:00"),  # 非法
         ("", ""),
         ("08:00", "08:00"),  # 零长度
@@ -124,6 +135,25 @@ def test_lunch_break_has_no_periods() -> None:
     for start, end in school.PERIODS.values():
         s, e = school.parse_time(start), school.parse_time(end)
         assert not (s < lunch_end and lunch_start < e), f"{start}-{end} 侵入了午休"
+
+
+def test_gaps_between_periods_need_no_classroom() -> None:
+    """节与节之间的课间也不排课——身处课间的申请同样对不上任何节次。
+
+    需求方原话：「节次之间的空档比如下课时间 / 吃饭时间不在考虑范围内，
+    这些时间段不需要借教室」。所以这不是缺陷，是学校本来的规则。
+    提示词里对应有一条「完全落在课间 → 退回」的例子。
+    """
+    ordered = [school.PERIODS[i] for i in sorted(school.PERIODS)]
+    for (_, prev_end), (next_start, _) in zip(ordered, ordered[1:], strict=False):
+        if prev_end == next_start:
+            continue  # 无缝相接，没有空档
+        s, e = school.parse_time(prev_end), school.parse_time(next_start)
+        assert s is not None and e is not None and s < e
+        # 身处这段空档的申请，对不上任何节次
+        assert school.periods_for(prev_end, next_start) is None, (
+            f"{prev_end}-{next_start} 是课间空档，不该映射出节次"
+        )
 
 
 # ---------------------------------------------------------------- 借用日期窗口

@@ -119,7 +119,7 @@ def write_application(settings: Settings, payload: dict[str, Any]) -> dict[str, 
     if not settings.dry_run:
         path.parent.mkdir(parents=True, exist_ok=True)
         _atomic_write(path, json.dumps(record, ensure_ascii=False, indent=2))
-        _rebuild_index(settings)
+        rebuild_application_index(settings)
 
     return {
         "application_id": application_id,
@@ -165,7 +165,7 @@ def build_plan_json(
     return {"defaults": defaults or {}, "activities": activities}
 
 
-def _rebuild_index(settings: Settings) -> None:
+def rebuild_application_index(settings: Settings) -> None:
     """索引由目录扫描**重建**，避免「副本与正文漂移」。"""
     rows = []
     for path in sorted(settings.applications_dir.glob("*.json")):

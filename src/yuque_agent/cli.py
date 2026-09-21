@@ -16,6 +16,7 @@ yqa render <run_id>             # 把某次 run 的 session 渲染成人话
 from __future__ import annotations
 
 import json
+import shutil
 import sys
 from pathlib import Path
 from typing import Annotated
@@ -25,15 +26,16 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
-from . import __version__, clock
+from . import __version__, clock, outputs
 from . import journal as journal_mod
 from .config import DEFAULT_API_BASE, DEFAULT_HOST, DEFAULT_MODEL, DEFAULT_REPO, Settings
 from .llm import LLMClient, LLMError
 from .outputs import build_plan_json
 from .prompts import PromptLoader
 from .qqbot.cli import qq_app, qq_doctor_rows
-from .runner import Runner, new_run_id
+from .runner import Runner, load_state, new_run_id, save_state
 from .watcher import Watcher
+from .week import cycle_targets
 from .yuque import YuqueClient, YuqueError
 
 
@@ -459,6 +461,188 @@ def sync_guide(
                 return
             client.update_doc(existing.doc_id, body=body)
             console.print(f"[green][OK] 已更新《{title}》（doc_id={existing.doc_id}）[/green]")
+
+
+# ---------------------------------------------------------------- 清空测试数据
+
+#: 永远不碰的系统性文档（跟 `Settings.ignore_doc_titles` 一起用）。
+_SYSTEM_DOC_TITLES = ("指导文档（必读）", "指导文档")
+
+
+def _doc_dir_map(client: YuqueClient) -> dict[int, str]:
+    """``doc_id -> 所在目录路径``（根目录是空串）。跟 tools._doc_dirs 一个算法。"""
+    out: dict[int, str] = {}
+    for node in client.toc():
+        if not node.doc_id:
+            continue
+        out[int(node.doc_id)] = "/".join(str(node.path or "").split("/")[:-1])
+    return out
+
+
+def _wipe_dir(path: Path, *, pattern: str = "*.json") -> list[str]:
+    """删掉目录里的文件，返回删掉的文件名（目录不存在就啥也不做）。"""
+    if not path.is_dir():
+        return []
+    removed = []
+    for item in sorted(path.glob(pattern)):
+        if item.is_file():
+            item.unlink()
+            removed.append(item.name)
+    return removed
+
+
+@app.command()
+def reset_test_data(
+    repo: RepoOpt = DEFAULT_REPO,
+    workspace: Annotated[Path, typer.Option("--workspace", "-w")] = Path("workspace"),
+    scope: Annotated[
+        str,
+        typer.Option(
+            "--scope",
+            help="cycle = 只清当前周期目录（默认）；all = 连归档区一起清",
+        ),
+    ] = "cycle",
+    include_journal: Annotated[
+        bool,
+        typer.Option("--journal", help="连《工作日志》也重置成干净表头（默认保留——那是留痕）"),
+    ] = False,
+    include_runs: Annotated[
+        bool,
+        typer.Option("--runs", help="连 runs/ 留痕一起删（默认保留——那是证据）"),
+    ] = False,
+    yes: Annotated[bool, typer.Option("--yes", help="真的执行；不加这个只预览")] = False,
+) -> None:
+    """清空测试数据：删掉知识库里的申请文档 + 本地产出与状态，回到干净起点。
+
+    **默认只预览**（列出会删什么），确认无误再加 `--yes`。
+
+    目的是「测试完回到能交付的干净状态」：
+
+    * 知识库：删掉周期目录（`--scope all` 再加归档区）里的**申请文档**；
+      《指导文档》《工作日志》永远不会碰；
+    * 本地产出：`outbox/applications/`、`outbox/notify/{pending,done,unrouted,failed}/`、
+      审计流水与序号；
+    * 状态：把删掉的文档从快照里**同步摘掉**（不删 state.json——
+      否则下次启动会被当成冷启动而白跑一轮归档）。
+
+    留痕默认保留：`runs/*/session.jsonl` 是唯一事实来源，无特殊情况不要删。
+    """
+    if scope not in ("cycle", "all"):
+        console.print(f"[red]--scope 只能是 cycle 或 all，收到 {scope!r}[/red]")
+        raise typer.Exit(2)
+
+    settings = _settings(repo, workspace, False, False, DEFAULT_MODEL, 60, False)
+    cycle_title = cycle_targets(clock.now())[0].title
+    protected = set(_SYSTEM_DOC_TITLES) | set(settings.ignore_doc_titles) | {settings.journal_title}
+
+    with YuqueClient(host=settings.host, token=settings.token, repo=settings.repo) as client:
+        dir_of = _doc_dir_map(client)
+        doomed: list[tuple[int, str, str]] = []
+        for meta in client.docs():
+            if meta.title in protected:
+                continue
+            where = dir_of.get(meta.doc_id, "")
+            in_cycle = where == cycle_title
+            in_archive = where == "归档区" or where.startswith("归档区/")
+            if in_cycle or (scope == "all" and in_archive):
+                doomed.append((meta.doc_id, meta.title, where))
+
+        head = f"清空测试数据（scope={scope} · 当前周期 {cycle_title}）"
+        if yes:
+            console.print(f"[bold]{head}[/bold]")
+        else:
+            console.print(f"[yellow]预览（还没有删任何东西）：{head}[/yellow]")
+
+        # 下面的行里会带 [ ] 等字面量，一律 markup=False，免得被 rich 当标签
+        console.print("\n[bold]一、知识库将删除的文档[/bold]")
+        if not doomed:
+            console.print("  （无）", markup=False)
+        for doc_id, title, where in doomed:
+            console.print(f"  · {doc_id}  {title}   目录={where or '根目录'}", markup=False)
+        console.print("  《指导文档》《工作日志》永不删。", markup=False, style="dim")
+
+        local_plan = [
+            ("outbox/applications", settings.applications_dir, "*.json"),
+            ("outbox/notify/pending", settings.notify_dir / "pending", "*.json"),
+            ("outbox/notify/done", settings.notify_dir / "done", "*.json"),
+            ("outbox/notify/unrouted", settings.notify_dir / "unrouted", "*.json"),
+            ("outbox/notify/failed", settings.notify_dir / "failed", "*.json"),
+            ("notes", settings.notes_dir, "*.json"),
+        ]
+        console.print("\n[bold]二、本地将清空的产出[/bold]")
+        for label, path, pattern in local_plan:
+            n = len(list(path.glob(pattern))) if path.is_dir() else 0
+            console.print(f"  · {label}: {n} 个文件", markup=False)
+        console.print("  · outbox/notify/outbox.jsonl：审计流水清空、.seq 归零", markup=False)
+        if include_runs:
+            n = len(list(settings.runs_dir.glob("*"))) if settings.runs_dir.is_dir() else 0
+            console.print(
+                f"  · runs/：{n} 个 —— 你加了 --runs，留痕会被删掉", markup=False, style="yellow"
+            )
+        if include_journal:
+            console.print(
+                "  · 《工作日志》：会重置成只剩表头（你加了 --journal）",
+                markup=False,
+                style="yellow",
+            )
+        else:
+            console.print("  · 《工作日志》：保留（想一并重置加 --journal）", markup=False)
+
+        if not yes:
+            console.print("\n[bold]这只是预览。确认无误后加 --yes 真的执行。[/bold]")
+            return
+
+        removed_ids = []
+        for doc_id, title, _where in doomed:
+            try:
+                client.delete_doc(doc_id)
+                removed_ids.append(doc_id)
+                console.print(f"  已删  {doc_id}  {title}", markup=False, style="green")
+            except YuqueError as exc:
+                console.print(f"  删除失败  {doc_id}：{exc}", markup=False, style="red")
+
+        if include_journal:
+            existing = journal_mod.resolve_journal_doc(client, settings.journal_title)
+            if existing is None:
+                console.print("  《工作日志》不存在，跳过", markup=False, style="dim")
+            else:
+                client.update_doc(existing["doc_id"], body=journal_mod.HEADER)
+                console.print("  已重置《工作日志》为干净表头", markup=False, style="green")
+
+    # ---- 本地 ----
+    for _label, path, pattern in local_plan:
+        _wipe_dir(path, pattern=pattern)
+    (settings.notify_dir / ".seq").write_text("0", encoding="utf-8")
+    audit = settings.notify_dir / "outbox.jsonl"
+    if audit.exists():
+        audit.write_text("", encoding="utf-8")
+    outputs.rebuild_application_index(settings)
+    console.print("  本地产出已清空，申请索引已重建", markup=False, style="green")
+
+    if include_runs and settings.runs_dir.is_dir():
+        shutil.rmtree(settings.runs_dir)
+        settings.runs_dir.mkdir(parents=True, exist_ok=True)
+        console.print("  runs/ 已清空", markup=False, style="green")
+
+    # 把删掉的文档从快照里摘掉：否则下次轮询会把它们当成「被删除」而发通知。
+    # 注意：`Snapshot.docs` 的键是 **int**（见 snapshot.py），不是字符串。
+    if removed_ids and settings.state_file.exists():
+        state = load_state(settings.state_file)
+        if state.snapshot is not None:
+            for doc_id in removed_ids:
+                state.snapshot.docs.pop(int(doc_id), None)
+            save_state(state, settings.state_file)
+        console.print(
+            f"  状态快照已摘掉 {len(removed_ids)} 篇（不会因此误发「文档被删除」的通知）",
+            markup=False,
+            style="green",
+        )
+
+    console.print("\n[bold green]已回到干净起点。[/bold green]")
+    if not include_journal:
+        console.print(
+            "《工作日志》保留着历史留痕；想一并重置加 --journal。", markup=False, style="dim"
+        )
 
 
 def _print_result(result) -> None:

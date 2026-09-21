@@ -93,6 +93,13 @@ class FakeYuque:
     def close(self) -> None:
         return None
 
+    # 让假件也能当上下文管理器用（真客户端支持 with）
+    def __enter__(self) -> FakeYuque:
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        return None
+
 
 def make_toc(*spec: tuple[str, str, int, str]) -> list[TocNode]:
     """``spec`` 每项 = (title, type, doc_id, parent_title 或 "")。"""

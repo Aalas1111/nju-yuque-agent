@@ -121,6 +121,9 @@ uv run yqa render <run_id>        # 把某次 run 的 session 渲染成人话
 uv run yqa journal <run_id>       # 把某次 run 写回语雀《工作日志》
 uv run yqa export-plan -o plan.json --defaults '{...}'   # 汇总成下游可直接吃的 plan.json
 uv run yqa sync-guide             # 把 kb/guide.md 上传为知识库《指导文档（必读）》
+uv run yqa reset-test-data        # 清空测试数据（**默认只预览**，加 --yes 才真删）
+                                  #   --scope all 连归档区一起清；--journal 连工作日志也重置
+                                  #   《指导文档》《工作日志》永不删；runs/ 默认保留（那是证据）
 uv run yqa run --qq               # 常驻轮询，顺带把通知投递到 QQ
 ```
 
