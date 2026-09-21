@@ -20,3 +20,8 @@ build/
 
 # 本地临时
 *.log
+
+# 部署/运维时用的一次性本地脚本与中间产物（不要进仓库）
+.ssh_*.py
+.push_creds.py
+_journal_backup.md
