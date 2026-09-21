@@ -157,14 +157,23 @@ def _dir_list(ctx: RunContext, args: dict[str, Any]) -> Any:
     """列出某个目录下的全部文档（不只是本轮变更过的）。"""
     wanted = str(args.get("dir") or "").strip()
     if not wanted:
-        raise ToolError("dir 必填，例如 '0919-0925' 或 '归档区/0912-0918'")
+        raise ToolError("dir 必填，例如 '0919-0925' 或 '归档区/0912-0918'；根目录用 '.'")
+    root_wanted = wanted in (".", "/", "根目录", "(根目录)")
     dir_by_doc = _doc_dirs(ctx)
     rows = []
     for meta in ctx.all_docs():
         path = dir_by_doc.get(meta.doc_id)
         if path is None:
             continue
-        if not (path == wanted or path.endswith("/" + wanted) or path == ""):
+        # 注意：不能把 ``path == ""``（根目录下的文档）当成「匹配任意目录」。
+        # 实测踩到过：之前写成 ``path == wanted or path.endswith("/"+wanted) or path == ""``，
+        # 结果 ``dir_list("归档区/0912-0918")`` 会把根目录的《指导文档》《工作日志》
+        # 一并返回——归档会话要是信了这个结果，就可能把系统性文档从根目录搬走。
+        if root_wanted:
+            matched = path == ""
+        else:
+            matched = path == wanted or path.endswith("/" + wanted)
+        if not matched:
             continue
         rows.append(
             {
@@ -531,7 +540,12 @@ COMMON_TOOLS: tuple[Tool, ...] = (
         "dir_list",
         "列出某个目录下的全部文档（不只是本轮变过的）。需要知道「同一时间段还有谁申请了教室」时用。",
         _params(
-            {"dir": {**STR, "description": "目录路径，如 '0919-0925' 或 '归档区/0912-0918'"}},
+            {
+                "dir": {
+                    **STR,
+                    "description": "目录路径，如 '0919-0925' 或 '归档区/0912-0918'；根目录用 '.'",
+                }
+            },
             ["dir"],
         ),
         _dir_list,

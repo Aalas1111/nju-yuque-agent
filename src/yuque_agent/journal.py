@@ -12,17 +12,23 @@
 ```
 # 工作日志
 > 本文件由程序自动追加……
-<!-- NEWEST -->
-## 2026-09-21 00:05:12 · polling · accepted
-…最新的一节（永远插在 <!-- NEWEST --> 下面）…
-## 2026-09-20 …
+## 2026-09-21T00:05:12+08:00 · polling · accepted
+…最新的一节（永远插在**第一节之前**）…
+## 2026-09-20T…
 …更早的…
 ```
+
+**新节插在哪里是靠「结构」定位的，不是靠标记位。** 语雀读回来的是**规范化过的
+markdown**，会把 HTML 剥掉（注释、`<details>` 都保留不下来）。实测踩到过：
+写进去的 `<!-- NEWEST -->` 读回来就没了，于是每轮都把表头重贴一遍、把旧正文甩到
+文末——**每跑一轮文末就多堆一份表头**。现在改为找「第一节的标题」（`## <时间戳>`），
+这个在语雀的规范化里是能活下来的。
 """
 
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -30,18 +36,35 @@ from .config import Settings
 from .session import read_events
 from .yuque import YuqueClient, YuqueError
 
-MARKER = "<!-- NEWEST -->"
+_SECTION_HEAD_RE = re.compile(r"^## \d{4}-\d{2}-\d{2}T", re.MULTILINE)
+
 HEADER = (
     "# 工作日志\n"
     "\n"
     "> 本文件由程序自动追加，每次 agent 运行写一节，**最新的在最上面**。\n"
     "> 这些内容是从 session 原始记录渲染出来的，没有经过任何美化——"
     "包括 agent 的思考过程和每一次工具调用的原始参数与返回值。\n"
-    "\n"
-    f"{MARKER}\n"
 )
 
 MAX_BLOCK_CHARS = 2500
+
+
+def split_journal(body: str) -> tuple[str, str]:
+    """把日志正文切成 ``(表头, 已有各节)``——新节就插在这两者之间。
+
+    定位方式是找**第一节的标题**（形如 ``## 2026-09-21T08:20:38+08:00 · archive · …``）。
+    找不到就说明还没有任何一节，整份都算表头。
+
+    为什么不用一个标记位（如 ``<!-- NEWEST -->``）：语雀读回来的是**规范化过的 markdown**，
+    HTML 会被剥掉。实测踩到过：写进去的标记读回来就没了，于是每一轮都走进
+    「没有标记」的分支，把 HEADER 重贴一遍再把旧正文甩到文末——
+    **每跑一轮文末就多堆一份表头**。所以改用结构定位。
+    """
+    text = body or ""
+    match = _SECTION_HEAD_RE.search(text)
+    if match is None:
+        return text, ""
+    return text[: match.start()], text[match.start() :]
 
 
 # ---------------------------------------------------------------- 渲染
@@ -164,7 +187,7 @@ def append_to_journal(
     *,
     title: str | None = None,
 ) -> dict[str, Any]:
-    """把一节内容插到《工作日志》文档的 ``<!-- NEWEST -->`` 标记下面。"""
+    """把一节内容放到《工作日志》的**最上面**（表头之下、已有各节之前）。"""
     doc_title = title or settings.journal_title
     if settings.dry_run:
         return {"dry_run": True, "doc_title": doc_title, "section_chars": len(section_markdown)}
@@ -173,7 +196,7 @@ def append_to_journal(
     if existing is None:
         # 挂进目录：社员看得到它才能确认自己的文档到底有没有被处理。
         # （归档提示词里已明确写明：《指导文档》与《工作日志》是系统性文档，不要动。）
-        created = client.create_doc(title=doc_title, body=f"{HEADER}\n{section_markdown}\n")
+        created = client.create_doc(title=doc_title, body=f"{HEADER}\n\n{section_markdown}\n")
         doc_id = int((created or {}).get("id") or 0)
         if doc_id:
             client.toc_add(doc_ids=[doc_id])
@@ -181,11 +204,13 @@ def append_to_journal(
         return {"created": True, "doc_id": doc_id, "doc_title": doc_title}
 
     detail = client.doc(existing["doc_id"])
-    body = detail.body or ""
-    if MARKER not in body:
-        body = f"{HEADER}\n{body}".replace(HEADER, HEADER, 1)
-    head, _, tail = body.partition(MARKER)
-    new_body = f"{head}{MARKER}\n\n{section_markdown}\n{tail.lstrip()}"
+    head, tail = split_journal(detail.body or "")
+    if not head.strip():
+        # 文档被清空过（或者压根没有表头）→ 补上，否则日志看起来像天书
+        head = HEADER
+    new_body = f"{head.rstrip()}\n\n{section_markdown}\n"
+    if tail.strip():
+        new_body += f"\n{tail.lstrip()}"
     client.update_doc(existing["doc_id"], body=new_body)
     return {
         "created": False,

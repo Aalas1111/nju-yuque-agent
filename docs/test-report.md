@@ -384,6 +384,99 @@ uv run yqa archive --dry-run
 离线测试（不联网、不碰真语雀）：
 
 ```bash
-uv run pytest -v        # 101 passed
+uv run pytest -v        # 见 README 的测试数（随迭代增长）
 uv run ruff check .
 ```
+
+## 11. 第六轮：部署到阿里云（2026-09-21）
+
+第一轮真正的**服务器部署**（阿里云轻量/ECS，Ubuntu 24.04，2 核 2G，华东）。
+部署本身很顺（`uv sync` → `yqa doctor` 全绿 → systemd 常驻），
+但**真机上暴露了两个离线测试完全没盖住的 bug**——两个都是「fake 太善良」造成的。
+
+### 11.1 Bug 6：`dir_list` 会把根目录的文档混进任意目录
+
+`tools.py` 里的过滤条件是：
+
+```python
+if not (path == wanted or path.endswith("/" + wanted) or path == ""):
+```
+
+最后那个 **`path == ""`** 让「根目录下的文档」匹配**任意**目录。于是
+`dir_list("归档区/0912-0918")` 会把根目录的《指导文档》《工作日志》一并返回。
+
+**危险在哪**：归档会话里 LLM 如果信了这个结果，就会以为这两篇系统性文档在归档区，
+**可能把它们从根目录搬走**。这一轮没出事是因为模型自己起了疑心——它的思考里写着：
+
+> *"Hmm, dir_list seems to return the same docs regardless? Both return 指导文档 and 工作日志.
+> That's odd."*
+
+然后它改用 `kb_tree` 的 `docs_here: 0` 推出了正确结论。**等于靠模型的怀疑捡回一条命**，
+这不能算设计。修法：`path == ""` 只在显式要根目录时才算匹配（新增 `dir: "."` 写法）。
+回归测试见 `tests/test_dir_list.py`（6 条）。
+
+### 11.2 Bug 7：《工作日志》每跑一轮就在文末多堆一份表头
+
+`journal.py` 原本靠一个 HTML 注释当定位标记：
+
+```python
+MARKER = "<!-- NEWEST -->"
+if MARKER not in body:
+    body = f"{HEADER}
+{body}"      # ← HEADER 里就带着 MARKER
+head, _, tail = body.partition(MARKER)
+```
+
+问题在于**语雀读回来的 markdown 是规范化过的**：HTML 会被剥掉
+（`<!-- NEWEST -->` 没了，`<details>` 也没了），引用的换行也被重排。所以
+`MARKER not in body` **永远成立** → 把 HEADER 贴上去 → 接着在刚贴的 HEADER 里
+找到了标记 → `head` = 表头、`tail` = **整份旧正文**。
+
+结果：`new_body = 表头 + 标记 + 新节 + 旧正文`，**每跑一轮文末就多一份表头**，
+日志会无限膨胀。部署后第一次归档会话（08:20:38）就复现了：
+
+```
+# 工作日志          ← 表头
+## 2026-09-21T08:20:38 · archive · nothing_to_do   ← 新节
+# 工作日志          ← 表头又一份
+```
+
+修法：**改用结构定位**——找第一节的标题（`## <时间戳>`），这个在语雀的规范化里能活下来。
+不再依赖任何 HTML 标记。回归测试见 `tests/test_journal.py`
+（含一条「连写 10 次，表头必须只有 1 份」）。
+
+### 11.3 为什么测试没能盖住
+
+两条都是 fake 的错，而且错得很典型：
+
+| bug | fake 干了什么 | 真实语雀干了什么 |
+|---|---|---|
+| Bug 7 | 测试把带标记的**原始 HEADER** 原样喂回去（`body=f"{HEADER}
+
+## 旧的…"`），标记还在，于是走了「正确」分支 | **把 HTML 标记剥掉**，于是永远走「没有标记」分支 |
+| Bug 6 | 旧的工具测试**根本没测 `dir_list`**（`tests/` 里一次都没出现过） | —— |
+
+教训：**fake 要比被测代码更「不友好」**。凡是真实系统会做的规范化/裁剪，
+fake 都得照着做一遍，否则测试测的是「代码在我的想象里能不能跑」。
+
+### 11.4 顺带发现：冷启动会立刻跑一次归档
+
+全新部署（没有 `state.json`）时，`last_archive_title` 是空的，
+于是 `archive_due()` 立刻为真 → **第一次 tick 就跑一轮归档会话**（本次约 2.1 万 token）。
+
+这不是 bug（它顺带把知识库结构体检了一遍，本次结论是 `nothing_to_do`），
+但值得知道：**冷启动那一下是有成本的**。等这一轮跑完水位线就落上了，
+之后要等下一次周期翻转才会再跑。
+
+### 11.5 部署结果
+
+```
+Python 3.12.3 · 2 核 / 2G / 40G · Ubuntu 24.04.2 LTS
+时区 Asia/Shanghai（本来就是对的，而且程序已钉死，换机器也不怕）
+uv sync + 370 项测试全过（在服务器上跑的）
+yqa doctor 全绿：token / LLM key / 知识库 / 写权限 / 提示词 / 时区
+服务以专用用户 yuque 运行，systemd Restart=always，内存占用 ~32M
+```
+
+服务单元 `/etc/systemd/system/yuque-agent.service`，状态目录 `/var/lib/yuque-agent`，
+凭证 `/home/yuque/.yuque/`（600）。日志走 journald（已设持久化），`journalctl -u yuque-agent -f`。
