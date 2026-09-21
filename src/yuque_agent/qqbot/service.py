@@ -43,6 +43,7 @@ from .commands import AgentGateway, CommandRouter
 from .config import QQBotConfig
 from .events import InboundMessage
 from .gateway import GatewayOptions, intents_from_env, run_gateway
+from .progress import ProgressOptions, ProgressSender
 
 DEFAULT_NOTIFY_INTERVAL = 5.0
 """通知泵间隔（秒）。比轮询间隔小得多，这样社员几乎立刻收到通知。"""
@@ -58,6 +59,11 @@ class AgentRequest:
     source: str = "qq"
     request_id: str = ""
     created_at: str = ""
+    reply_target: Target | None = None
+    """从哪来的（带 msg_id，用来做被动回复）；CLI 触发时为 ``None``。"""
+
+    progress: ProgressSender | None = None
+    """负责「分段发送 + 保活心跳」的发送器；由 :meth:`handle_inbound` 挂上来。"""
 
     def describe(self) -> str:
         who = self.requested_by or "(未知)"
@@ -78,6 +84,8 @@ class QQBotService:
         qq_client: QQBotClient | None = None,
         log: Callable[[str], None] | None = None,
         notify_interval: float = DEFAULT_NOTIFY_INTERVAL,
+        progress_options: ProgressOptions | None = None,
+        progress_enabled: bool = True,
     ) -> None:
         self.settings = settings
         self.runner = runner
@@ -87,6 +95,8 @@ class QQBotService:
         self.qq_client = qq_client
         self.log = log
         self.notify_interval = notify_interval
+        self.progress_options = progress_options or ProgressOptions()
+        self.progress_enabled = progress_enabled
 
         self.router = CommandRouter(config=config, gateway=self, log=log)
 
@@ -98,6 +108,9 @@ class QQBotService:
         self._watch_started = False
         self._last_run: dict[str, Any] = {}
         self._served = 0
+        # request_id → 播报发送器。**必须在入队的同一把锁里建好**，
+        # 否则 agent 线程可能在「回执还没挂上」之前就把请求取走跑掉（实测踩到过）。
+        self._progress_pending: dict[str, ProgressSender] = {}
 
     # ══════════════════════ AgentGateway（给命令路由用） ══════════════════════
     def pending_notices(self) -> int:
@@ -106,7 +119,13 @@ class QQBotService:
         except OSError:  # pragma: no cover
             return 0
 
-    def request_run(self, *, archive: bool = False, requested_by: str = "") -> dict[str, Any]:
+    def request_run(
+        self,
+        *,
+        archive: bool = False,
+        requested_by: str = "",
+        reply_target: Target | None = None,
+    ) -> dict[str, Any]:
         """把一次跑轮次排进队列（不阻塞）。真正的执行在 agent 线程里。"""
         with self._lock:
             if self._busy or self._queue:
@@ -119,10 +138,15 @@ class QQBotService:
                 kind="archive" if archive else "polling",
                 force=True,
                 requested_by=requested_by,
-                source="qq",
+                source="qq" if (requested_by or reply_target) else "cli",
                 request_id=uuid.uuid4().hex[:12],
                 created_at=_stamp(),
+                reply_target=reply_target,
             )
+            sender = self._make_progress(reply_target)
+            request.progress = sender
+            if sender is not None:
+                self._progress_pending[request.request_id] = sender
             self._queue.append(request)
         self._wake.set()
         what = "归档会话（会动知识库结构）" if archive else "一轮轮询"
@@ -210,32 +234,38 @@ class QQBotService:
         with self._lock:
             self._busy = True
         self._log(f"[qqbot:serve] 开始执行 {request.describe()}")
+        progress = request.progress
+        # 只有助手文本会变成消息；工具调用只用来喂保活文案（见 make_progress_observer）
+        observer = make_progress_observer(progress) if progress is not None else None
         started = time.monotonic()
         result = None
         try:
             if request.kind == "archive":
-                result = self.runner.archive_once()
+                result = self.runner.archive_once(observer=observer)
             else:
                 # ``debounce=False``：``/run`` 是**人工命令**（管理员在手机上敲的），
                 # 跟 ``yqa once`` 同理——敲了就该立刻看到结果，不该被静默期吃掉后
                 # 回头告诉他「没有变化」（那是假话）。
                 # 静默期只对常驻轮询有意义（合并语雀分步投稿产生的噪声）。
-                result = self.runner.poll_once(force=request.force, debounce=False)
+                result = self.runner.poll_once(
+                    force=request.force, debounce=False, observer=observer
+                )
         except Exception as exc:  # noqa: BLE001 - 失败也要回话，别让用户干等
             self._log(f"[qqbot:serve] 执行失败：{type(exc).__name__}: {exc}")
-            self._announce(request, f"跑失败了：{type(exc).__name__}: {exc}")
+            self._deliver(request, f"跑失败了：{type(exc).__name__}: {exc}")
             return
         finally:
             with self._lock:
                 self._busy = False
+            self._finish_progress(request)
         elapsed = time.monotonic() - started
         self._served += 1
         if result is None:
             self._record_watcher()
-            self._announce(request, "这一轮没有变化，没有唤醒 LLM（0 token）。")
+            self._deliver(request, "这一轮没有变化，没有唤醒 LLM（0 token）。")
             return
         self._set_last_run(result)
-        self._announce(request, _summarize(result, elapsed))
+        self._deliver(request, _summarize(result, elapsed))
 
     def _record_watcher(self) -> None:
         result = getattr(self.watcher, "last_result", None)
@@ -250,6 +280,28 @@ class QQBotService:
             "run_id": getattr(result, "run_id", ""),
             "at": _stamp(),
         }
+
+    def _deliver(self, request: AgentRequest, text: str) -> None:
+        """把一段助手输出交给发起人。
+
+        有 :class:`ProgressSender` 时**整段作为一条消息**发（延续同一条 ``msg_id``、
+        ``msg_seq`` 递增）；没有时退回老的主动推送（CLI 触发 / 关掉播报时）。
+        """
+        if request.progress is not None:
+            request.progress.segment(text)
+            return
+        self._announce(request, text)
+
+    def _finish_progress(self, request: AgentRequest) -> None:
+        if request.progress is None:
+            return
+        request.progress.stop()
+        stats = request.progress.stats()
+        self._log(
+            f"[qqbot:serve] 播报结束：分段 {stats['segments']} 条 · 保活 {stats['heartbeats']} 条"
+            f" · 失败 {stats['failed']} 条"
+            + (f"（{stats['last_error']}）" if stats["failed"] else "")
+        )
 
     def _announce(self, request: AgentRequest, text: str) -> None:
         """把结果推给发起人。QQ 主动消息有配额限制，失败只记日志。"""
@@ -323,16 +375,64 @@ class QQBotService:
             return result.to_dict()
         if self.qq_client is None:
             return result.to_dict()
+
+        # /run 与 /archive 的「回执 + 运行中的分段播报 + 保活」串成一条消息流：
+        # 同一条 msg_id、msg_seq 递增（QQ 被动回复窗口内的正规多发姿势）。
+        # 发送器是 request_run 在锁内就建好的，这里只是认领它并把回执当第 1 条发出去。
+        sender = self._take_progress((getattr(result, "data", None) or {}).get("request_id", ""))
+        if sender is not None:
+            sender.start()
+            sender.segment(result.reply)
+            return result.to_dict()
+
         try:
             self.qq_client.send_text(target, result.reply)
         except Exception as exc:  # noqa: BLE001
             self._log(f"[qqbot:in] 回复失败：{type(exc).__name__}: {exc}")
         return result.to_dict()
 
+    def _make_progress(self, reply_target: Target | None) -> ProgressSender | None:
+        """按需建一个播报发送器（调用方必须持有 ``self._lock``）。"""
+        if reply_target is None or self.qq_client is None or not self.progress_enabled:
+            return None
+        return ProgressSender(
+            self.qq_client, reply_target, options=self.progress_options, log=self._log
+        )
+
+    def _take_progress(self, request_id: str) -> ProgressSender | None:
+        if not request_id:
+            return None
+        with self._lock:
+            return self._progress_pending.pop(request_id, None)
+
     # -- 杂项 -------------------------------------------------------------
     def _log(self, text: str) -> None:
         if self.log is not None:
             self.log(text)
+
+
+def make_progress_observer(progress: ProgressSender) -> Callable[..., None]:
+    """把 agent 事件翻译成「分段发送 + 保活文案」。
+
+    **发出去的消息只有助手文本**：``assistant`` 事件里 ``content`` 非空 → 整段发一条。
+    工具调用**不发消息**，只写进 :meth:`ProgressSender.current`，供保活时使用。
+    """
+
+    def observe(kind: str, **fields: Any) -> None:
+        if kind == "assistant":
+            text = str(fields.get("content") or "").strip()
+            if text:
+                progress.segment(text)
+            calls = [str(name) for name in (fields.get("tool_calls") or [])]
+            if calls:
+                progress.current("调用 " + "、".join(calls))
+        elif kind == "tool":
+            progress.current(f"调用 {fields.get('name')}")
+        elif kind == "step":
+            progress.current(f"第 {fields.get('step')} 步")
+        # run_end 不在这里发：结论由 _deliver 作为最后一段发出去
+
+    return observe
 
 
 def _summarize(result: Any, elapsed: float) -> str:
@@ -361,4 +461,10 @@ def _stamp() -> str:
     return clock.stamp()
 
 
-__all__ = ["DEFAULT_NOTIFY_INTERVAL", "AgentGateway", "AgentRequest", "QQBotService"]
+__all__ = [
+    "DEFAULT_NOTIFY_INTERVAL",
+    "AgentGateway",
+    "AgentRequest",
+    "QQBotService",
+    "make_progress_observer",
+]
