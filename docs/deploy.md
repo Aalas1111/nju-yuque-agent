@@ -156,6 +156,30 @@ watcher 按设计吞掉并继续了，下一轮就恢复。**这类错误看一�
 **④ 真正的证据在 `runs/*/session.jsonl`**，不在 stdout。每次 run 的完整
 LLM 输入/输出/思考/工具参数都在那里，那是唯一事实来源。
 
+**④.5 用一个「专属」的 LLM key，别复用你个人的。**
+
+`config.resolve_llm_key()` 的优先级是
+`YQA_LLM_KEY` > `DEEPSEEK_API_KEY` > `~/.pi/agent/auth.json`。
+
+**最后那个 fallback 是个坑**：如果你在服务器上装了 pi（或把它的 `auth.json` 拷过去），
+而 `agent.env` 里的变量名写错了，程序会**静默**改用 pi 的个人 key——
+于是你自己的用量和这台服务器的用量混在一起，两边都算不清。
+所以：`agent.env` 里放**只给这台机器用的** key，并且别在服务器上放
+`~/.pi/agent/auth.json`。
+
+`yqa doctor` 的「LLM key OK」**只表示那个变量存在**——key 过期、打错、
+额度用尽，它都照样显示 OK。想真验一次就这样（约 40 tokens）：
+
+```bash
+sudo -u yuque env -i HOME=/home/yuque PATH=/usr/local/bin:/usr/bin:/bin bash -c '
+  set -a; . /home/yuque/.yuque/agent.env; set +a
+  cd /opt/yuque-agent && uv run --no-sync python -c "
+import sys; sys.path.insert(0, \"src\")
+from yuque_agent import config
+print(config.resolve_llm_key()[:8])      # 前 8 位对不对
+"'
+```
+
 **⑤ 凭证权限**：`~/.yuque/*` 是 600。**注意 600 只在 POSIX 上真生效**——
 Windows 上 `chmod` 改不动 ACL，会「静默成功但什么都没改」（详见 `docs/qqbot.md` §6）。
 
