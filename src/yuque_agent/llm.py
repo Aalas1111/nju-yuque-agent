@@ -154,6 +154,38 @@ class LLMClient:
 
         raise last_error or LLMError("LLM 调用失败")
 
+    def ping(self) -> Usage:
+        """打一发最小请求，确认 key / 端点 / 模型名**真的**能用。
+
+        和 ``chat`` 的区别：**不重试**——探测要快，失败就是失败
+        （``chat`` 会退避重试 3 次，探测没必要等）。代价是十几个 completion
+        token；prompt 那约 35 token 的固定开销躲不掉。
+
+        所以**只在人工诊断（``yqa doctor``）里调它，常驻轮询绝不调**。
+        """
+        try:
+            resp = self._client.post(
+                f"{self.base_url}/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {self.api_key}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": self.model,
+                    "messages": [{"role": "user", "content": "ping"}],
+                    # 推理模型会把 token 全花在 reasoning 上、content 为空——
+                    # 无所谓，这里只关心「有没有被拒」。16 是实测能过的最小值。
+                    "max_tokens": 16,
+                },
+            )
+        except httpx.HTTPError as exc:
+            raise LLMError(f"网络不通（{type(exc).__name__}）：{exc}") from exc
+        if resp.status_code >= 400:
+            raise LLMError(
+                f"请求被拒 {resp.status_code}：{resp.text[:300]}", status=resp.status_code
+            )
+        return self._parse(resp.json()).usage
+
     def _parse(self, payload: dict[str, Any]) -> LLMResponse:
         choices = payload.get("choices") or []
         if not choices:
@@ -187,6 +219,27 @@ class LLMClient:
 
     def _backoff(self, attempt: int) -> None:
         time.sleep(min(2.0 * attempt, 8.0))
+
+
+def describe_llm_error(exc: LLMError) -> str:
+    """把一次调用的失败翻译成「到底哪儿的问题」。
+
+    对一台无人值守的机器来说，**「key 错了」和「网断了」是两件事**：
+    前者要人去换 key，后者什么都不用做。混成一句「调用失败」的话，
+    看日志的人只能去猜——这正是这个项目想消灭的东西。
+    """
+    by_status = {
+        401: "key 无效（打错、被吊销，或不是这个端点的 key）",
+        402: "余额不足",
+        403: "这个 key 没有访问该模型的权限",
+        404: "模型名或端点不对",
+        429: "被限流（key 本身没问题，过一会儿再试）",
+    }
+    if exc.status in by_status:
+        return by_status[exc.status]
+    if exc.status >= 500:
+        return f"对方服务端故障 {exc.status}（key 本身没问题）"
+    return str(exc)
 
 
 def assistant_message(response: LLMResponse, *, send_reasoning: bool = True) -> dict[str, Any]:

@@ -29,7 +29,7 @@ from rich.table import Table
 from . import __version__, clock, outputs
 from . import journal as journal_mod
 from .config import DEFAULT_API_BASE, DEFAULT_HOST, DEFAULT_MODEL, DEFAULT_REPO, Settings
-from .llm import LLMClient, LLMError
+from .llm import LLMClient, LLMError, describe_llm_error
 from .outputs import build_plan_json
 from .prompts import PromptLoader
 from .qqbot.cli import qq_app, qq_doctor_rows
@@ -150,7 +150,34 @@ def doctor(
         except YuqueError as exc:
             table.add_row("知识库", f"[red]{exc}[/red]")
 
+    # 放最后：前面那些要么读本地、要么读语雀，失败得都快；只有这一项要
+    # **真花 token**，所以不挡在前面。它补的是上面「LLM key」那行的盲区——
+    # 那行只检查变量在不在，key 过期 / 打错 / 余额耗尽它都显示 OK。
+    _probe_llm_row(table, settings)
+
     console.print(table)
+
+
+def _probe_llm_row(table: Table, settings: Settings) -> None:
+    """真打一次 API，确认 key 不只是「存在」而是「能用」。"""
+    if not settings.api_key:
+        table.add_row("LLM 可用性", "[yellow]跳过（没找到 key）[/yellow]")
+        return
+    try:
+        with LLMClient(
+            base_url=settings.api_base,
+            api_key=settings.api_key,
+            model=settings.model,
+            max_retries=1,
+            timeout=30.0,
+        ) as client:
+            usage = client.ping()
+    except LLMError as exc:  # noqa: BLE001 - 探测就是为了把失败原因显出来
+        table.add_row("LLM 可用性", f"[red]{describe_llm_error(exc)}[/red]")
+    else:
+        table.add_row(
+            "LLM 可用性", f"[green]OK[/green] 真调一次成功（{usage.total_tokens} tokens）"
+        )
 
 
 def _clients(settings: Settings) -> tuple[YuqueClient, LLMClient]:
