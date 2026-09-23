@@ -350,7 +350,7 @@ scp "lihe@<服务器地址>:/var/lib/yuque-agent/workspace/lqogh0_jsjysq/outbox/
 
 ```ini
 [Unit]
-Description=yuque-agent 申请清单下载口（带密钥的 HTTP，给 cac 手动取件）
+Description=yuque-agent 申请清单下载口（公开 HTTP，打开即下载，给 cac 取件）
 Documentation=https://github.com/Aalas1111/nju-yuque-agent
 After=network-online.target
 Wants=network-online.target
