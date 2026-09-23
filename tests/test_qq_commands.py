@@ -207,7 +207,6 @@ def test_whoami_works_before_being_allowlisted() -> None:
     assert result.handled is True
     assert result.command == "whoami"
     assert "U-stranger" in result.reply
-    assert '"allow"' in result.reply and '"admins"' in result.reply  # 可直接粘的配置
 
 
 def test_whoami_aliases_work() -> None:
@@ -216,7 +215,7 @@ def test_whoami_aliases_work() -> None:
         assert router.dispatch(c2c(text, sender="U-x")).command == "whoami"
 
 
-def test_whoami_in_group_gives_both_ids_and_a_warning() -> None:
+def test_whoami_in_group_gives_both_ids() -> None:
     router, _gateway, _ = make_router(config=QQBotConfig())
     msg = InboundMessage(
         kind="group", sender_id="M-xyz", group_openid="G-123", content="/whoami", message_id="m"
@@ -225,18 +224,37 @@ def test_whoami_in_group_gives_both_ids_and_a_warning() -> None:
 
     assert result.handled is True
     assert "G-123" in result.reply and "M-xyz" in result.reply
-    assert "不是同一个" in result.reply  # 群内成员 id ≠ 私聊 openid
-    assert '"user_groups"' in result.reply and '"admin_groups"' in result.reply
 
 
 def test_denial_for_direct_message_shows_your_own_openid() -> None:
-    """拒绝也要让人能自救：直接把自己的 openid 给他。"""
+    """被拒时把自己的 openid 给他（是事实，不是让他去翻配置）。"""
     router, _gateway, _ = make_router(config=QQBotConfig())
     result = router.dispatch(c2c("你好", sender="U-stranger"))
 
     assert result.handled is False
     assert "U-stranger" in result.reply
-    assert "/whoami" in result.reply
+
+
+def test_replies_are_information_only_never_config_guides() -> None:
+    """命令只回信息，不回指南：回复里不该出现配置片段或「怎么改配置」的说明。"""
+    forbidden = ('"allow"', '"admins"', '"user_groups"', '"admin_groups"', "填进", "重启服务")
+    router, _gateway, _ = make_router(config=QQBotConfig())
+    replies = [
+        router.dispatch(c2c("/whoami", sender="U-stranger")).reply,
+        router.dispatch(c2c("你好", sender="U-stranger")).reply,
+        router.dispatch(
+            InboundMessage(
+                kind="group",
+                sender_id="M-xyz",
+                group_openid="G-123",
+                content="/whoami",
+                message_id="m",
+            )
+        ).reply,
+    ]
+    for reply in replies:
+        for bad in forbidden:
+            assert bad not in reply, f"{bad!r} 出现在回复里：{reply}"
 
 
 def test_whoami_text_never_leaks_other_peoples_ids() -> None:

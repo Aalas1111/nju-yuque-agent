@@ -167,14 +167,7 @@ class CommandRouter:
                 handled=False,
                 reason=reason,
                 admin=admin,
-                reply=(
-                    "你不在这个机器人的白名单里。\n"
-                    f"你的 openid：{msg.sender_id or '(拿不到)'}\n"
-                    "加白名单有三种方式：\n"
-                    "  · 私聊：把 openid 填进 inbound.allow（要管理员再加 inbound.admins）\n"
-                    "  · 想整群放开：把群 openid 填进 inbound.user_groups（或 admin_groups）\n"
-                    "发 /whoami 可以随时再看一次自己的 id 和当前身份。"
-                ),
+                reply=(f"你不在这个机器人的白名单里。\n你的 openid：{msg.sender_id or '(拿不到)'}"),
             )
 
         if spec is None:
@@ -261,7 +254,7 @@ class CommandRouter:
 
 
 def whoami_text(msg: InboundMessage, config: QQBotConfig | None = None) -> str:
-    """``/whoami`` 的回复：把**你自己的** id 打出来，并给一段可直接粘的配置。
+    """``/whoami`` 的回复：**只回事实**——你自己的 id 和当前身份，不带配置指南。
 
     只暴露调用者自己的身份（per-bot openid 本来就只对他自己有意义），所以可以在
     白名单之外安全地回。
@@ -270,37 +263,15 @@ def whoami_text(msg: InboundMessage, config: QQBotConfig | None = None) -> str:
     if config is not None:
         role = config.role_of(msg.sender_id, msg.group_openid)
         label = {ROLE_ADMIN: "管理员", ROLE_USER: "用户"}.get(role, "不在白名单（默认拒绝）")
-        lines.append(f"你当前的身份：{label}")
+        lines.append(f"身份：{label}")
         reason = config.explain_role(msg.sender_id, msg.group_openid)
         if reason:
-            lines.append("  依据：" + "；".join(reason))
-        lines.append("")
+            lines.append("依据：" + "；".join(reason))
     if msg.kind == "group":
-        lines.append("这个是群里的身份（只对这一个机器人有效）：")
-        lines.append(f"  群 openid   ：{msg.group_openid or '(拿不到)'}")
-        lines.append(f"  群内成员 id ：{msg.sender_id or '(拿不到)'}")
-        lines.append("")
-        lines.append("要让机器人在这个群里能用命令，两种配法（改完重启服务）：")
-        lines.append("  ① 整群放开（群里谁发言都算这个身份，不用逐个登记）：")
-        lines.append(f'     "user_groups":  ["{msg.group_openid}"],   ← 普通用户')
-        lines.append(
-            f'     "admin_groups": ["{msg.group_openid}"],   ← 管理员（能用 /run /archive，慎用）'
-        )
-        lines.append("  ② 只放某个人：把下面的「群内成员 id」填进 allow/admins：")
-        lines.append(f'     "allow":  ["{msg.sender_id}"],')
-        lines.append(f'     "admins": ["{msg.sender_id}"]')
-        lines.append("")
-        lines.append("注意：群内成员 id 和私聊的 openid **不是同一个**，别混用。")
+        lines.append(f"群 openid   ：{msg.group_openid or '(拿不到)'}")
+        lines.append(f"群内成员 id ：{msg.sender_id or '(拿不到)'}")
     else:
-        lines.append("这是你的身份（只对这一个机器人有效）：")
-        lines.append(f"  user_openid：{msg.sender_id or '(拿不到)'}")
-        lines.append("")
-        lines.append(
-            "把它填进 qqbot.json 的 inbound.allow 就能用命令（要跑 /run /archive 再加进 admins），"
-        )
-        lines.append("然后 `systemctl restart yuque-agent`：")
-        lines.append(f'  "allow":  ["{msg.sender_id}"],')
-        lines.append(f'  "admins": ["{msg.sender_id}"]')
+        lines.append(f"user_openid：{msg.sender_id or '(拿不到)'}")
     return "\n".join(lines)
 
 
