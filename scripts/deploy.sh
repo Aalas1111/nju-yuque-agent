@@ -10,9 +10,13 @@
 #   6. 只启用「二选一」里的一个轮询单元，重启，验收
 #   7. 把「谁 / 什么时候 / 哪个 commit」追加进 /var/lib/yuque-agent/ops.log
 #
-# 用法：
-#   sudo scripts/deploy.sh            # 带 QQ（本机默认）
-#   sudo WITH_QQ=0 scripts/deploy.sh  # 裸轮询（不带 QQ 网关）
+# 用法（注意 `./`：sudo 的 PATH 里通常没有当前目录，写 `sudo scripts/deploy.sh`
+# 会报 command not found —— 实测过）：
+#   sudo ./scripts/deploy.sh            # 带 QQ（本机默认）
+#   sudo WITH_QQ=0 ./scripts/deploy.sh  # 裸轮询（不带 QQ 网关）
+#
+# 首次引导：这个脚本本身要先在机器上（它自己会 fetch，但得先有它）。
+# 见 docs/deploy.md §5②。
 #
 # 任何一步失败就停下，不改任何东西 —— 部分部署比不部署更难查。
 
