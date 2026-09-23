@@ -34,7 +34,6 @@ from ..watcher import Watcher
 from ..yuque import YuqueClient
 from .bridge import NotifyBridge
 from .client import MessageSender, NullSender, QQBotClient, Target
-from .commands import HELP_TEXT
 from .config import QQBotConfig, default_config_path, init_config
 from .credentials import (
     CredentialStore,
@@ -836,7 +835,6 @@ def qq_config(
         for item in problems:
             console.print(f"  · {item}")
     console.print(f"[dim]路径：{path}[/dim]")
-    console.print(f"[dim]{HELP_TEXT.splitlines()[0]}[/dim]")
 
 
 # ---------------------------------------------------------------- serve

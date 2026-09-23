@@ -212,6 +212,18 @@ def test_help_in_user_group_only_lists_user_commands() -> None:
     assert "/archive" not in result.reply
 
 
+def test_help_has_no_small_talk_or_footer() -> None:
+    """命令回复只留信息：开场白（「我是…能做的事：」）与结尾声明都不该出现。"""
+    router, _, _ = make_router()
+    for text in ("/help", "你好"):
+        for sender in ("u-1", "u-admin"):
+            reply = router.dispatch(c2c(text, sender=sender)).reply
+            assert "看门 agent" not in reply
+            assert "能做的事" not in reply
+            assert "判断权在 agent" not in reply
+            assert not reply.startswith("我是")
+
+
 def test_help_text_without_config_still_lists_everything() -> None:
     """``HELP_TEXT`` 保持「全部命令」语义（CLI 拿它当标语，测试也用它）。"""
     text = help_text()

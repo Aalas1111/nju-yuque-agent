@@ -65,10 +65,6 @@ for _spec in COMMANDS:
         _COMMAND_INDEX[_alias] = _spec
 
 
-HELP_INTRO = "我是语雀知识库的看门 agent，能做的事："
-HELP_FOOTER = "我只认命令，不接受自由文本——判断权在 agent 自己的提示词里，不在这里。"
-
-
 def _line(spec: CommandSpec, *, marker: bool = False) -> str:
     tail = "（仅管理员）" if marker and spec.admin_only else ""
     return f"  /{spec.name} —— {spec.help}{tail}"
@@ -83,18 +79,19 @@ def help_text(
       → **全部命令**，并按「只读 / 管理员」分组；
     * 普通用户 → 只列他真正能用的那几条：写操作列出来他也跑不了，列了只是噪音。
 
-    不传 ``config`` 时按「全部命令」列（:data:`HELP_TEXT` 就是这么来的，CLI 也拿它当标语）。
+    回复里**只有信息**：身份一行 + 命令清单。没有开场白，也没有结尾的声明——
+    那些是文档该说的话，不该占消息。
+
+    不传 ``config`` 时按「全部命令」列（:data:`HELP_TEXT` 就是这么来的）。
     """
     if config is None:
-        return "\n".join(
-            [HELP_INTRO, *(_line(spec, marker=True) for spec in COMMANDS), HELP_FOOTER]
-        )
+        return "\n".join(_line(spec, marker=True) for spec in COMMANDS)
 
     role = config.role_of(sender_id, group_openid)
     admin = role == ROLE_ADMIN
     label = {ROLE_ADMIN: "管理员", ROLE_USER: "用户"}.get(role, "不在名单")
     readable = [spec for spec in COMMANDS if not spec.admin_only]
-    lines = [HELP_INTRO, f"你现在的身份：{label}", ""]
+    lines = [f"你现在的身份：{label}", ""]
     if admin:
         lines.append("全部命令：")
         lines.append("  只读（人人可用）")
@@ -105,7 +102,6 @@ def help_text(
         lines.append("你能用的命令：")
         lines += [_line(spec) for spec in readable]
         lines.append("跑轮询 / 归档这类写操作只有管理员能用。")
-    lines += ["", HELP_FOOTER]
     return "\n".join(lines)
 
 
