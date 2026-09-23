@@ -1,14 +1,14 @@
 [Unit]
-Description=yuque-agent — 让 LLM 接管语雀知识库（程序只做感知与留痕）
+Description=yuque-agent（带 QQ 投递与命令入口）：轮询 + 通知泵 + 网关
 Documentation=https://github.com/Aalas1111/nju-yuque-agent
 After=network-online.target
 Wants=network-online.target
 
-# 和「带 QQ 的那个」是**二选一**：两者都会轮询同一个工作区、都会写 state.json，
+# 和「不带 QQ 的那个」是**二选一**：两者都会轮询同一个工作区、都会写 state.json，
 # 同时跑会互相覆盖（轻则重复通知，重则快照回退）。用 Conflicts 把它变成
 # 机制而不是文档：启一个，systemd 会自动停另一个。
 # （实测踩到过：有人手工起了 `yqa qq serve`，而本服务还在跑。）
-Conflicts=yuque-agent-qq.service
+Conflicts=yuque-agent.service
 
 [Service]
 Type=simple
@@ -21,18 +21,17 @@ Environment=PYTHONUNBUFFERED=1
 Environment=UV_CACHE_DIR=/var/lib/yuque-agent/.uv-cache
 SyslogIdentifier=yuque-agent
 
-ExecStart=/usr/local/bin/uv run --no-sync yqa run --workspace /var/lib/yuque-agent/workspace --interval 60 --quiet-seconds 45 --journal
+# --no-login：systemd 里没有终端可以显示二维码，没有缓存凭证时**不要**试着扫码登录，
+#             直接以「只投递通知」的方式起来（日志里会说清楚），轮询不受影响。
+ExecStart=/usr/local/bin/uv run --no-sync yqa qq serve --workspace /var/lib/yuque-agent/workspace --interval 60 --quiet-seconds 45 --journal --no-login --progress-idle 60
 
 Restart=always
 RestartSec=15
 
-# `systemctl stop` 时 Python 以 143（128+SIGTERM）退出，systemd 默认把它记成
-# 「Failed with result 'exit-code'」。那是**正常停止**，不是故障——不声明的话，
-# 每次重启 / 自动更新都会在日志里留一串假 "Failed"，把真故障淹掉。
-# （这个项目的整个立场就是「日志得能信」，所以不能有这种噪音。）
+# systemctl stop 时 Python 以 143（SIGTERM）退出，那是正常停止，不是故障。
 SuccessExitStatus=143
 
-# 加固：这个进程不需要新特权、不需要改系统
+# 加固：这个进程不需要新特权、不需要改系统。
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=full

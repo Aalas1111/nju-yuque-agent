@@ -97,7 +97,10 @@ install -d -m 750 -o yuque -g yuque /var/lib/yuque-agent
 cd /opt/yuque-agent && sudo -u yuque env HOME=/home/yuque uv run --no-sync pytest -q
 ```
 
-## 4. systemd 单元
+## 4. systemd 单元（不带 QQ 的那个）
+
+> **两个单元二选一**，别同时跑 —— 见 §11。两者都会轮询同一个工作区、都会写
+> `state.json`，同时跑会互相覆盖。单元里用 `Conflicts=` 把它变成了机制。
 
 **权威副本在仓库里：`deploy/yuque-agent.service`。** 直接装它，别手工粘贴——
 当初这份文档就是手工维护的，结果和真机漂了（少了 `Documentation=` 和
@@ -120,6 +123,12 @@ Description=yuque-agent — 让 LLM 接管语雀知识库（程序只做感知�
 Documentation=https://github.com/Aalas1111/nju-yuque-agent
 After=network-online.target
 Wants=network-online.target
+
+# 和「带 QQ 的那个」是**二选一**：两者都会轮询同一个工作区、都会写 state.json，
+# 同时跑会互相覆盖（轻则重复通知，重则快照回退）。用 Conflicts 把它变成
+# 机制而不是文档：启一个，systemd 会自动停另一个。
+# （实测踩到过：有人手工起了 `yqa qq serve`，而本服务还在跑。）
+Conflicts=yuque-agent-qq.service
 
 [Service]
 Type=simple
@@ -416,3 +425,101 @@ curl -s http://127.0.0.1:8787/healthz      # 应回 ok
 
 > 别把 `plan.defaults.json` 放进下载口。它比申请清单敏感得多（真名 + 手机号），
 > 而且 cac 不需要它——`defaults` 已经内联在 `plan.json` 里了。
+
+## 11. 带 QQ 的部署（推荐的主部署）
+
+`deploy/yuque-agent-qq.service`：
+
+```ini
+[Unit]
+Description=yuque-agent（带 QQ 投递与命令入口）：轮询 + 通知泵 + 网关
+Documentation=https://github.com/Aalas1111/nju-yuque-agent
+After=network-online.target
+Wants=network-online.target
+
+# 和「不带 QQ 的那个」是**二选一**：两者都会轮询同一个工作区、都会写 state.json，
+# 同时跑会互相覆盖（轻则重复通知，重则快照回退）。用 Conflicts 把它变成
+# 机制而不是文档：启一个，systemd 会自动停另一个。
+# （实测踩到过：有人手工起了 `yqa qq serve`，而本服务还在跑。）
+Conflicts=yuque-agent.service
+
+[Service]
+Type=simple
+User=yuque
+Group=yuque
+WorkingDirectory=/opt/yuque-agent
+EnvironmentFile=/home/yuque/.yuque/agent.env
+Environment=HOME=/home/yuque
+Environment=PYTHONUNBUFFERED=1
+Environment=UV_CACHE_DIR=/var/lib/yuque-agent/.uv-cache
+SyslogIdentifier=yuque-agent
+
+# --no-login：systemd 里没有终端可以显示二维码，没有缓存凭证时**不要**试着扫码登录，
+#             直接以「只投递通知」的方式起来（日志里会说清楚），轮询不受影响。
+ExecStart=/usr/local/bin/uv run --no-sync yqa qq serve --workspace /var/lib/yuque-agent/workspace --interval 60 --quiet-seconds 45 --journal --no-login --progress-idle 60
+
+Restart=always
+RestartSec=15
+
+# systemctl stop 时 Python 以 143（SIGTERM）退出，那是正常停止，不是故障。
+SuccessExitStatus=143
+
+# 加固：这个进程不需要新特权、不需要改系统。
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```bash
+install -m 644 /opt/yuque-agent/deploy/yuque-agent-qq.service     /etc/systemd/system/yuque-agent-qq.service
+systemctl daemon-reload
+systemctl disable --now yuque-agent      # ← 先停掉不带 QQ 的那个
+systemctl enable --now yuque-agent-qq
+```
+
+### 为什么必须二选一（不是「最好别」，是「跑不出来」）
+
+两个单元都会**轮询同一个工作区**、都会写 `state.json`。而 `state.json` 是
+「上一轮快照」，每个进程都在**自己内存里**留一份、每轮整份覆盖回去。于是：
+
+* 后写的那个会把对方的进度盖掉 → **快照回退**；
+* 快照一回退，下一轮就会把已经处理过的文档当成「新增」再跑一遍 →
+  **重复申请、重复通知、重复写工作日志**。
+
+**`--no-watch` 救不了这个**：它确实不自动轮询了，但 `/run`、`/archive` 这两个
+命令仍然会走 `poll_once()`，照样写 `state.json`（那条路径是刻意保留的——
+管理员敲了命令就该立刻有结果，不该被静默期吃掉）。
+
+所以两个单元里都写了 `Conflicts=`：**启一个，systemd 会自动停另一个**。
+这比写在文档里靠谱 —— 实测就踩到过一次「手工起了 `yqa qq serve`，而
+`yuque-agent.service` 还在跑」。
+
+### `--no-login` 是必须的
+
+systemd 里没有终端，显示不了二维码。没有缓存凭证时加 `--no-login` 会以
+「只投递通知」的方式起来（日志会说明），**轮询不受影响**；不加的话它会试图扫码、
+然后失败退出，systemd 就来一轮 `Restart=always` 的崩溃循环。
+
+### 网关挂了会不会连累轮询？不会
+
+`run_gateway` 自带重连（`max_attempts` 次、退避 + 抖动），放弃时是 **return**
+而不是抛异常；而通知泵的循环永不退出 —— `asyncio.gather` 会一直等，
+所以进程不会退，**agent 线程（轮询 + 归档）继续跑**。
+最坏情况只是「命令入口没了」，`outbox/` 照常产出。
+
+### 验收
+
+```bash
+systemctl is-active yuque-agent-qq          # active
+systemctl is-active yuque-agent             # inactive（被 Conflicts 停掉了）
+journalctl -u yuque-agent-qq -n 30          # 应能看到「轮询 开」与通知泵的日志
+```
+
+然后让管理员在 QQ 里发 `/status`、`/whoami`、`/pending` 各验一次；
+`/run` 会真花 token，确认没问题再试。
