@@ -1,6 +1,7 @@
 {
   "schema_version": "2.0",
   "application_id": "2026-09-23-1234567",
+  "cycle": "0919-0925",
   "_comment": "一份「要素齐备」的教室借用申请。activity 对象就是 crb 的 Activity 原样，下游可直接吃。见 docs/handoff.md。",
   "created_at": "2026-09-20T10:18:40+08:00",
   "source": {

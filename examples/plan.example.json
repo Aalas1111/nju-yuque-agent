@@ -1,5 +1,7 @@
 {
-  "_comment": "yqa export-plan 的输出格式，可直接当 crb 的 plan 文件用：crb plan --file plan.json --save",
+  "_comment": "yqa export-plan / 自动重发的输出格式，可直接当 crb 的 plan 文件用：crb plan --file plan.json --save。cycle 与 generated_at 是给人看的元数据，crb 会忽略（extra=ignore）。",
+  "cycle": "0919-0925",
+  "generated_at": "2026-09-20T10:18:40+08:00",
   "defaults": {
     "JYDWDM": "400760",
     "JYRXM": "张三",

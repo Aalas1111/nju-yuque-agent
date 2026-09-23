@@ -163,24 +163,60 @@ outbox/notify/outbox.jsonl                   只追加的审计流水（投递�
 
 ### 2.3 怎么用（推荐流程）
 
-本仓库提供 `export-plan`，把 `applications/*.json` 汇总成**下游可直接吃的** `plan.json`：
+#### 取件的是 `outbox/plan.json`（**当前周期**，自动刷新）
+
+**不要自己去拼 `plan.json`，也不要读 `applications/` 目录**：
+
+* `outbox/plan.json` 是**当前申请周期**的交付件；它**每次有申请变动就自动重发**，
+  你拿到的总是最新的；
+* 周期翻转（周六 00:00）时，程序会把整批产物搬进 `outbox/archive/<周期>/`，
+  当前那份 `plan.json` 随之清空。**所以旧申请不会漏进本周的清单**；
+* 往期的可以从 `outbox/archive/<周期>/plan.json` 取（那个版本是**冻结**的，
+  等于「那周到底交付了什么」的凭证）。
 
 ```bash
-# 1) 汇总（defaults 里放借用人信息；用 CAC 账号的话这几个字段由账号决定，可留空）
-uv run yqa export-plan -o plan.json \
-  --defaults '{"JYDWDM":"400760","JYRXM":"张三","JYRDH":"13800000000","JSJYLXDM":"02"}'
-
-# 2) 下游先出方案（不写系统）
+# 下游先出方案（不写系统）
 crb plan --file plan.json
 
-# 3) 确认后落库
+# 确认后落库
 crb plan --file plan.json --save
 ```
 
-`plan.json` 结构就是 crb 的官方格式：
+> **每次取完请对一眼 `cycle` 字段**（如 `"0919-0925"`），它必须是本周的周期号。
+> 这是唯一能一眼看出「我拿到的是不是上周那份」的标记——**服务器不会替你验证**。
+
+#### 两条取件通道
+
+油猴脚本跑在浏览器里，**没法直连服务器**，所以只能人工取：
+
+```bash
+# ① scp（零新增攻击面）
+scp lihe@<服务器地址>:/var/lib/yuque-agent/workspace/lqogh0_jsjysq/outbox/plan.json .
+
+# ② 网页（输密钥下载）
+#    http://<服务器地址>:8787/
+#    往期：/archive/0919-0925/plan.json?key=...
+```
+
+（服务器地址与密钥由项目负责人单独交接，**不在仓库里**。）
+
+#### 借用人信息（`defaults`）
+
+`JYRXM` / `JYRDH` 这些只需**设一次**：
+
+```bash
+uv run yqa export-plan --defaults '{"JYDWDM":"400760","JYRXM":"张三","JYRDH":"13800000000","JSJYLXDM":"02"}'
+```
+
+它会落盘到 `outbox/plan.defaults.json`，之后每次自动重发都会带上。
+（不落盘不行——自动重发会把当时传的 defaults 丢掉。）
+
+#### 结构
 
 ```json
 {
+  "cycle": "0919-0925",
+  "generated_at": "2026-09-20T10:18:40+08:00",
   "defaults": { "JYDWDM": "…", "JYRXM": "…", "JYRDH": "…", "JSJYLXDM": "02" },
   "activities": [
     { "title": "新生见面会", "date": "2026-09-23", "period": "7-8", "people": 25,
@@ -188,6 +224,16 @@ crb plan --file plan.json --save
       "_application_id": "2026-09-23-285808038", "_doc_id": 285808038 }
   ]
 }
+```
+
+`activities` 就是 2.1 的 `activity` 原样（加两个 `_` 开头的溯源键）。
+`cycle` / `generated_at` 是**新增的元数据**，crb 会忽略（它用 pydantic，
+默认 `extra="ignore"`）；留它们是为了让人一眼看出拿到的是哪一周。
+
+#### 想知道当前清单长什么样（在服务器上）
+
+```bash
+yqa-as-service export-plan          # 刷新并打印（同时会重写 outbox/plan.json）
 ```
 
 ### 2.4 幂等与去重
@@ -259,6 +305,37 @@ outbox/notify/delivery.jsonl                          投递方的审计流水�
 | `tampered` | **已受理**的文档又被改 | 强调「修改无效」；附上原受理信息 |
 | `deleted` | **已受理**的文档被删 | 强调「删文档 ≠ 撤回申请」 |
 | `info` | 其它需要告知社员的 | —— |
+| `plan_updated` | **清单变了**（程序发，见下） | 给 **cac** 的：「请尽快下载并提交」 |
+
+#### `plan_updated`（新增，**只能由程序发**）
+
+每次 `outbox/plan.json` 的内容真变了，程序就发一条这个，提醒 cac 去取件：
+
+```json
+{
+  "kind": "plan_updated",
+  "member": { "name": "<管理员的语雀人名，取自 YQA_PLAN_ADMIN>" },
+  "summary": "申请清单已更新（0919-0925）",
+  "message": "【申请清单已更新】周期 0919-0925，共 3 条，活动日期 2026-09-23 ~ 2026-09-25。\n请尽快下载 outbox/plan.json 并提交，逾期不补。",
+  "extra": { "cycle": "0919-0925", "count": 3, "dates": [...], "plan_fingerprint": "a1b2c3d4" }
+}
+```
+
+三个刻意的设计：
+
+* **LLM 发不出这一类**。它是程序专属的（`outputs.PROGRAM_NOTICE_KINDS`），
+  `emit_notice` 只收 `LLM_NOTICE_KINDS`——不是靠提示词叮嘱。
+  因为 LLM 只看得到「这一轮改了哪几篇文档」，看不到清单整体长什么样、有没有过期；
+  而「清单变了」是可测的事实，归程序。
+* **按内容指纹去重**：一轮里写 3 份申请只发 **1** 条；周期翻转后清单变空**不**发
+  （不打扰人）。指纹进了 `state.json`，重启不会重发。
+* **文案只说「请下载」，绝不出现「已处理 / 已办结 / 已提交」**。
+  我们无从知道 cac 到底下没下、交没交。声称已办结会把「至少一次」
+  变成「至多一次」（他一次没下，系统就以为这一批处理过了）。
+
+**投递方需要做的**：在 `notify.members` 里给管理员人名配一个目标，
+或者配 `notify.default_target` 兜底。没配也不会丢——会进 `unrouted/` 等人处理。
+管理员人名由 `YQA_PLAN_ADMIN` 指定（见 `docs/deploy.md` §10）。
 
 ### 3.4 身份映射是投递方的责任
 

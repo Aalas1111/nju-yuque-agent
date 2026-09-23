@@ -33,9 +33,7 @@ def _unit_block_in_doc(section_no: str) -> str:
     """把 `docs/deploy.md` 某个章节里的 ```ini 代码块抠出来。"""
     text = DEPLOY_DOC.read_text(encoding="utf-8")
     nxt = str(int(section_no) + 1)
-    pattern = re.compile(
-        rf"^## {re.escape(section_no)}\..*?(?=^## {nxt}\.|\Z)", re.S | re.M
-    )
+    pattern = re.compile(rf"^## {re.escape(section_no)}\..*?(?=^## {nxt}\.|\Z)", re.S | re.M)
     section = pattern.search(text)
     assert section, f"docs/deploy.md 里没找到 §{section_no}"
     block = re.search(r"```ini\n(.*?)```", section.group(0), re.S)
@@ -84,8 +82,7 @@ def test_doc_unit_matches_the_file(name: str) -> None:
         )
         raise AssertionError(
             f"docs/deploy.md §{UNITS[name]} 的 systemd 单元和 deploy/{name} 不一致。\n"
-            "照文档敲出来的单元会和正在跑的不是同一个文件——这正是当初漂过的地方。\n\n"
-            + diff
+            "照文档敲出来的单元会和正在跑的不是同一个文件——这正是当初漂过的地方。\n\n" + diff
         )
 
 
