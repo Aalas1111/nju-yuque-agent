@@ -135,28 +135,34 @@ class QQBotAccount:
 
 
 class CredentialStore:
-    """``~/.yuque/qqbot.json`` 的读写。写是**原子 + 0600**，失败不会留下半个文件。"""
+    """``~/.yuque/qqbot.json`` 的读写。写是**原子 + 0600**，失败不会留下半个文件。
+
+    每次成功写入都会**同步留一份 ``qqbot.json.bak``**（同样 0600）。凭证是扫码换来的，
+    丢一次就要再扫一次；主文件被手滑删掉 / 写坏时，下一次读会**自动从备份恢复**，
+    不用重新扫码。想彻底清掉就跑 ``yqa qq logout``——它会连备份一起删。
+    """
 
     def __init__(self, path: str | Path | None = None) -> None:
         self.path = credentials_path(path)
         self._lock = threading.Lock()
 
+    @property
+    def backup_path(self) -> Path:
+        """兜底副本的路径（与主文件同目录，后缀多一个 ``.bak``）。"""
+        return self.path.with_name(self.path.name + ".bak")
+
     # -- 读 ---------------------------------------------------------------
     def load(self) -> dict[str, QQBotAccount]:
-        """读出全部账户；文件不存在 / 坏掉都返回空 dict（不抛，调用方给友好提示）。"""
+        """读出全部账户；文件不存在 / 坏掉都返回空 dict（不抛，调用方给友好提示）。
+
+        主文件读不出**可用**账户时会试着从 ``.bak`` 恢复一次——恢复成功就把备份写回主文件，
+        让「手滑删了凭证」不至于变成「又要扫一次码」。
+        """
         with self._lock:
-            payload = self._read_raw()
-        accounts = payload.get("accounts")
-        if not isinstance(accounts, dict):
-            # 兼容「文件里直接就是一个账户」的老写法
-            if payload.get("appId"):
-                return {DEFAULT_ACCOUNT: QQBotAccount.from_dict(payload)}
-            return {}
-        out: dict[str, QQBotAccount] = {}
-        for name, entry in accounts.items():
-            if isinstance(entry, dict):
-                out[str(name)] = QQBotAccount.from_dict(entry, account=str(name))
-        return out
+            accounts = self._accounts_from(self._read_raw())
+            if not _has_complete(accounts) and self._restore_from_backup():
+                accounts = self._accounts_from(self._read_raw())
+        return accounts
 
     def get(self, account: str = DEFAULT_ACCOUNT) -> QQBotAccount | None:
         return self.load().get(account)
@@ -173,13 +179,13 @@ class CredentialStore:
                 accounts = {}
             accounts[account.account or DEFAULT_ACCOUNT] = account.to_dict()
             payload = {"version": CREDENTIALS_VERSION, "accounts": accounts}
-            # 只给**新建**的目录 700；已存在的目录（比如 ~/.yuque）不动它
-            self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-            tmp = self.path.with_suffix(self.path.suffix + ".tmp")
-            tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-            self._chmod_file(tmp)
-            tmp.replace(self.path)
-            self._chmod_file(self.path)
+            text = json.dumps(payload, ensure_ascii=False, indent=2)
+            self._write_text(self.path, text)
+            # 备份是**尽力而为**：主文件已经安全落盘，备份写不动不该让这次登录失败
+            try:
+                self._write_text(self.backup_path, text)
+            except OSError:  # pragma: no cover - 只在磁盘满 / 只读挂载时发生
+                pass
         return self.path
 
     def delete(self, account: str = DEFAULT_ACCOUNT) -> bool:
@@ -191,34 +197,74 @@ class CredentialStore:
                 return False
             accounts.pop(account, None)
             if not accounts:
-                try:
-                    self.path.unlink()
-                except FileNotFoundError:
-                    pass
+                # 删干净：主文件与备份都不留，否则下次读又会「自动恢复」回来
+                for victim in (self.path, self.backup_path):
+                    try:
+                        victim.unlink()
+                    except FileNotFoundError:
+                        pass
                 return True
             payload["accounts"] = accounts
-            tmp = self.path.with_suffix(self.path.suffix + ".tmp")
-            tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-            self._chmod_file(tmp)
-            tmp.replace(self.path)
+            text = json.dumps(payload, ensure_ascii=False, indent=2)
+            self._write_text(self.path, text)
+            self._write_text(self.backup_path, text)
         return True
 
     def accounts(self) -> list[str]:
         return sorted(self.load())
 
     # -- 内部 -------------------------------------------------------------
-    def _read_raw(self) -> dict[str, Any]:
+    def _read_raw(self, path: Path | None = None) -> dict[str, Any]:
         try:
-            data = json.loads(self.path.read_text(encoding="utf-8"))
+            data = json.loads((path or self.path).read_text(encoding="utf-8"))
         except (OSError, ValueError):
             return {}
         return data if isinstance(data, dict) else {}
+
+    @staticmethod
+    def _accounts_from(payload: dict[str, Any]) -> dict[str, QQBotAccount]:
+        accounts = payload.get("accounts")
+        if not isinstance(accounts, dict):
+            # 兼容「文件里直接就是一个账户」的老写法
+            if payload.get("appId"):
+                return {DEFAULT_ACCOUNT: QQBotAccount.from_dict(payload)}
+            return {}
+        out: dict[str, QQBotAccount] = {}
+        for name, entry in accounts.items():
+            if isinstance(entry, dict):
+                out[str(name)] = QQBotAccount.from_dict(entry, account=str(name))
+        return out
+
+    def _write_text(self, path: Path, text: str) -> None:
+        """原子写 + 0600；只给**新建**的目录 700，已存在的目录（比如 ``~/.yuque``）不动它。"""
+        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        tmp.write_text(text, encoding="utf-8")
+        self._chmod_file(tmp)
+        tmp.replace(path)
+        self._chmod_file(path)
+
+    def _restore_from_backup(self) -> bool:
+        """备份里有可用账户、主文件里没有 → 把备份内容写回主文件。返回是否恢复了。"""
+        accounts = self._accounts_from(self._read_raw(self.backup_path))
+        if not _has_complete(accounts):
+            return False
+        try:
+            text = self.backup_path.read_text(encoding="utf-8")
+            self._write_text(self.path, text)
+        except OSError:  # pragma: no cover - 只在磁盘满 / 只读挂载时发生
+            return False
+        return True
 
     def _chmod_file(self, path: Path) -> None:
         try:
             path.chmod(stat.S_IRUSR | stat.S_IWUSR)  # 600
         except OSError:  # pragma: no cover
             pass
+
+
+def _has_complete(accounts: dict[str, QQBotAccount]) -> bool:
+    return any(account.complete for account in accounts.values())
 
 
 def resolve_account(

@@ -254,7 +254,10 @@ def auto_login(
         reason = result.message if result is not None else "已取消"
         raise QQBotError(f"扫码绑定没有完成（{reason}），服务不启动。")
     bound = saved["account"]
-    say(f"[qqbot] ✓ 已绑定 AppID {bound.app_id}，凭证写入 {store.path}")
+    say(
+        f"[qqbot] ✓ 已绑定 AppID {bound.app_id}，凭证写入 {store.path}"
+        f"（备份 {store.backup_path.name}，丢了会自动恢复，不用重扫）"
+    )
     return bound
 
 
@@ -576,7 +579,13 @@ def qq_status_payload(
         rows.append(("凭证", f"[green]已绑定[/green] · {resolved.describe()}"))
     else:
         rows.append(("凭证", "[yellow]未绑定[/yellow]（跑 yqa qq login 扫码）"))
-    rows.append(("凭证文件", f"{store.path}（{'存在' if store.path.exists() else '不存在'}）"))
+    backup = "有" if store.backup_path.exists() else "无"
+    rows.append(
+        (
+            "凭证文件",
+            f"{store.path}（{'存在' if store.path.exists() else '不存在'}；备份 {backup}）",
+        )
+    )
     rows.append(("配置文件", f"{config.path or default_config_path(settings)}"))
     rows.append(
         (

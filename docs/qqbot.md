@@ -210,6 +210,11 @@ curl -s "localhost:8765/qr/wait?timeout=120" | jq
 凭证解析优先级：`--app-id/--app-secret` > `YQA_QQ_APPID/YQA_QQ_SECRET` > 凭证文件。
 任何地方都不会打印密钥明文——`QQBotAccount.describe()` 只给 `abcd…wxyz（32 位）` 这种掩码。
 
+**凭证有备份**：每次成功写入都会同步留一份 `qqbot.json.bak`（同样 `600`）。主文件被手滑删掉、
+被写坏、或只剩半个账户时，下一次读取会**自动从备份恢复**——扫码是「一次性成本」，不该因为
+一次 `rm` 再来一遍。要彻底清掉就用 `yqa qq logout`（它连备份一起删，不会自己复活）。
+`yqa qq status` 的「凭证文件」那行会显示备份在不在。
+
 ```bash
 uv run yqa qq status        # 看绑定状态（不联网）
 uv run yqa qq status --check # 顺便联网验一次 access_token
