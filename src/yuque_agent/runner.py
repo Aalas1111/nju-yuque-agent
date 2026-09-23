@@ -205,7 +205,9 @@ class Runner:
             # 升级前的存量：state 里没记过，从申请文件自带的 cycle 字段推断。
             previous = outputs.detect_active_cycle(self.settings)
             if previous and previous != cycle:
-                self.last_rotation = outputs.rotate_outbox(self.settings, cycle=previous)
+                self.last_rotation = outputs.rotate_outbox(
+                    self.settings, cycle=previous, next_cycle=cycle
+                )
             self.state.active_cycle = cycle
             self.save_state()
             return self.last_rotation
@@ -213,7 +215,9 @@ class Runner:
         if self.state.active_cycle == cycle:
             return None
 
-        self.last_rotation = outputs.rotate_outbox(self.settings, cycle=self.state.active_cycle)
+        self.last_rotation = outputs.rotate_outbox(
+            self.settings, cycle=self.state.active_cycle, next_cycle=cycle
+        )
         self.state.active_cycle = cycle
         self.save_state()
         return self.last_rotation
@@ -290,6 +294,10 @@ class Runner:
         # 也不依赖 LLM 的归档会话成不成功）。放在 detect() 之前——
         # 这样本轮报告里看到的 outbox 已经是当前周期的了。
         self.rotate_cycle_if_needed(moment)
+        # 保证 outbox/plan.json 总是存在（可能是空清单）：下载口是「打开即下载」，
+        # 文件不在会让 cac 看到 404，而那不是「这一周期还没申请」的意思。
+        # 有文件时只是一次 stat，几乎不花钱。
+        outputs.ensure_plan_published(self.settings, cycle=self.state.active_cycle)
         current, changes = self.detect()
         dropped: list[DocSnapshot] = []
         self.last_skip = ""

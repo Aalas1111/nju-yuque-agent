@@ -160,6 +160,7 @@ def build_plan_json(
     settings: Settings,
     *,
     defaults: dict[str, Any] | None = None,
+    cycle: str = "",
 ) -> dict[str, Any]:
     """把**当前周期**的申请汇总成下游可直接吃的 ``plan.json``。
 
@@ -192,7 +193,7 @@ def build_plan_json(
         activities.append(entry)
     activities.sort(key=lambda a: (str(a.get("date") or ""), str(a.get("_doc_id") or "")))
     return {
-        "cycle": current_cycle(settings),
+        "cycle": cycle or current_cycle(settings),
         "generated_at": now_iso(),
         "defaults": defaults if defaults is not None else read_plan_defaults(settings),
         "activities": activities,
@@ -223,21 +224,42 @@ def write_plan_defaults(settings: Settings, defaults: dict[str, Any]) -> None:
     _atomic_write(settings.plan_defaults_file, json.dumps(defaults, ensure_ascii=False, indent=2))
 
 
-def publish_plan(settings: Settings, *, defaults: dict[str, Any] | None = None) -> dict[str, Any]:
+def publish_plan(
+    settings: Settings, *, defaults: dict[str, Any] | None = None, cycle: str = ""
+) -> dict[str, Any]:
     """把当前周期的计划写到 ``outbox/plan.json``（cac 就取这个文件）。
 
-    为什么要在**每次写申请**后调：下游拿不到推送，它只能看到「文件是不是新的」。
-    自动重发比让服务去定时重发更准——没变动时时间戳不会乱跳。
+     为什么要在**每次写申请**后调：下游拿不到推送，它只能看到「文件是不是新的」。
+     自动重发比让服务去定时重发更准——没变动时时间戳不会乱跳。
+
+     ``cycle`` 由调用方传（默认按当下算）：周期翻转的时候，归档用的是**那一轮的
+    时刻**，plan 里也该用同一个 —— 同一件事只留一份算法。
     """
-    plan = build_plan_json(settings, defaults=defaults)
+    plan = build_plan_json(settings, defaults=defaults, cycle=cycle)
     if not settings.dry_run:
         settings.plan_file.parent.mkdir(parents=True, exist_ok=True)
         _atomic_write(settings.plan_file, json.dumps(plan, ensure_ascii=False, indent=2))
     return plan
 
 
-def rotate_outbox(settings: Settings, *, cycle: str) -> dict[str, Any]:
+def ensure_plan_published(settings: Settings, *, cycle: str = "") -> bool:
+    """``plan.json`` 不在就补一份（可能是空清单）。返回是否补了。
+
+    为什么：下载口是「打开即下载」，文件不存在的话 cac 看到的是 **404** ——
+    那和「这一周期还没有申请」是两件事，而 404 会让人以为服务坏了。
+    空清单里带着 ``cycle`` 和 ``activities: []``，一看就知道怎么回事。
+    """
+    if settings.plan_file.is_file():
+        return False
+    publish_plan(settings, cycle=cycle)
+    return True
+
+
+def rotate_outbox(settings: Settings, *, cycle: str, next_cycle: str = "") -> dict[str, Any]:
     """把活跃期的产物整批搬进 ``archive/<cycle>/``。**程序做，不靠 LLM。**
+
+    ``cycle`` = **被归档的那个**周期；``next_cycle`` = 接手的新周期
+    （只用来给补发的空清单打上正确的周期号——打错了会让人以为拿到了上一周那份）。
 
     为什么不交给 LLM 的归档会话：归档会话会失败（网络、模型、token 上限），
     而**产物边界不能跟着它一起失败**——一旦没搬，上个周期的申请就会留在
@@ -276,6 +298,9 @@ def rotate_outbox(settings: Settings, *, cycle: str) -> dict[str, Any]:
     if moved:
         settings.ensure_dirs()
         rebuild_application_index(settings)
+    # 搬完马上补一份空清单（带**新**周期号）：下载口不能出现 404。
+    # 注意不能拿被归档的那个周期号去打新清单的标——那会让人以为拿到了上一周那份。
+    ensure_plan_published(settings, cycle=next_cycle or current_cycle(settings))
     return {"cycle": cycle, "dest": str(dest), "moved": moved}
 
 

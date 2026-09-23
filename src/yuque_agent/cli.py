@@ -31,6 +31,8 @@ from . import journal as journal_mod
 from .config import DEFAULT_API_BASE, DEFAULT_HOST, DEFAULT_MODEL, DEFAULT_REPO, Settings
 from .llm import LLMClient, LLMError, describe_llm_error
 from .outputs import publish_plan, write_plan_defaults
+from .planserve import pii_warning
+from .planserve import read_plan as read_plan_file
 from .planserve import serve as serve_plan_http
 from .prompts import PromptLoader
 from .qqbot.cli import qq_app, qq_doctor_rows
@@ -156,7 +158,23 @@ def doctor(
     # 那行只检查变量在不在，key 过期 / 打错 / 余额耗尽它都显示 OK。
     _probe_llm_row(table, settings)
 
+    # cac 靠下载口取件，所以「现在能下到什么」值得一眼看到。
+    _plan_rows(table, settings)
+
     console.print(table)
+
+
+def _plan_rows(table: Table, settings: Settings) -> None:
+    """交付件与下载口的现状。"""
+    plan = read_plan_file(settings)
+    if plan is None:
+        table.add_row("申请清单", "[yellow]还没有 outbox/plan.json[/yellow]")
+    else:
+        count = len(plan.get("activities") or [])
+        table.add_row("申请清单", f"{plan.get('cycle') or '?'} · {count} 条")
+    warning = pii_warning(settings)
+    if warning:
+        table.add_row("⚠ 清单隐私", f"[red]{warning.splitlines()[0].strip()}[/red]")
 
 
 def _probe_llm_row(table: Table, settings: Settings) -> None:
@@ -480,26 +498,24 @@ def serve_plan(
     host: Annotated[str, typer.Option("--host", help="监听地址；默认所有网卡")] = "0.0.0.0",
     port: Annotated[int | None, typer.Option("--port", help="默认 YQA_PLAN_PORT 或 8787")] = None,
 ) -> None:
-    """开一个**带密钥**的 plan.json 下载口（给 cac 手动取件用）。
+    """开一个 plan.json 下载口（给 cac 手动取件用）。**没有密钥，打开即下载。**
 
-    为什么需要它：cac 的油猴脚本跑在浏览器里，**没法直连服务器**（没有任何服务器
-    凭证、也不能开 SSH），所以取件只能靠人工。取件通道有两条：`scp`（见
-    `docs/handoff.md`）和这个网页。
+    为什么不需要它：下游是浏览器里的油猴脚本，**没法直连服务器**，所以取件只能
+    靠人工。原来设计了密钥，但——服务器没有域名、只有明文 HTTP，密钥在 URL 里、
+    在浏览器历史里、在截图里都会漏。与其维持一个「看着有防护、实际拦不住人」的
+    假象，不如干脆不做防护，把「访问即下载」做成一个清楚的事实。
 
-    密钥取自 `YQA_PLAN_KEY`。**没配就拒绝启动** —— 这个口没有域名、只有明文
-    HTTP，再不加密钥就等于把申请清单公开挂出去。
-
-    服务范围是硬编码的：只放行 `outbox/plan.json` 与
-    `outbox/archive/<周期>/plan.json`，URL 里的周期还要过格式校验，
-    所以不存在路径越狱。
+    能做到的（也有测试）：只放行由程序自己算出的那两类文件（路径不可越狱），
+    特别是 ``plan.defaults.json``（**借用人姓名与手机号**）永远取不到。
+    但它仍是**公开**端点 —— 见 `docs/deploy.md` §10。
     """
     settings = _settings(repo, workspace, False, False, DEFAULT_MODEL, 60, False)
     if port is not None:
         settings.plan_port = port
     try:
         serve_plan_http(settings, host=host)
-    except RuntimeError as exc:  # 没配密钥 / 端口被占
-        console.print(f"[red]{exc}[/red]")
+    except OSError as exc:  # 端口被占
+        console.print(f"[red]开不了下载口：{exc}[/red]")
         raise typer.Exit(1) from exc
 
 

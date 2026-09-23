@@ -134,7 +134,9 @@ def test_rotate_moves_everything_into_the_cycle_folder(settings: Settings) -> No
     index = json.loads((settings.applications_dir / "index.json").read_text(encoding="utf-8"))
     assert index["count"] == 0
     assert settings.applications_dir.is_dir()
-    assert not settings.plan_file.exists()
+    # 而且**立刻补一份空清单**：下载口是「打开即下载」，不能出现 404
+    fresh = json.loads(settings.plan_file.read_text(encoding="utf-8"))
+    assert fresh["activities"] == []
 
 
 def test_rotate_keeps_the_archived_plan_frozen(settings: Settings) -> None:
@@ -167,15 +169,24 @@ def test_rotate_is_idempotent(settings: Settings) -> None:
     assert sum(1 for n in names if n.endswith(".json") and "index" not in n) == 2
 
 
-def test_rotate_on_an_empty_outbox_does_not_create_junk(settings: Settings) -> None:
+def test_rotate_always_leaves_a_valid_plan_behind(settings: Settings) -> None:
+    """就算活跃期是空的，搬完也要留一份**合法**的空清单。
+
+    因为下载口是「打开即下载」：文件不在的话 cac 拿到的是 404 ——
+    那和「这一周期还没有申请」是两件事，而 404 会让人以为服务坏了。
+    """
     for path in settings.applications_dir.glob("*.json"):
         path.unlink()
-    output = outputs.detect_active_cycle(settings)
-    assert output == ""
-    settings.plan_file.write_text("{}", encoding="utf-8")
+    assert outputs.detect_active_cycle(settings) == ""
+    settings.plan_file.write_text('{"stale": true}', encoding="utf-8")
+
     outputs.rotate_outbox(settings, cycle="0919-0925")
-    # plan.json 被搬走了，活跃侧不留残骸
-    assert not settings.plan_file.exists()
+
+    fresh = json.loads(settings.plan_file.read_text(encoding="utf-8"))
+    assert fresh["activities"] == []
+    assert fresh["cycle"], "空清单也必须有周期号，否则看不出这是哪一周"
+    # 旧的（脏的）那份被搬进归档，没留在活跃侧
+    assert (settings.cycle_archive_dir("0919-0925") / "plan.json").is_file()
 
 
 # -- 4. 周期翻转由程序做 ---------------------------------------------------
@@ -201,7 +212,10 @@ def test_runner_rotates_when_the_cycle_flips(settings: Settings) -> None:
     assert outcome is not None and outcome["cycle"] == "0919-0925"
     assert runner.state.active_cycle == "0926-1002"
     assert (settings.cycle_archive_dir("0919-0925") / "plan.json").is_file()
-    assert not settings.plan_file.exists()
+    # 活跃侧立刻有一份新的空清单（下载口不能 404），带的是**新**周期号
+    fresh = json.loads(settings.plan_file.read_text(encoding="utf-8"))
+    assert fresh["activities"] == []
+    assert fresh["cycle"] == "0926-1002"
 
 
 def test_runner_does_not_rotate_within_the_same_cycle(settings: Settings) -> None:

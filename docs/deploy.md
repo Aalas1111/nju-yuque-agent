@@ -344,6 +344,8 @@ scp "lihe@<服务器地址>:/var/lib/yuque-agent/workspace/lqogh0_jsjysq/outbox/
 
 ## 10. 下载口（`yqa serve-plan`）
 
+**没有密钥，打开即下载。** cac 的要求：访问 download 立刻拿到 `plan.json`。
+
 `deploy/yuque-agent-plan.service`：
 
 ```ini
@@ -387,43 +389,62 @@ WantedBy=multi-user.target
 ### 装它
 
 ```bash
-# ① 配密钥（**必须**，否则服务拒绝启动——失败关闭）
-printf 'YQA_PLAN_KEY=%s\n' "$(openssl rand -hex 16)" >> /home/yuque/.yuque/agent.env
-# 另外可选：指定管理员人名（见 docs/handoff.md §3.3 的 plan_updated）
-printf 'YQA_PLAN_ADMIN=%s\n' "<管理员的语雀人名>" >> /home/yuque/.yuque/agent.env
-chmod 600 /home/yuque/.yuque/agent.env
-
-# ② 装单元并起服务
-install -m 644 /opt/yuque-agent/deploy/yuque-agent-plan.service \
-    /etc/systemd/system/yuque-agent-plan.service
+install -m 644 /opt/yuque-agent/deploy/yuque-agent-plan.service     /etc/systemd/system/yuque-agent-plan.service
 systemctl daemon-reload && systemctl enable --now yuque-agent-plan
 curl -s http://127.0.0.1:8787/healthz      # 应回 ok
 ```
 
-### 放行端口
+端口用 `--port` 或 `YQA_PLAN_PORT`（默认 8787）。
 
-云厂商的安全组**默认不放行** 8787，这一步只能在控制台做：
+### 放行端口（这一步只能在控制台做）
+
+云厂商的安全组**默认不放行** 8787：
 
 - 阿里云轻量应用服务器 → 防火墙 → 添加规则：TCP `8787`，源 `0.0.0.0/0`
-- 服务器本机一般不用再动（没有 ufw/iptables 规则）
 
 放行后从**外网**验一次：`curl http://<公网IP>:8787/healthz`。
 
-### 它是哪个级别的东西（说清楚，免得被当成安全边界）
+### 路由
 
-服务器**没有域名**，所以只有明文 HTTP——**密钥和申请内容都在网上裸奔**。
-项目负责人明确接受了这个风险（活动信息不算机密信息）。
+```text
+GET /                          网页：当前周期 / 条数 / 更新时间 + 下载按钮
+GET /download                  直接下载 plan.json（cac 说的那条）
+GET /plan.json                 同上（别名，方便 curl / 脚本）
+GET /archive/<周期>/plan.json    往期清单（那个版本是冻结的）
+GET /healthz                   给监控用，不泄任何内容
+```
 
-所以它做不到「防住有心人」，能做到的是三件（都有测试）：
+### 它是哪个级别的东西（**别把它当安全边界**）
 
-1. **失败关闭**：没配 `YQA_PLAN_KEY` 就拒绝启动，不会出现「没密钥也能下」；
-2. **路径不可越狱**：只放行 `outbox/plan.json` 和 `outbox/archive/<周期>/plan.json`
-   那两类由程序自己算出来的文件，URL 里的周期还要过格式校验。
-   特别地 `plan.defaults.json`（**借用人姓名与电话**）就在隔壁，取不到；
-3. **尝试可见**：请求进 `journalctl -u yuque-agent-plan`，**但不记密钥**；
-   同一来源失败超限锁 5 分钟（不影响别的来源）。
+**这是一个公开端点：任何知道地址的人都能拿到当前周期的申请清单。**
 
-> 别把 `plan.defaults.json` 放进下载口。它比申请清单敏感得多（真名 + 手机号），
+原来设计过密钥，后来去掉了 —— 项目负责人和 cac 的判断是：服务器没有域名、
+只有明文 HTTP，密钥在 URL 里、在浏览器历史里、在截图里都会漏；与其维持一个
+「看着有防护、实际拦不住人」的假象，不如干脆不做防护，把「访问即下载」
+做成一个清楚的事实。申请里的**活动信息**不算机密，这一点负责人明确接受了。
+
+去掉密钥之后**还剩**的防护（都有测试）：
+
+1. **路径不可越狱** —— 只放行由程序自己算出的两类文件，URL 里的周期还要过格式
+   校验。这条现在是主要防线：一个公开端点最怕的就是被人顺着路径爬出去。
+2. **`plan.defaults.json` 永远取不到** —— 它就在隔壁，但里面是**借用人姓名与手机号**。
+3. **请求进 journald**（`journalctl -u yuque-agent-plan`）—— 「谁什么时候取了什么」
+   留个痕，省得事后猜。
+
+### ⚠️ 唯一真正的风险面：`defaults`
+
+`plan.json` 里内联了 `defaults`（`JYRXM` 借用人姓名 / `JYRDH` 手机号 …），
+而**下载口是公开的**。所以一旦有人往 `plan.defaults.json` 里填了真名和手机号，
+它们就会跟着公开。
+
+今天它是空的（**只有活动信息**），所以没事。但这件事不能等到哪天有人填了
+才被偶然发现，所以：
+
+- `yqa serve-plan` 启动时会检查，非空就打印告警；
+- `yqa doctor` 里也有一行；
+- 真要填的话，先确认这些字段可以公开。
+
+> 反过来：**别**把 `plan.defaults.json` 加进下载口的路由。它比申请清单敏感得多，
 > 而且 cac 不需要它——`defaults` 已经内联在 `plan.json` 里了。
 
 ## 11. 带 QQ 的部署（推荐的主部署）
