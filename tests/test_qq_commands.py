@@ -4,7 +4,14 @@ from __future__ import annotations
 
 from typing import Any
 
-from yuque_agent.qqbot.commands import HELP_TEXT, CommandRouter, render_status, whoami_text
+from yuque_agent.qqbot.commands import (
+    COMMANDS,
+    HELP_TEXT,
+    CommandRouter,
+    help_text,
+    render_status,
+    whoami_text,
+)
 from yuque_agent.qqbot.config import QQBotConfig
 from yuque_agent.qqbot.events import InboundMessage
 
@@ -155,12 +162,68 @@ def test_user_group_cannot_run_write_commands() -> None:
 # ---------------------------------------------------------------- 读命令
 
 
-def test_help_command() -> None:
+def test_help_command_lists_what_a_user_can_actually_use() -> None:
+    """普通用户拿到的清单里**只有他能用的**：写操作不列（列了也跑不了）。"""
     router, _, _ = make_router()
-    result = router.dispatch(c2c("/help"))
+    result = router.dispatch(c2c("/help"))  # c2c 默认 sender=u-1，普通用户
     assert result.handled is True
-    assert result.reply == HELP_TEXT
-    assert "/run" in result.reply
+    assert "你现在的身份：用户" in result.reply
+    for name in ("/whoami", "/help", "/status", "/pending"):
+        assert name in result.reply
+    for name in ("/run", "/archive"):
+        assert name not in result.reply
+
+
+def test_help_for_admin_lists_every_command() -> None:
+    """管理员拿到的是**全部**命令，写操作单独一组。"""
+    router, _, _ = make_router()
+    result = router.dispatch(c2c("/help", sender="u-admin"))
+    assert result.handled is True
+    assert "你现在的身份：管理员" in result.reply
+    assert "管理员专用" in result.reply
+    for spec in COMMANDS:
+        assert f"/{spec.name}" in result.reply
+
+
+def test_help_in_admin_group_lists_every_command() -> None:
+    """管理员群里的人（openid 从没登记过）也是管理员 → 同样看到全部命令。"""
+    config = QQBotConfig(inbound_admin_groups=("g-admin",), inbound_rate_limit=0)
+    router, _, _ = make_router(config=config)
+    msg = InboundMessage(
+        kind="group",
+        sender_id="m-谁都没登记过",
+        group_openid="g-admin",
+        content="/help",
+        message_id="m",
+    )
+    result = router.dispatch(msg)
+    assert result.handled is True
+    assert "你现在的身份：管理员" in result.reply and "/archive" in result.reply
+
+
+def test_help_in_user_group_only_lists_user_commands() -> None:
+    """用户群里的人只是「用户」→ 清单里没有写操作。"""
+    router, _, _ = make_router()  # make_router 把 g-1 配成 user_groups
+    msg = InboundMessage(
+        kind="group", sender_id="m-1", group_openid="g-1", content="/help", message_id="m"
+    )
+    result = router.dispatch(msg)
+    assert "你现在的身份：用户" in result.reply
+    assert "/archive" not in result.reply
+
+
+def test_help_text_without_config_still_lists_everything() -> None:
+    """``HELP_TEXT`` 保持「全部命令」语义（CLI 拿它当标语，测试也用它）。"""
+    text = help_text()
+    assert text == HELP_TEXT
+    for spec in COMMANDS:
+        assert f"/{spec.name}" in text
+
+
+def test_free_text_hint_is_also_role_aware() -> None:
+    router, _, _ = make_router()
+    assert "/archive" not in router.dispatch(c2c("你好", sender="u-1")).reply
+    assert "/archive" in router.dispatch(c2c("你好", sender="u-admin")).reply
 
 
 def test_chinese_alias_works_without_slash() -> None:

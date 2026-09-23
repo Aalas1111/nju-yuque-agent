@@ -38,21 +38,21 @@ class CommandSpec:
 COMMANDS: tuple[CommandSpec, ...] = (
     CommandSpec(
         "whoami",
-        "把你的 openid（群里还会给群 openid）打出来——加白名单用，**不需要先在白名单里**",
+        "把你的 openid 打出来（群里还会给群 openid）",
         aliases=("myid", "我是谁", "id"),
     ),
-    CommandSpec("help", "看看我能做什么", aliases=("帮助", "?", "？", "h")),
+    CommandSpec("help", "列出你能用的命令", aliases=("帮助", "?", "？", "h")),
     CommandSpec("status", "看一眼知识库与 agent 的状态", aliases=("状态", "s")),
     CommandSpec("pending", "还有几条通知没投递出去", aliases=("待投递", "通知", "p")),
     CommandSpec(
         "run",
-        "立刻跑一轮轮询（仅管理员；会花 token）",
+        "立刻跑一轮轮询（会花 token）",
         admin_only=True,
         aliases=("跑一轮", "once", "r"),
     ),
     CommandSpec(
         "archive",
-        "立刻跑一次归档会话（仅管理员；会改知识库结构）",
+        "立刻跑一次归档会话（会改知识库结构）",
         admin_only=True,
         aliases=("归档", "a"),
     ),
@@ -65,16 +65,51 @@ for _spec in COMMANDS:
         _COMMAND_INDEX[_alias] = _spec
 
 
-HELP_TEXT = "\n".join(
-    [
-        "我是语雀知识库的看门 agent，能做的事：",
-        *[
-            f"  /{spec.name} —— {spec.help}" + ("（仅管理员）" if spec.admin_only else "")
-            for spec in COMMANDS
-        ],
-        "我只认命令，不接受自由文本——判断权在 agent 自己的提示词里，不在这里。",
-    ]
-)
+HELP_INTRO = "我是语雀知识库的看门 agent，能做的事："
+HELP_FOOTER = "我只认命令，不接受自由文本——判断权在 agent 自己的提示词里，不在这里。"
+
+
+def _line(spec: CommandSpec, *, marker: bool = False) -> str:
+    tail = "（仅管理员）" if marker and spec.admin_only else ""
+    return f"  /{spec.name} —— {spec.help}{tail}"
+
+
+def help_text(
+    config: QQBotConfig | None = None, *, sender_id: str = "", group_openid: str = ""
+) -> str:
+    """``/help`` 的回复。**按身份给不同的清单**：
+
+    * 管理员（在 ``inbound.admins`` 里，或身在 ``inbound.admin_groups`` 的群里）
+      → **全部命令**，并按「只读 / 管理员」分组；
+    * 普通用户 → 只列他真正能用的那几条：写操作列出来他也跑不了，列了只是噪音。
+
+    不传 ``config`` 时按「全部命令」列（:data:`HELP_TEXT` 就是这么来的，CLI 也拿它当标语）。
+    """
+    if config is None:
+        return "\n".join(
+            [HELP_INTRO, *(_line(spec, marker=True) for spec in COMMANDS), HELP_FOOTER]
+        )
+
+    role = config.role_of(sender_id, group_openid)
+    admin = role == ROLE_ADMIN
+    label = {ROLE_ADMIN: "管理员", ROLE_USER: "用户"}.get(role, "不在名单")
+    readable = [spec for spec in COMMANDS if not spec.admin_only]
+    lines = [HELP_INTRO, f"你现在的身份：{label}", ""]
+    if admin:
+        lines.append("全部命令：")
+        lines.append("  只读（人人可用）")
+        lines += [_line(spec) for spec in readable]
+        lines.append("  管理员专用")
+        lines += [_line(spec) for spec in COMMANDS if spec.admin_only]
+    else:
+        lines.append("你能用的命令：")
+        lines += [_line(spec) for spec in readable]
+        lines.append("跑轮询 / 归档这类写操作只有管理员能用。")
+    lines += ["", HELP_FOOTER]
+    return "\n".join(lines)
+
+
+HELP_TEXT = help_text()
 
 
 @dataclass
@@ -177,7 +212,8 @@ class CommandRouter:
                 handled=False,
                 reason="不是命令",
                 admin=admin,
-                reply="我只认命令。\n\n" + HELP_TEXT,
+                reply="我只认命令。\n\n"
+                + help_text(self.config, sender_id=msg.sender_id, group_openid=msg.group_openid),
             )
 
         if spec.admin_only and not admin:
@@ -217,7 +253,9 @@ class CommandRouter:
         服务层要用它把「回执 + 后续分段播报」挂到同一个发送器上。
         """
         if spec.name == "help":
-            return HELP_TEXT, {}
+            return help_text(
+                self.config, sender_id=msg.sender_id, group_openid=msg.group_openid
+            ), {}
         if spec.name == "status":
             return render_status(self.gateway.status()), {}
         if spec.name == "pending":
@@ -329,6 +367,7 @@ def render_status(payload: dict[str, Any]) -> str:
 __all__ = [
     "COMMANDS",
     "HELP_TEXT",
+    "help_text",
     "AgentGateway",
     "CommandResult",
     "CommandRouter",
