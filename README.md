@@ -79,11 +79,10 @@
 
 | 文件 | 给谁看 |
 |---|---|
-| [`docs/deploy.md`](docs/deploy.md) | **给运维**：机器要求、目录布局、systemd 单元、运维注意、上线验收清单 |
 | [`docs/handoff.md`](docs/handoff.md) | **给合作方**：两个对外契约（申请 JSON / 通知事件）+ 本 agent 明确的「不做」清单 + 待确认事项 |
 | [`docs/design.md`](docs/design.md) | **给维护者**：架构、周期定义、工具分级、提示词写法、踩过的坑 |
 | [`docs/qqbot.md`](docs/qqbot.md) | **给 QQBot 接入方**：扫码登录全流程（含本地 HTTP 接口）、通知投递、入站命令的能力边界、故障排查 |
-| [`docs/test-report.md`](docs/test-report.md) | **给验收者**：六轮端到端测试（含真服务器部署）的证据、发现的 8 个 bug、复现方式 |
+| [`docs/test-report.md`](docs/test-report.md) | **给验收者**：五轮端到端测试的证据、发现的 7 个 bug、复现方式 |
 | [`examples/`](examples/) | 申请 / 通知 / `plan.json` / `qqbot.json` 的样例（脱敏），直接看格式最快 |
 
 ---
@@ -121,9 +120,6 @@ uv run yqa render <run_id>        # 把某次 run 的 session 渲染成人话
 uv run yqa journal <run_id>       # 把某次 run 写回语雀《工作日志》
 uv run yqa export-plan -o plan.json --defaults '{...}'   # 汇总成下游可直接吃的 plan.json
 uv run yqa sync-guide             # 把 kb/guide.md 上传为知识库《指导文档（必读）》
-uv run yqa reset-test-data        # 清空测试数据（**默认只预览**，加 --yes 才真删）
-                                  #   --scope all 连归档区一起清；--journal 连工作日志也重置
-                                  #   《指导文档》《工作日志》永不删；runs/ 默认保留（那是证据）
 uv run yqa run --qq               # 常驻轮询，顺带把通知投递到 QQ
 ```
 
@@ -146,9 +142,11 @@ uv run yqa qq serve               # 常驻：轮询语雀 + 投递通知 + 收 Q
   按 `seq` 升序发；发了就移进 `done/`；认不出人的进 `unrouted/`；坏文件进 `failed/`；
   发送失败留在 `pending/` 下轮重试（至少一次）。
 * **运行中的播报**：一次 run 里**只有助手文本会成为消息**（一段一条，不流式），工具调用只用来回答「现在在干什么」；上一条消息之后 `--progress-idle` 秒（默认 60）没动静就发一条「⏳ 正在进行：…」保活。同一条 `msg_id` 用递增 `msg_seq` 连发。`--no-progress` 可关。
-* **入站命令**默认拒绝：`qqbot.json` 里的 `inbound.allow` 为空 = 谁都不能用命令；
-  `/run` 与 `/archive` 只有 `inbound.admins` 能用，并且限流 + 单飞。
-  任何自由文本都不会被送去问 LLM。
+* **入站命令**默认拒绝，权限分四份独立名单：`inbound.allow`（个人用户）、
+  `inbound.admins`（个人管理员）、`inbound.user_groups`（整群是用户，谁发言都算）、
+  `inbound.admin_groups`（整群是管理员，慎用）。四份全空 = 谁都不能用命令；
+  `/run` 与 `/archive` 只有管理员能用，并且限流 + 单飞。
+  任何自由文本都不会被送去问 LLM。详见 [`docs/qqbot.md`](docs/qqbot.md) §4.1。
 * **扫码登录**是完整的官方绑定流程：`create_bind_task` → 出示二维码 → 轮询 →
   AES-256-GCM 解密 AppSecret → 写入 `~/.yuque/qqbot.json`（600）。
   详见 [`docs/qqbot.md`](docs/qqbot.md)。
@@ -178,9 +176,6 @@ uv run yqa run --interval 60 --quiet-seconds 45 --journal   # 要 QQ 就换 yqa 
 | 常驻 | 要能长期挂进程（systemd / supervisor / screen），**不能用 serverless** |
 | 时钟 | NTP 正常（归档是时钟驱动的） |
 | 凭证 | 这台机器上会放**两个**：语雀写权限令牌 + DeepSeek key（都在 `~/.yuque/`） |
-
-> **完整的部署步骤（目录布局 / systemd 单元 / 运维注意 / 验收清单）见
-> [`docs/deploy.md`](docs/deploy.md)。**
 
 建议用 systemd 托管并用 `Restart=always`——开发期用 `nohup` 跑时那个进程**自己死过一次**。
 QQ 的扫码登录要在**有终端**的地方做一次（`yqa qq login`），凭证可以拷到服务器；

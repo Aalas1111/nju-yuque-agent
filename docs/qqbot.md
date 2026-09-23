@@ -218,12 +218,19 @@ uv run yqa qq logout --yes   # 删掉本地凭证
 
 ### 2.5 拿 openid（发消息要用）
 
-`c2c` 与 `group` 的目标都是 openid，不是 QQ 号。三个办法：
+`c2c` 与 `group` 的目标都是 openid，不是 QQ 号。**最省事的是让机器人自己告诉你**：
 
-1. 跑 `uv run yqa qq serve`，让管理员私聊 bot 发一句 `/status`，
-   日志里会打 `[qqbot:in] c2c <openid>: …`；
-2. 群里 @ 一下 bot，日志里会打 `[qqbot:in] group <member_openid>: …`，事件里同时带 `group_openid`；
+1. **私聊 bot 发 `/whoami`** → 它回你自己的 `user_openid` 和一段可直接粘的配置；
+   群里 **@ 它发 `/whoami`** → 它回群 `group_openid` + 你的「群内成员 id」
+   （注意这两个**不是同一个 id**：`allow`/`admins` 收群内成员 id，`user_groups`/`admin_groups` 收群 openid）；
+   顺便它还会告诉你**你现在的身份**（管理员 / 用户 / 不在名单）以及判定依据；
+2. 名单之外的任何私聊消息，拒绝回复里也会带上**你自己的 openid**（方便自救），
+   服务日志同时会打 `[qqbot:in] c2c <openid>: …` / `[qqbot:cmd] 拒绝：…`；
 3. 用 REST 逃生舱：`client.api("GET", "/users/@me/guilds")` 之类（要相应权限）。
+
+> 为什么 `/whoami` 能在白名单之外用：它只回**调用者自己的** per-bot openid
+> （对别人没有意义），否则「怎么把自己加进名单」就成了死循环——
+> 机器人让用户去找管理员，而管理员就是用户自己，他却拿不到自己的 openid。
 
 ---
 
@@ -290,21 +297,49 @@ uv run yqa qq notify --file outbox/notify/pending/000012-….json   # 只投一�
 
 ### 4.1 能力边界：默认拒绝
 
-和本项目「工具集就是安全闸门」同一立场，QQ 侧的第一道闸门是**配置里的白名单**：
+和本项目「工具集就是安全闸门」同一立场，QQ 侧的第一道闸门是**配置里的四份名单**。
+四份名单**各自独立生效**，命中其一即可，权限就高不就低：
 
-1. `inbound.allow` **为空 = 谁都不能用命令**（不是「默认开放」）；
-2. `inbound.admins` 是 `allow` 的子集，只有管理员能触发会花钱/会改知识库的命令；
-3. 群聊里还要求**群本身**在 `inbound.groups` 里；
+| 名单 | 收什么 id | 给了什么权限 |
+|---|---|---|
+| `inbound.allow` | 个人 `user_openid`（群内是 `member_openid`） | **用户**：只读命令（`/help` `/status` `/pending`） |
+| `inbound.admins` | 个人 openid | **管理员**：再加 `/run` `/archive` |
+| `inbound.user_groups` | 群 `group_openid` | **整群是用户**：群里谁发言都算用户 |
+| `inbound.admin_groups` | 群 `group_openid` | **整群是管理员**：群里谁发言都能 `/run` `/archive` |
+
+判定顺序（`QQBotConfig.role_of`）：
+
+```
+群消息： 群 ∈ admin_groups 或 发言人 ∈ admins  → 管理员
+        群 ∈ user_groups  或 发言人 ∈ allow   → 用户
+私聊：  发言人 ∈ admins → 管理员 ／ 发言人 ∈ allow → 用户
+其余    → 默认拒绝
+```
+
+「用户直接从用户群读取」就是第三行的意思：**不用逐个登记 openid**，群本身就是授权边界。
+QQ 只给机器人 per-bot 的 `member_openid`，而且只在成员发言（或被 @）时出现，
+**没有「列出群成员」的接口**——所以「按人登记」在群里本来就做不到，
+`user_groups` 才是唯一可维护的写法。
+
+其余规则没变：
+
 4. 管理员命令有**限流**（默认 30 秒）和**单飞**（agent 正在跑就直接拒绝）；
-5. **任何自由文本都不会被送去问 LLM**——回一句「我只认命令」。
+5. **任何自由文本都不会被送去问 LLM**——回一句「我只认命令」；
+6. 群里**不在任何名单**时保持沉默（不打扰其他人）；只有私聊被拒才回一句，
+   且回复里带上**你自己的 openid**，好让你知道该填到哪儿。
+
+> ⚠️ `admin_groups` 是高风险开关：群成员由群管理员控制，而 `/archive` 能删文档、移目录。
+> 只把它用在你完全掌控的小群里；更稳的做法是用 `admins` 逐个授权。`doctor` 只要看到
+> `admin_groups` 非空就会提醒一次。
 
 ### 4.2 命令表
 
 | 命令 | 中文写法 | 谁能用 | 作用 |
 |---|---|---|---|
-| `/help` | `帮助` | 白名单内所有人 | 列出命令 |
-| `/status` | `状态` | 白名单内所有人 | 知识库 / 轮询状态 / 待投递数量 / 最近一轮结论 |
-| `/pending` | `待投递` | 白名单内所有人 | 还有几条通知没投出去 |
+| `/whoami` | `我是谁` / `myid` | **任何人（名单之外也行）** | 打出你自己的 `user_openid`（群里还给群 `group_openid`）、**当前身份与判定依据**，并给出可直接粘贴的配置片段 |
+| `/help` | `帮助` | 用户与管理员 | 列出命令 |
+| `/status` | `状态` | 用户与管理员 | 知识库 / 轮询状态 / 待投递数量 / 最近一轮结论 |
+| `/pending` | `待投递` | 用户与管理员 | 还有几条通知没投出去 |
 | `/run` | `跑一轮` | **仅管理员** | 立刻跑一轮轮询（`force=True`，会花 token） |
 | `/archive` | `归档` | **仅管理员** | 立刻跑一次归档会话（会改知识库结构） |
 
@@ -314,7 +349,7 @@ uv run yqa qq notify --file outbox/notify/pending/000012-….json   # 只投一�
 
 ```
 QQ 群/私聊 ──" /run"──▶ 网关(WS) ──▶ events.parse_event ──▶ CommandRouter
-                                                              │ 白名单? 管理员? 限流? 单飞?
+                                                              │ 什么身份? 限流? 单飞?
                                                               ▼
                                               QQBotService.request_run()  → 入队 + 唤醒
                                                               │
@@ -440,9 +475,12 @@ uv run yqa qq serve --no-progress            # 不播报运行中的分段与保
 
   "inbound": {
     "enabled": true,                // false = 完全不开入站（回到只投递）
-    "allow":  ["<user_openid>"],    // 谁能用命令；空 = 谁都不能
-    "admins": ["<user_openid>"],    // 谁能 /run 与 /archive
-    "groups": ["<group_openid>"],   // 群聊里要额外把群列进来
+    // ── 个人名单（私聊用 user_openid；群里用 member_openid，两者不是一回事）──
+    "allow":  ["<user_openid>"],    // 用户：只读命令
+    "admins": ["<user_openid>"],    // 管理员：再加 /run 与 /archive
+    // ── 群名单（收 group_openid；群里谁发言都算这个身份，不用逐个登记）──
+    "user_groups":  ["<group_openid>"],   // 整群是用户
+    "admin_groups": ["<group_openid>"],   // 整群是管理员（高风险，见 §4.1）
     "rate_limit_seconds": 30        // 管理员命令的最小间隔；0 = 不限流
   }
 }
@@ -450,8 +488,9 @@ uv run yqa qq serve --no-progress            # 不播报运行中的分段与保
 
 `yqa qq doctor` 会做**体检**并直接告诉你哪里危险，比如：
 
-* `admins` 非空但 `allow` 为空 → 默认拒绝，没人能用命令；
-* 管理员不在 `allow` 里 → 他的命令会被拒；
+* 四份名单**全空** → 入站等于关着，默认拒绝，谁都不能用命令；
+* `admin_groups` 非空 → 提醒你这等于把 `/run` `/archive` 交给群里每个人；
+* 同一个群同时出现在 `user_groups` 与 `admin_groups` → 按管理员处理；
 * `unmapped=default` 但没配 `default_target` → 认不出人的通知会进 `unrouted/`。
 
 ## 7. 环境变量
@@ -471,8 +510,8 @@ uv run yqa qq serve --no-progress            # 不播报运行中的分段与保
 上线前逐条过一遍：
 
 - [ ] `~/.yuque/qqbot.json` 权限是 `600`（在 **Linux 上** `ls -l` 确认——Windows 上查不出来，见 §6 的说明），且**没有**被提交进 git（`.gitignore` 已含 `qqbot.json`，而它本来就在 `~/.yuque/` 下、不在仓库里）；
-- [ ] `qqbot.json` 里 `inbound.allow` 只有确实该有权限的人；
-- [ ] 会用 `/archive` 的管理员名单最小化（这条命令能删文档、移目录）；
+- [ ] `qqbot.json` 里 `inbound.allow` / `inbound.user_groups` 只有确实该有权限的人和群；
+- [ ] 会用 `/archive` 的管理员名单（`admins`）最小化，**`admin_groups` 能不用就不用**（这条命令能删文档、移目录）；
 - [ ] 跑 `yqa qq doctor` 没有黄色告警；
 - [ ] `--http` 只绑回环；绑外网时同时用了 `--http-token`；
 - [ ] 没有随手 `--expose-secret`；
@@ -499,8 +538,8 @@ uv run pytest tests/test_qq_*.py -v
 | `test_qq_client.py` | 目标解析、被动/主动消息体、Markdown、token 缓存与失效 |
 | `test_qq_bridge.py` | `done` / `unrouted` / `failed`、顺序、失败留 `pending`、dry-run、审计 |
 | `test_qq_events.py` | C2C / 群事件归一化、@ 前缀剥离、无 `message_id` 时不回复 |
-| `test_qq_commands.py` | 默认拒绝、白名单、群门禁、管理员、限流、自由文本不进 LLM |
-| `test_qq_config.py` | 配置读写、成员解析、兜底、体检 |
+| `test_qq_commands.py` | 默认拒绝、个人/群四份名单、管理员、限流、自由文本不进 LLM |
+| `test_qq_config.py` | 配置读写、成员解析、四档身份判定与依据、兜底、体检 |
 | `test_qq_service.py` | 队列与单飞、结果回推、通知泵、入站回复 |
 | `test_qq_progress.py` | 分段发送（一段一条 / 超长按行切）、保活心跳、`msg_seq` 递增、observer 翻译、agent 循环副作用隔离 |
 | `test_qq_cli.py` | `config/status/doctor/notify/logout/login` 的 CLI 冒烟（含完整登录落盘） |
@@ -517,10 +556,11 @@ uv run pytest tests/test_qq_*.py -v
 | 登录成功但 `access_token` 取不到 | AppID/AppSecret 不对，或机器人没在开放平台上线 | `yqa qq status --check`；回开放平台看机器人状态 |
 | 通知一直堆在 `pending/` | 没绑定 / 发送失败（限流、权限、主动消息配额） | `yqa qq notify --dry-run` 看目标；看 `delivery.jsonl` 里的 `error` |
 | 通知全进了 `unrouted/` | 语雀人名与 `notify.members` 对不上 | `yqa qq notify --dry-run` 会打 `member=…`；补映射后把文件挪回 `pending/` |
-| 群里发命令 bot 不理 | 发言人不在 `allow`，或群不在 `groups`；也可能日志里根本没收到事件 | 看 `[qqbot:in]` 日志；`/status` 只在私聊里试一次 |
+| 群里发命令 bot 不理 | 群和发言人都没进名单（群里按人放行要用**群内成员 id**） | 在群里 @ 它发 `/whoami`，它会回当前身份和依据：想让整群都能用就把群 openid 填进 `user_groups`，只放个人就把群内成员 id 填进 `allow` |
+| 刚绑定就被回「你不在这个机器人的白名单里」 | 默认拒绝（四份名单全空 = 谁都不能用） | 发一句 `/whoami` 拿自己的 openid 填进 `allow`，或直接看拒绝回复里带的那一行 |
 | 启动服务时提示「没有缓存凭证，而且当前输出不是终端」 | 在 systemd / cron / 重定向里跑，二维码没人看得见 | 先在有终端的地方 `yqa qq login`（凭证可复制过去），或设 `YQA_QQ_APPID/YQA_QQ_SECRET`，或加 `--no-login` 明确不要自动登录 |
 | 启动服务时提示「缺少语雀 token」 | 这台机器还没有语雀凭证 | 设 `YQA_TOKEN`；这是**在扫码之前**检查的，避免白扫 |
-| 群里任何人都能用 `/run` | `admins` 配太宽 | 收紧 `admins`，并检查 `doctor` 的体检结果 |
+| 群里任何人都能用 `/run` | 这个群在 `admin_groups` 里，或 `admins` 配太宽 | 把群从 `admin_groups` 挪到 `user_groups`，需要写权限的人改用 `admins` 逐个授权；再看 `doctor` 的体检结果 |
 | `yqa qq serve` 起来就报 websockets 缺失 | 只装了部分依赖 | `uv sync`；或先 `--no-inbound` 只投通知 |
 | 结果消息没推回来 | QQ 主动消息配额/窗口限制 | 属于预期；结论在 `runs/<run_id>/result.json`，或让管理员用 `/status` 查 |
 | 终端二维码扫不出来 | 终端字体/缩放导致不成比例 | 用 `--no-ansi`，或 `--png`，或 `--http` 用浏览器扫 |

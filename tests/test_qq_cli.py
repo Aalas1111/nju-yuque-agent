@@ -12,6 +12,7 @@ from typer.testing import CliRunner
 from tests.qq_fakes import make_notice
 from yuque_agent.config import Settings
 from yuque_agent.qqbot.cli import qq_app
+from yuque_agent.qqbot.config import QQBotConfig
 
 runner = CliRunner()
 
@@ -78,6 +79,94 @@ def test_status_json_reports_unbound(tmp_path: Path) -> None:
     assert payload["bound"] is False
     assert payload["notify"]["pending"] == 0
     assert any("未绑定" in value for _key, value in payload["rows"])
+
+
+def _write_config(settings: Settings, payload: dict) -> Path:
+    path = settings.root / "qqbot.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    return path
+
+
+def test_status_and_doctor_survive_exactly_one_problem(tmp_path: Path) -> None:
+    """回归：正好 1 条体检问题时曾崩。
+
+    ``"[yellow]；".join(problems) + "[/yellow]"`` 只在 problems ≥ 2 时「碰巧」有开标签，
+    正好 1 条时 rich 抛 ``MarkupError: closing tag '[/yellow]' doesn't match any open tag``。
+    而「只有 1 条问题」恰恰是最常见的状态（配了 unmapped 但还没填成员映射）。
+    """
+    settings = workspace_settings(tmp_path)
+    path = _write_config(
+        settings,
+        {
+            "version": 1,
+            "notify": {"unmapped": "skip", "default_target": None, "members": {}},
+            # 入站配好（否则「谁都不能用命令」也会进体检，就不止 1 条了）
+            "inbound": {"enabled": True, "allow": ["u-1"], "admins": ["u-1"]},
+        },
+    )
+    assert len(QQBotConfig.load(path).problems()) == 1  # 先锁住触发条件
+
+    for command in ("status", "doctor"):
+        result = runner.invoke(
+            qq_app,
+            [command, "--workspace", str(tmp_path / "ws"), "--repo", "g/kb"],
+            env=CLEAN_ENV,
+        )
+        assert result.exit_code == 0, result.output
+        assert "MarkupError" not in result.output
+        assert "通知无法投递" in result.output  # 那条问题照样显示出来
+
+
+def test_yqa_doctor_survives_one_problem(tmp_path: Path) -> None:
+    """主 CLI 的 doctor 也会渲染同一行（qq_doctor_rows）。"""
+    from yuque_agent.cli import app as main_app
+
+    settings = workspace_settings(tmp_path)
+    _write_config(
+        settings,
+        {
+            "version": 1,
+            "notify": {"unmapped": "skip", "default_target": None, "members": {}},
+            "inbound": {"enabled": True, "allow": ["u-1"], "admins": ["u-1"]},
+        },
+    )
+    result = runner.invoke(
+        main_app,
+        ["doctor", "--workspace", str(tmp_path / "ws"), "--repo", "g/kb"],
+        env=CLEAN_ENV,
+    )
+    assert result.exit_code == 0, result.output
+    assert "MarkupError" not in result.output
+    # 主 doctor 只挑 4 行显示（凭证/入站/通知积压/二维码），不含「配置体检」——
+    # 那条由 qq status / qq doctor 覆盖，这里只确认它不会把整个 doctor 带崩。
+    assert "通知积压" in result.output
+
+
+def test_status_shows_no_problem_when_config_is_complete(tmp_path: Path) -> None:
+    settings = workspace_settings(tmp_path)
+    _write_config(
+        settings,
+        {
+            "version": 1,
+            "notify": {
+                "unmapped": "default",
+                "default_target": {"scope": "group", "targetId": "g-1"},
+                "members": {"张三": {"scope": "c2c", "targetId": "u-1"}},
+            },
+            "inbound": {
+                "enabled": True,
+                "allow": ["u-1"],
+                "admins": ["u-1"],
+                "user_groups": ["g-1"],
+            },
+        },
+    )
+    result = runner.invoke(
+        qq_app, ["status", "--workspace", str(tmp_path / "ws"), "--repo", "g/kb"], env=CLEAN_ENV
+    )
+    assert result.exit_code == 0, result.output
+    assert "没问题" in result.output
 
 
 def test_status_table_runs(tmp_path: Path) -> None:
