@@ -30,7 +30,7 @@ from . import __version__, clock, outputs
 from . import journal as journal_mod
 from .config import DEFAULT_API_BASE, DEFAULT_HOST, DEFAULT_MODEL, DEFAULT_REPO, Settings
 from .llm import LLMClient, LLMError, describe_llm_error
-from .outputs import build_plan_json
+from .outputs import publish_plan, write_plan_defaults
 from .prompts import PromptLoader
 from .qqbot.cli import qq_app, qq_doctor_rows
 from .runner import Runner, load_state, new_run_id, save_state
@@ -433,13 +433,18 @@ def export_plan(
     out: Annotated[Path | None, typer.Option("--out", "-o", help="写入文件；默认打印")] = None,
     defaults: Annotated[str, typer.Option("--defaults", help="defaults 对象的 JSON 字符串")] = "",
 ) -> None:
-    """把 `outbox/applications/` 汇总成下游可直接吃的 `plan.json`。
+    """把当前周期的申请汇总成下游可直接吃的 `plan.json`。
+
+    它**同时刷新**工作区里的 `outbox/plan.json`——那才是下游（cac）取件的地方。
 
     下游用法（以 crb 为例）：
 
-        yqa export-plan -o plan.json --defaults '{"JYDWDM":"400760","JSJYLXDM":"02"}'
+        yqa export-plan --defaults '{"JYDWDM":"400760","JSJYLXDM":"02"}'
         crb plan --file plan.json          # 先看方案
         crb plan --file plan.json --save   # 再存草稿
+
+    `--defaults` 会被**落盘保存**（`outbox/plan.defaults.json`）：因为 agent 每次
+    写申请都会自动重发 plan.json，不存下来那次重发就把借用人信息丢了。
     """
     settings = _settings(repo, workspace, False, False, DEFAULT_MODEL, 60, False)
     parsed: dict = {}
@@ -449,11 +454,20 @@ def export_plan(
         except ValueError as exc:
             console.print(f"[red]--defaults 不是合法 JSON：{exc}[/red]")
             raise typer.Exit(1) from exc
-    plan = build_plan_json(settings, defaults=parsed)
+    # 落盘保存：agent 每次写申请都会自动重发 plan.json，
+    # 不存下来的话那次重发就把借用人信息丢了。
+    if parsed:
+        write_plan_defaults(settings, parsed)
+    plan = publish_plan(settings, defaults=parsed or None)
     text = json.dumps(plan, ensure_ascii=False, indent=2)
+    console.print(
+        f"[green]已刷新 {settings.plan_file}[/green]"
+        f"（周期 {plan.get('cycle') or '?'}，{len(plan['activities'])} 条活动）",
+        markup=True,
+    )
     if out:
         out.write_text(text, encoding="utf-8")
-        console.print(f"[green]已写入 {out}[/green]（{len(plan['activities'])} 条活动）")
+        console.print(f"[green]另写入 {out}[/green]")
     else:
         console.print_json(text)
 
@@ -603,6 +617,23 @@ def reset_test_data(
             n = len(list(path.glob(pattern))) if path.is_dir() else 0
             console.print(f"  · {label}: {n} 个文件", markup=False)
         console.print("  · outbox/notify/outbox.jsonl：审计流水清空、.seq 归零", markup=False)
+        console.print(
+            f"  · outbox/plan.json：{'会删（申请没了它就该空）' if settings.plan_file.exists() else '不存在'}",
+            markup=False,
+        )
+        console.print(
+            "  · outbox/plan.defaults.json：**保留**（借用人信息是配置，不是测试数据）",
+            markup=False,
+        )
+        if scope == "all":
+            n = len(list(settings.archive_dir.glob("*"))) if settings.archive_dir.is_dir() else 0
+            console.print(
+                f"  · outbox/archive/：{n} 个周期目录 —— 你选了 --scope all",
+                markup=False,
+                style="yellow",
+            )
+        else:
+            console.print("  · outbox/archive/：保留（想一并清掉用 --scope all）", markup=False)
         if include_runs:
             n = len(list(settings.runs_dir.glob("*"))) if settings.runs_dir.is_dir() else 0
             console.print(
@@ -646,7 +677,13 @@ def reset_test_data(
     if audit.exists():
         audit.write_text("", encoding="utf-8")
     outputs.rebuild_application_index(settings)
+    if settings.plan_file.exists():
+        settings.plan_file.unlink()
     console.print("  本地产出已清空，申请索引已重建", markup=False, style="green")
+
+    if scope == "all" and settings.archive_dir.is_dir():
+        shutil.rmtree(settings.archive_dir)
+        console.print("  outbox/archive/ 已清空", markup=False, style="green")
 
     if include_runs and settings.runs_dir.is_dir():
         shutil.rmtree(settings.runs_dir)

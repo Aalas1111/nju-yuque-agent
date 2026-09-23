@@ -151,6 +151,16 @@ class Settings:
 
     verbose: bool = False
 
+    plan_admin: str = ""
+    """「申请清单已更新」这条通知发给谁（**语雀侧人名**）。
+
+    它必须是人名而不是 QQ 号：本层不认识 QQ 身份，映射在 ``qqbot.json`` 的
+    ``notify.members`` 里（这是当初分层时定的——agent 只知道语雀侧的人）。
+
+    留空 = 走 ``notify.default_target`` 兜底；连兜底也没配就进 ``unrouted/``
+    等人处理（**不会默默丢掉**）。
+    """
+
     @classmethod
     def from_env(cls, **overrides: Any) -> Settings:
         settings = cls(
@@ -160,6 +170,7 @@ class Settings:
             interval=int(os.environ.get("YQA_INTERVAL", "60")),
             model=os.environ.get("YQA_MODEL", DEFAULT_MODEL),
             api_base=os.environ.get("YQA_API_BASE", DEFAULT_API_BASE),
+            plan_admin=os.environ.get("YQA_PLAN_ADMIN", ""),
         )
         for key, value in overrides.items():
             if value is not None:
@@ -189,6 +200,30 @@ class Settings:
     @property
     def applications_dir(self) -> Path:
         return self.root / "outbox" / "applications"
+
+    @property
+    def outbox_dir(self) -> Path:
+        return self.root / "outbox"
+
+    @property
+    def plan_file(self) -> Path:
+        """**当前周期**的交付件。每次申请变动就重写它（下游 cac 就取这个文件）。"""
+        return self.outbox_dir / "plan.json"
+
+    @property
+    def plan_defaults_file(self) -> Path:
+        """借用人信息（``JYRXM`` / ``JYRDH`` …）。**不随周期归档**——它不是周期性的。"""
+        return self.outbox_dir / "plan.defaults.json"
+
+    @property
+    def archive_dir(self) -> Path:
+        """往期产物，按周期分目录（``archive/0919-0925/``）。"""
+        return self.outbox_dir / "archive"
+
+    def cycle_archive_dir(self, cycle: str) -> Path:
+        """某个周期的归档目录。**和活跃期的结构完全同形**（plan.json + applications/），
+        所以「这周交付了什么」以后能原样翻出来。"""
+        return self.archive_dir / cycle
 
     @property
     def notify_dir(self) -> Path:

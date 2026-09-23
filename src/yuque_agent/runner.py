@@ -14,7 +14,7 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
-from . import clock
+from . import clock, outputs
 from . import journal as journal_mod
 from .agent import RunResult, run_agent, session_path_for
 from .config import Settings
@@ -32,6 +32,7 @@ from .snapshot import (
     take_snapshot,
 )
 from .tools import RunContext
+from .week import cycle_of as week_cycle_of
 from .week import cycle_targets
 from .yuque import YuqueClient
 
@@ -55,6 +56,21 @@ class State:
     journal_doc_id: int = 0
     placeholder_dropped: int = 0
     """上一轮被剔除的「占位标题 + 空正文」文档数（仅用于自检/调试）。"""
+
+    active_cycle: str = ""
+    """``outbox/applications/`` 里那批申请属于哪个周期（``0919-0925``）。
+
+    程序靠它判断「周期是不是翻了」→ 该不该把产物搬进 ``archive/``。
+    空 = 还没记过（升级前的部署），此时从申请文件自带的 ``cycle`` 字段推断，
+    见 :func:`outputs.detect_active_cycle`。
+    """
+
+    plan_notified: str = ""
+    """最近一次**已经通知过管理员**的清单指纹（见 :func:`outputs.plan_fingerprint`）。
+
+    作用是不重发：一轮里写了 3 份申请，管理员只该收到 **1** 条「请下单」；
+    周期翻转后清单变空，也不该发通知（不打扰人）。
+    """
     """《工作日志》的 doc_id。程序自己写的文档，永远不当变更信号（见 Settings.ignore_doc_titles）。"""
 
     def to_json(self) -> dict[str, Any]:
@@ -68,6 +84,8 @@ class State:
             "pending_polls": self.pending_polls,
             "journal_doc_id": self.journal_doc_id,
             "placeholder_dropped": self.placeholder_dropped,
+            "active_cycle": self.active_cycle,
+            "plan_notified": self.plan_notified,
             "snapshot": self.snapshot.to_json() if self.snapshot else None,
         }
 
@@ -84,6 +102,8 @@ class State:
             pending_polls=int(payload.get("pending_polls") or 0),
             journal_doc_id=int(payload.get("journal_doc_id") or 0),
             placeholder_dropped=int(payload.get("placeholder_dropped") or 0),
+            active_cycle=str(payload.get("active_cycle") or ""),
+            plan_notified=str(payload.get("plan_notified") or ""),
         )
 
 
@@ -140,6 +160,10 @@ class Runner:
     #: 实测踩到过：写完文档立刻 ``yqa once``，被报「没有变化」，让人以为程序坏了。
     last_skip: str = ""
 
+    #: 上一轮 :meth:`rotate_cycle_if_needed` 真搬了东西时的结果（否则 ``None``）。
+    #: 只是给人看的（日志 / 报告注释）——周期翻转本身不花 token，也不依赖 LLM。
+    last_rotation: dict[str, Any] | None = None
+
     # -- 状态 -------------------------------------------------------------
     @property
     def state(self) -> State:
@@ -164,6 +188,60 @@ class Runner:
                 doc_id: doc for doc_id, doc in snapshot.docs.items() if doc_id not in ignored
             }
         return snapshot
+
+    # -- 周期翻转：把上个周期的产物搬进 archive/ -------------------------
+    def rotate_cycle_if_needed(self, moment: datetime) -> dict[str, Any] | None:
+        """周期翻了就把 ``outbox/`` 的活跃产物整批搬进 ``archive/<上个周期>/``。
+
+        **纯程序、零 token、不依赖 LLM 的归档会话。**
+
+        为什么不交给 LLM：归档会话会失败（网络、模型、token 上限），而
+        **产物边界不能跟着它一起失败**——一旦没搬，上个周期的申请就会继续留在
+        ``plan.json`` 里，cac 照着提交就是订一个已经过去的日期。
+        """
+        cycle = week_cycle_of(moment.date(), start_weekday=self.settings.archive_weekday).title
+        self.last_rotation = None  # 每轮重置，否则同一次翻转会在后续几轮里反复被报
+        if not self.state.active_cycle:
+            # 升级前的存量：state 里没记过，从申请文件自带的 cycle 字段推断。
+            previous = outputs.detect_active_cycle(self.settings)
+            if previous and previous != cycle:
+                self.last_rotation = outputs.rotate_outbox(self.settings, cycle=previous)
+            self.state.active_cycle = cycle
+            self.save_state()
+            return self.last_rotation
+
+        if self.state.active_cycle == cycle:
+            return None
+
+        self.last_rotation = outputs.rotate_outbox(self.settings, cycle=self.state.active_cycle)
+        self.state.active_cycle = cycle
+        self.save_state()
+        return self.last_rotation
+
+    # -- 交付件变了就提醒管理员 -----------------------------------------
+    def notify_plan_updated_if_changed(self) -> dict[str, Any] | None:
+        """清单**真变了**才给管理员发一条「请下载提交」。
+
+        为什么归程序而不是 LLM：LLM 只看得到「这一轮改了哪几篇文档」，
+        看不到清单整体长什么样、有没有过期。而「清单变了」这个事实是可测的
+        （扫目录 + 算指纹），所以归程序——而且不会因为 LLM 忘了而漏发。
+
+        去重按**内容指纹**而不是时间戳：一轮里写 3 份申请只发 1 条，
+        周期翻转后清单变空也不发（不打扰人）。
+        """
+        plan = outputs.build_plan_json(self.settings)
+        fingerprint = outputs.plan_fingerprint(plan)
+        if fingerprint == self.state.plan_notified:
+            return None
+        self.state.plan_notified = fingerprint
+        self.save_state()
+        if not plan.get("activities"):
+            return None
+        payload = outputs.build_plan_updated_notice(plan, member=self.settings.plan_admin)
+        try:
+            return outputs.write_notice(self.settings, kind="plan_updated", payload=payload)
+        except outputs.ContractError:
+            return None
 
     def _ignored_doc_ids(self, snapshot: Snapshot) -> set[int]:
         ignored: set[int] = set()
@@ -208,6 +286,10 @@ class Runner:
         """
         moment = now or clock.now()
         prev = self.state.snapshot
+        # 周期翻转：先把上个周期的产物搬进 archive/（纯程序，不花 token，
+        # 也不依赖 LLM 的归档会话成不成功）。放在 detect() 之前——
+        # 这样本轮报告里看到的 outbox 已经是当前周期的了。
+        self.rotate_cycle_if_needed(moment)
         current, changes = self.detect()
         dropped: list[DocSnapshot] = []
         self.last_skip = ""
@@ -314,7 +396,19 @@ class Runner:
                 "本轮的**唯一目的就是把产物重新生成一遍**。"
                 "（这会导致重复通知，所以 rescan 不是日常命令。）"
             )
-        return self._execute(run_id=run_id, kind="polling", payload=report, observer=observer)
+        if self.last_rotation and self.last_rotation.get("moved"):
+            rot = self.last_rotation
+            report["notes"].append(
+                f"**周期已翻转**：程序把上个周期（{rot['cycle']}）的产物整批搬进了 "
+                f"`outbox/archive/{rot['cycle']}/`（共 {len(rot['moved'])} 个文件）。"
+                "这件事是程序做的，不需要你再处理；提一句是为了让你知道 "
+                "`outbox/applications/` 为什么变空了。"
+            )
+        result = self._execute(run_id=run_id, kind="polling", payload=report, observer=observer)
+        # 跑完再看一眼清单：这一轮若改了申请，管理员该收到一条「请下载提交」。
+        # 放在 _execute 之后，所以一轮里写多少份申请都只提醒一次。
+        self.notify_plan_updated_if_changed()
+        return result
 
     # -- 归档入口 ---------------------------------------------------------
     def archive_once(self, *, now: datetime | None = None, observer: Any = None) -> RunResult:

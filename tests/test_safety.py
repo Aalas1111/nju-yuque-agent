@@ -15,7 +15,7 @@ import pytest
 from tests.fakes import Ctx
 from yuque_agent import tools
 from yuque_agent.config import Settings, safe_join
-from yuque_agent.outputs import NOTICE_KINDS
+from yuque_agent.outputs import LLM_NOTICE_KINDS, NOTICE_KINDS, PROGRAM_NOTICE_KINDS
 from yuque_agent.prompts import PromptLoader
 
 #: 全部工具名（用于扫提示词里提到了哪些）
@@ -197,11 +197,43 @@ def test_prompt_tells_the_llm_about_every_notice_kind() -> None:
     这类「契约里有、提示词里没有」的漂移不会报错，只会静默地少发消息。
     """
     text = PromptLoader().load("polling")
-    missing = [kind for kind in NOTICE_KINDS if kind not in text]
+    missing = [kind for kind in LLM_NOTICE_KINDS if kind not in text]
     assert not missing, (
         f"提示词没交代这些 kind，LLM 永远不会产出它们：{missing}\n"
-        f"（契约见 outputs.NOTICE_KINDS 与 docs/handoff.md §3.3）"
+        f"（契约见 outputs.LLM_NOTICE_KINDS 与 docs/handoff.md §3.3）"
     )
+
+
+def test_program_only_notice_kinds_are_not_in_the_prompt() -> None:
+    """程序专属的 kind **不能**出现在提示词里。
+
+    提示词里出现一个 LLM 根本发不出的 kind，就是在教它去调用一个会被拒的工具。
+    所以两边的边界都要卡：契约要能发、提示词要交代、而程序专属的绝对不提。
+    """
+    text = PromptLoader().load("polling")
+    leaked = [kind for kind in PROGRAM_NOTICE_KINDS if kind in text]
+    assert not leaked, (
+        f"这些 kind 是程序自己发的，不该出现在提示词里：{leaked}\n"
+        f"（它们不在 outputs.LLM_NOTICE_KINDS 里，emit_notice 会直接拒掉）"
+    )
+
+
+def test_llm_cannot_emit_program_only_kinds() -> None:
+    """能力闸门：工具描述里不能出现程序专属的 kind，而且得是真拒。
+
+    光靠提示词叮嘱「别发 plan_updated」不算防守——这里查的是机制：
+    ① 工具 schema 的枚举是从 ``LLM_NOTICE_KINDS`` 推的；
+    ② ``emit_notice`` 处理器真拒。
+    """
+    schema = tools.tool_schemas("polling")
+    notice = next(t for t in schema if t["function"]["name"] == "emit_notice")
+    described = notice["function"]["parameters"]["properties"]["kind"]["description"]
+    for kind in PROGRAM_NOTICE_KINDS:
+        assert kind not in described, f"工具描述里混进了程序专属 kind：{kind}"
+    for kind in LLM_NOTICE_KINDS:
+        assert kind in described, f"工具描述里少了 {kind}（否则 LLM 不知道能填它）"
+
+    assert set(NOTICE_KINDS) == set(LLM_NOTICE_KINDS) | set(PROGRAM_NOTICE_KINDS)
 
 
 def test_accepted_notice_is_tied_to_emit_application() -> None:

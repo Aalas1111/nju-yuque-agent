@@ -28,11 +28,13 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import shutil
 from pathlib import Path
 from typing import Any
 
 from . import clock
 from .config import Settings
+from .week import cycle_of
 
 APPLICATION_SCHEMA_VERSION = "2.0"
 NOTICE_SCHEMA_VERSION = "1.0"
@@ -59,7 +61,24 @@ NOTICE_KINDS = (
     "tampered",
     "deleted",
     "info",
+    "plan_updated",
 )
+"""所有合法的通知类型。其中有几个**只能由程序发**，见下。"""
+
+PROGRAM_NOTICE_KINDS = ("plan_updated",)
+"""**程序专属**的通知类型：LLM 不许发。
+
+为什么单列一类：`plan_updated`（「申请清单已更新，cac 请尽快下载提交」）
+要的是给**管理员**的正向提醒，而 LLM 对「清单变了」这件事没有可靠视角——
+它只知道这一轮改了哪几篇文档，不知道清单整体长什么样、有没有过期。
+由 :func:`write_application` 在写盘后顺手发，才不会漏。
+
+**能力闸门**：``tools.emit_notice`` 校验的是 ``LLM_NOTICE_KINDS``，
+所以 LLM 根本发不出这一类（不是靠提示词叮嘱）。
+"""
+
+LLM_NOTICE_KINDS = tuple(k for k in NOTICE_KINDS if k not in PROGRAM_NOTICE_KINDS)
+"""LLM 能发的类型（= 提示词里必须出现的那几个）。"""
 
 
 class ContractError(ValueError):
@@ -104,6 +123,9 @@ def write_application(settings: Settings, payload: dict[str, Any]) -> dict[str, 
     record = {
         "schema_version": APPLICATION_SCHEMA_VERSION,
         "application_id": application_id,
+        # 这份申请属于哪个申请周期。**程序打上去的**，不给 LLM 填——
+        # 周期是纯算术（见 week.cycle_of），而它决定了这份申请什么时候被归档。
+        "cycle": current_cycle(settings),
         "created_at": now_iso(),
         "source": source,
         "activity": {key: activity.get(key) for key in CRB_ACTIVITY_FIELDS},
@@ -120,6 +142,8 @@ def write_application(settings: Settings, payload: dict[str, Any]) -> dict[str, 
         path.parent.mkdir(parents=True, exist_ok=True)
         _atomic_write(path, json.dumps(record, ensure_ascii=False, indent=2))
         rebuild_application_index(settings)
+        # 下游（cac）拿不到推送，只能靠这个文件是新的。所以**每次写申请都重发**。
+        publish_plan(settings)
 
     return {
         "application_id": application_id,
@@ -137,7 +161,12 @@ def build_plan_json(
     *,
     defaults: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """把 ``outbox/applications/`` 里的申请汇总成下游可直接吃的 ``plan.json``。
+    """把**当前周期**的申请汇总成下游可直接吃的 ``plan.json``。
+
+    注意作用域：这里扫的是 ``outbox/applications/``，而**那个目录就是当前周期**
+    （周期翻转时 :func:`rotate_outbox` 会把整批搬进 ``archive/<周期>/``）。
+    所以这里**不需要**再做日期过滤——目录边界就是周期边界，
+    这正是「程序负责可测的事实」：让路径承担语义，而不是让下游猜。
 
     下游用法（以 crb 为例）::
 
@@ -162,7 +191,152 @@ def build_plan_json(
         entry["_doc_id"] = (data.get("source") or {}).get("doc_id")
         activities.append(entry)
     activities.sort(key=lambda a: (str(a.get("date") or ""), str(a.get("_doc_id") or "")))
-    return {"defaults": defaults or {}, "activities": activities}
+    return {
+        "cycle": current_cycle(settings),
+        "generated_at": now_iso(),
+        "defaults": defaults if defaults is not None else read_plan_defaults(settings),
+        "activities": activities,
+    }
+
+
+def current_cycle(settings: Settings) -> str:
+    """今天是哪个申请周期（``0919-0925``）。一周之内稳定不变。"""
+    return cycle_of(clock.today(), start_weekday=settings.archive_weekday).title
+
+
+# ------------------------------------------------------- 交付件 plan.json
+
+
+def read_plan_defaults(settings: Settings) -> dict[str, Any]:
+    """借用人信息（``JYRXM`` / ``JYRDH`` …）。**落盘保存**，否则每次自动重发都会丢。"""
+    try:
+        data = json.loads(settings.plan_defaults_file.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def write_plan_defaults(settings: Settings, defaults: dict[str, Any]) -> None:
+    if not defaults or settings.dry_run:
+        return
+    settings.plan_defaults_file.parent.mkdir(parents=True, exist_ok=True)
+    _atomic_write(settings.plan_defaults_file, json.dumps(defaults, ensure_ascii=False, indent=2))
+
+
+def publish_plan(settings: Settings, *, defaults: dict[str, Any] | None = None) -> dict[str, Any]:
+    """把当前周期的计划写到 ``outbox/plan.json``（cac 就取这个文件）。
+
+    为什么要在**每次写申请**后调：下游拿不到推送，它只能看到「文件是不是新的」。
+    自动重发比让服务去定时重发更准——没变动时时间戳不会乱跳。
+    """
+    plan = build_plan_json(settings, defaults=defaults)
+    if not settings.dry_run:
+        settings.plan_file.parent.mkdir(parents=True, exist_ok=True)
+        _atomic_write(settings.plan_file, json.dumps(plan, ensure_ascii=False, indent=2))
+    return plan
+
+
+def rotate_outbox(settings: Settings, *, cycle: str) -> dict[str, Any]:
+    """把活跃期的产物整批搬进 ``archive/<cycle>/``。**程序做，不靠 LLM。**
+
+    为什么不交给 LLM 的归档会话：归档会话会失败（网络、模型、token 上限），
+    而**产物边界不能跟着它一起失败**——一旦没搬，上个周期的申请就会留在
+    ``plan.json`` 里被 cac 当成这周的提交上去。周期是纯算术，所以这件事
+    归程序，而且不花一个 token。
+
+    搬法和活跃期**完全同形**，所以「那周到底交付了什么」以后能原样翻出来::
+
+        archive/<cycle>/plan.json          当周那个版本（冻结）
+        archive/<cycle>/applications/*.json
+        archive/<cycle>/applications/index.json
+
+    幂等：同一周期重复调不会丢文件（同名文件个别搬）。
+    """
+    dest = settings.cycle_archive_dir(cycle)
+    moved: list[str] = []
+
+    def _move(src: Path, dst_dir: Path) -> None:
+        dst_dir.mkdir(parents=True, exist_ok=True)
+        target = dst_dir / src.name
+        if target.exists():
+            # 同周期已经搬过一次：不覆盖，按修改时间排下去，保证两个都留底
+            stamp = clock.compact_stamp()
+            target = dst_dir / f"{src.stem}.{stamp}{src.suffix}"
+        shutil.move(str(src), str(target))
+        moved.append(src.name)
+
+    if settings.applications_dir.is_dir():
+        for path in sorted(settings.applications_dir.iterdir()):
+            if path.is_file():
+                _move(path, dest / "applications")
+        # 目录本身留着（下游与 reset 都指望它在）
+    if settings.plan_file.is_file():
+        _move(settings.plan_file, dest)
+
+    if moved:
+        settings.ensure_dirs()
+        rebuild_application_index(settings)
+    return {"cycle": cycle, "dest": str(dest), "moved": moved}
+
+
+def plan_fingerprint(plan: dict[str, Any]) -> str:
+    """计划内容的指纹（只看 ``activities``，不看时间戳）。
+
+    用来判断「清单是不是真变了」——否则每轮都会因为 ``generated_at`` 变了
+    而给管理员重发一条「请下载」。
+    """
+    blob = json.dumps(plan.get("activities") or [], ensure_ascii=False, sort_keys=True)
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
+
+
+def build_plan_updated_notice(plan: dict[str, Any], *, member: str = "") -> dict[str, Any]:
+    """拼一条给**管理员**的「清单已更新」通知（cac 看了就知道要下载）。
+
+    注意这是**提醒**，不是「已办结」——我们无从知道 cac 到底下没下、交没交，
+    所以文案只能请他去下，不能声称已处理（那样会把「至少一次」变成「至多一次」）。
+    """
+    activities = plan.get("activities") or []
+    dates = sorted({str(a.get("date") or "") for a in activities if a.get("date")})
+    span = f"{dates[0]} ~ {dates[-1]}" if dates else "（无）"
+    cycle = str(plan.get("cycle") or "")
+    return {
+        "summary": f"申请清单已更新（{cycle}）",
+        "message": (
+            f"【申请清单已更新】周期 {cycle}，共 {len(activities)} 条，活动日期 {span}。\n"
+            "请尽快下载 outbox/plan.json 并提交，逾期不补。\n"
+            "（下载方式：网页用密钥取，或从服务器 scp。）"
+        ),
+        "member": {"name": member},
+        "extra": {
+            "cycle": cycle,
+            "count": len(activities),
+            "dates": dates,
+            "plan_fingerprint": plan_fingerprint(plan),
+        },
+    }
+
+
+def detect_active_cycle(settings: Settings) -> str:
+    """从活跃申请自带的 ``cycle`` 字段推断「这批属于哪个周期」。
+
+    只用于**升级前的存量**——那时申请里还没写 ``cycle``、state 里也没记录，
+    而如果直接当成「当前周期」，上个周期的申请就永远不会被归档。
+    取出现次数最多的那个；一个都没有（空目录 / 老格式）就返回 ``""``。
+    """
+    counts: dict[str, int] = {}
+    for path in sorted(settings.applications_dir.glob("*.json")):
+        if path.name == "index.json":
+            continue
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        cycle = str(data.get("cycle") or "").strip()
+        if cycle:
+            counts[cycle] = counts.get(cycle, 0) + 1
+    if not counts:
+        return ""
+    return max(counts, key=lambda c: (counts[c], c))
 
 
 def rebuild_application_index(settings: Settings) -> None:

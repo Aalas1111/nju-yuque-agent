@@ -420,8 +420,17 @@ def _emit_application(ctx: RunContext, args: dict[str, Any]) -> Any:
 
 
 def _emit_notice(ctx: RunContext, args: dict[str, Any]) -> Any:
-    """产出一条给社员的通知事件（交给负责 QQ 投递的同学）。"""
+    """产出一条给社员的通知事件（交给负责 QQ 投递的同学）。
+
+    **能力闸门**：只收 ``LLM_NOTICE_KINDS``。像 ``plan_updated`` 那种由程序自己发的
+    类型，LLM 根本传不进来——不是靠提示词叮嘱它别发。
+    """
     kind = str(args.get("kind") or "")
+    if kind not in outputs.LLM_NOTICE_KINDS:
+        hint = (
+            "（这一类由程序自己发，不需要你产出）" if kind in outputs.PROGRAM_NOTICE_KINDS else ""
+        )
+        raise ToolError(f"kind 必须是 {list(outputs.LLM_NOTICE_KINDS)} 之一，收到 {kind!r}{hint}")
     payload = {
         "doc": {
             "doc_id": int(args.get("doc_id") or 0),
@@ -611,7 +620,8 @@ COMMON_TOOLS: tuple[Tool, ...] = (
             {
                 "kind": {
                     **STR,
-                    "description": "accepted / rejected / unrecognized / tampered / deleted / info",
+                    # 从契约推导，不手抄——手抄的枚举是另一个会漂的东西。
+                    "description": " / ".join(outputs.LLM_NOTICE_KINDS),
                 },
                 "summary": {**STR, "description": "一句话标题"},
                 "message": {**STR, "description": "给社员看的完整中文正文"},
