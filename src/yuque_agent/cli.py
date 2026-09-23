@@ -31,6 +31,7 @@ from . import journal as journal_mod
 from .config import DEFAULT_API_BASE, DEFAULT_HOST, DEFAULT_MODEL, DEFAULT_REPO, Settings
 from .llm import LLMClient, LLMError, describe_llm_error
 from .outputs import publish_plan, write_plan_defaults
+from .planserve import serve as serve_plan_http
 from .prompts import PromptLoader
 from .qqbot.cli import qq_app, qq_doctor_rows
 from .runner import Runner, load_state, new_run_id, save_state
@@ -470,6 +471,36 @@ def export_plan(
         console.print(f"[green]另写入 {out}[/green]")
     else:
         console.print_json(text)
+
+
+@app.command("serve-plan")
+def serve_plan(
+    repo: RepoOpt = DEFAULT_REPO,
+    workspace: Annotated[Path, typer.Option("--workspace", "-w")] = Path("workspace"),
+    host: Annotated[str, typer.Option("--host", help="监听地址；默认所有网卡")] = "0.0.0.0",
+    port: Annotated[int | None, typer.Option("--port", help="默认 YQA_PLAN_PORT 或 8787")] = None,
+) -> None:
+    """开一个**带密钥**的 plan.json 下载口（给 cac 手动取件用）。
+
+    为什么需要它：cac 的油猴脚本跑在浏览器里，**没法直连服务器**（没有任何服务器
+    凭证、也不能开 SSH），所以取件只能靠人工。取件通道有两条：`scp`（见
+    `docs/handoff.md`）和这个网页。
+
+    密钥取自 `YQA_PLAN_KEY`。**没配就拒绝启动** —— 这个口没有域名、只有明文
+    HTTP，再不加密钥就等于把申请清单公开挂出去。
+
+    服务范围是硬编码的：只放行 `outbox/plan.json` 与
+    `outbox/archive/<周期>/plan.json`，URL 里的周期还要过格式校验，
+    所以不存在路径越狱。
+    """
+    settings = _settings(repo, workspace, False, False, DEFAULT_MODEL, 60, False)
+    if port is not None:
+        settings.plan_port = port
+    try:
+        serve_plan_http(settings, host=host)
+    except RuntimeError as exc:  # 没配密钥 / 端口被占
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from exc
 
 
 @app.command("sync-guide")

@@ -152,6 +152,17 @@ class Settings:
     verbose: bool = False
 
     plan_admin: str = ""
+
+    plan_port: int = 8787
+    """下载口监听端口。"""
+
+    plan_key: str = ""
+    """下载 ``plan.json`` 的密钥（``yqa serve-plan``）。**留空 = 服务拒绝启动**。
+
+    失败关闭（fail-closed）：没配密钥就不开张，而不是开一个不要密钥的下载口。
+    （服务器没有域名，所以只有明文 HTTP——密钥与内容都在网上裸奔。项目负责人
+    明确接受了这个风险，但也正因为如此，更不能出现「没密钥也能下」的状态。）
+    """
     """「申请清单已更新」这条通知发给谁（**语雀侧人名**）。
 
     它必须是人名而不是 QQ 号：本层不认识 QQ 身份，映射在 ``qqbot.json`` 的
@@ -171,6 +182,8 @@ class Settings:
             model=os.environ.get("YQA_MODEL", DEFAULT_MODEL),
             api_base=os.environ.get("YQA_API_BASE", DEFAULT_API_BASE),
             plan_admin=os.environ.get("YQA_PLAN_ADMIN", ""),
+            plan_port=int(os.environ.get("YQA_PLAN_PORT", "8787")),
+            plan_key=os.environ.get("YQA_PLAN_KEY", ""),
         )
         for key, value in overrides.items():
             if value is not None:
