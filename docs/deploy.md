@@ -99,7 +99,20 @@ cd /opt/yuque-agent && sudo -u yuque env HOME=/home/yuque uv run --no-sync pytes
 
 ## 4. systemd 单元
 
-`/etc/systemd/system/yuque-agent.service`：
+**权威副本在仓库里：`deploy/yuque-agent.service`。** 直接装它，别手工粘贴——
+当初这份文档就是手工维护的，结果和真机漂了（少了 `Documentation=` 和
+`SyslogIdentifier=`，`ExecStart` 也不一样），照着敲出来的单元
+**和正在跑的不是同一个文件**。
+
+```bash
+# 仓库就在机器上，直接 install（这是推荐做法）
+install -m 644 /opt/yuque-agent/deploy/yuque-agent.service \
+    /etc/systemd/system/yuque-agent.service
+systemctl daemon-reload && systemctl enable --now yuque-agent
+```
+
+下面是它的内容（给人读的，**改动请改仓库里那个文件**——
+`tests/test_deploy_doc.py` 会断言这两边逐行一致，不一致就测试失败）：
 
 ```ini
 [Unit]

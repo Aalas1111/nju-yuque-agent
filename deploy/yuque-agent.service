@@ -1,0 +1,38 @@
+[Unit]
+Description=yuque-agent — 让 LLM 接管语雀知识库（程序只做感知与留痕）
+Documentation=https://github.com/Aalas1111/nju-yuque-agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=yuque
+Group=yuque
+WorkingDirectory=/opt/yuque-agent
+EnvironmentFile=/home/yuque/.yuque/agent.env
+Environment=HOME=/home/yuque
+Environment=PYTHONUNBUFFERED=1
+Environment=UV_CACHE_DIR=/var/lib/yuque-agent/.uv-cache
+SyslogIdentifier=yuque-agent
+
+ExecStart=/usr/local/bin/uv run --no-sync yqa run --workspace /var/lib/yuque-agent/workspace --interval 60 --quiet-seconds 45 --journal
+
+Restart=always
+RestartSec=15
+
+# `systemctl stop` 时 Python 以 143（128+SIGTERM）退出，systemd 默认把它记成
+# 「Failed with result 'exit-code'」。那是**正常停止**，不是故障——不声明的话，
+# 每次重启 / 自动更新都会在日志里留一串假 "Failed"，把真故障淹掉。
+# （这个项目的整个立场就是「日志得能信」，所以不能有这种噪音。）
+SuccessExitStatus=143
+
+# 加固：这个进程不需要新特权、不需要改系统
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+
+[Install]
+WantedBy=multi-user.target
