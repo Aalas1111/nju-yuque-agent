@@ -40,8 +40,22 @@ from typing import Any
 from .. import clock
 from .protocol import QQBotError
 
-#: 凭证文件默认位置（与 ``~/.yuque/auth.json`` 同一目录，方便一起备份）。
-DEFAULT_CREDENTIALS_PATH = Path.home() / ".yuque" / "qqbot.json"
+
+def default_credentials_path() -> Path:
+    """凭证文件默认位置：``~/.yuque/qqbot.json``（与 ``~/.yuque/auth.json`` 同目录，方便一起备份）。
+
+    **每次调用都重新算**，不用模块级常量。为什么（拿生产事故换来的）：
+    ``Path.home()`` 在**导入时**求值，之后再改 ``HOME`` 就没用了；于是测试里想
+    把凭证重定向到临时目录会失效。而这个项目真的踩过——有人在**生产服务器**上跑
+    ``pytest``，测试里的 ``yqa qq logout --yes`` 把 ``/home/yuque/.yuque/qqbot.json``
+    连同备份一起删了（凭证是扫码换来的，删了就得重新扫）。
+
+    那几个测试的前提是「默认路径下没有凭证」——在开发机上确实没有，
+    在服务器上正好有。惰性求值 + 测试重定向 ``HOME``（见 ``tests/conftest.py``）
+    才能把这类事故从根上堵掉。
+    """
+    return Path.home() / ".yuque" / "qqbot.json"
+
 
 ENV_APP_ID = "YQA_QQ_APPID"
 ENV_APP_SECRET = "YQA_QQ_SECRET"
@@ -69,7 +83,7 @@ def credentials_path(explicit: str | Path | None = None) -> Path:
     from_env = os.environ.get(ENV_CREDENTIALS_PATH, "")
     if from_env:
         return Path(from_env).expanduser()
-    return DEFAULT_CREDENTIALS_PATH
+    return default_credentials_path()
 
 
 @dataclass
@@ -331,7 +345,7 @@ def account_from_bind(
 __all__ = [
     "CREDENTIALS_VERSION",
     "DEFAULT_ACCOUNT",
-    "DEFAULT_CREDENTIALS_PATH",
+    "default_credentials_path",
     "ENV_ACCOUNT",
     "ENV_APP_ID",
     "ENV_APP_SECRET",
