@@ -19,6 +19,12 @@
 * 干活顺序：`git fetch` → 从 `origin/main` 开 feature 分支 → 提交 → 推到自己的 fork →
   请上游合并。上游是用 `Merge branch '…'` 收外部贡献的，别要求它 rebase。
 * **服务器上永远不许 rebase / 手工 merge**：`/opt/yuque-agent` 只允许快进（见 §2.3）。
+* **也不许在服务器上写代码、直接 `git commit`。** 实测踩过：有人在生产机上改了
+  5 个提交、`main` 就此和上游分叉，那批改动**没推 GitHub**（没备份、没法 review），
+  而且下次 `git pull` 直接被 git 拒掉（divergent branches）。
+  正确做法：本地/自己 fork 上改 → 走 PR → 合并 → `scripts/deploy.sh` 更新生产机。
+  这条现在有机制兜着（`deploy.sh` 遇到不干净的工作区会硬失败、
+  非快进也会失败），但**别依赖机制去猜意图**。
 * 收工前**跟踪的文件**必须干净（`git status --porcelain --untracked-files=no` 为空）：
   改了东西又不提交，下一个人（或下一个代理）分不清哪些是有意的改动。
   未跟踪文件（`.env`、草稿、临时产物）不用提交，但要收拾——`scripts/deploy.sh` 会列出来提醒。
@@ -43,7 +49,13 @@
 * 只有三个单元，权威副本在 `deploy/`，生效位置是 `/etc/systemd/system/`：
   * `yuque-agent.service` —— 裸轮询（不带 QQ）
   * `yuque-agent-qq.service` —— 轮询 + 通知泵 + QQ 网关 + 运行中播报
-  * `yuque-agent-plan.service` —— 带密钥的申请清单下载口（`yqa serve-plan`）
+  * `yuque-agent-plan.service` —— 申请清单下载口（`yqa serve-plan`）。
+  **无密钥，打开即下载**（`GET /download`）。密钥是刻意去掉的：服务器没有域名、
+  只有明文 HTTP，密钥在 URL / 浏览器历史 / 截图里都会漏——与其维持一个「看着有防护、
+  实际拦不住人」的假象，不如把「访问即下载」做成一个清楚的事实。
+  剩下的是**路径不可越狱**（只放行程序自己算出的那几个文件）。
+  它暴露什么、`defaults` 一旦填了会怎样，见 `docs/deploy.md` §10。
+  **别往里加路由，尤其别加 `plan.defaults.json`（里面是借用人姓名 + 手机号）。**
 * **前两个二选一**：都轮询同一个工作区、都写 `state.json`，同时跑会互相覆盖
   （轻则重复通知，重则快照回退）。单元里用 `Conflicts=` 把它变成机制，不靠人记。
   本机启用的是 `yuque-agent-qq.service`。
@@ -51,7 +63,11 @@
   和 systemd 里那个抢同一个工作区。
 * 改单元 = 改 `deploy/*.service` → `install` 到 `/etc` → `daemon-reload` →
   **同步 `docs/deploy.md` 里那份**。`tests/test_deploy_doc.py` 会拦住两边漂移。
-* 新服务默认绑 `127.0.0.1`；要绑 `0.0.0.0` 必须在 `docs/deploy.md` 里写清楚它靠什么鉴权。
+* **新服务默认绑 `127.0.0.1`。** 要绑 `0.0.0.0`（对公网开）必须先在 `docs/deploy.md`
+  里写清楚：它暴露什么内容、靠什么鉴权、以及为什么接受这个暴露面。
+  目前只有两个例外，都已写清：`yuque-agent-plan.service`（**公开、无鉴权**，
+  内容只有申请清单与活动信息）和 `yuque-agent-qq.service`（**不监听任何端口**，
+  是它自己外连 QQ 网关）。
 
 ### 2.3 一次只能有一个写者
 

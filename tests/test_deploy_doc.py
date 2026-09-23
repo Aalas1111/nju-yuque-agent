@@ -134,6 +134,34 @@ def test_unit_never_runs_as_root() -> None:
         assert "User=root" not in _unit(name), f"{name} 不该用 root 跑"
 
 
+AGENTS = ROOT / "AGENTS.md"
+
+
+def test_agents_md_lists_every_unit() -> None:
+    """`AGENTS.md` 必须提到 `deploy/` 下的**每个**单元。
+
+    为什么：它是代理/人进仓库前「先读的那三份」之一，里面写着「只有这三个单元」。
+   部署里新增一个单元而忘了改它，下一个人就会按旧清单去理解生产机。
+
+    这条守卫是拿一次真漂移换来的：`AGENTS.md` 当时把下载口写成「带密钥的」。
+    而密钥在那之前就去掉了 —— 一个专门用来防漂移的文件自己漂了。
+    """
+    body = AGENTS.read_text(encoding="utf-8")
+    missing = [name for name in UNITS if name not in body]
+    assert not missing, (
+        f"AGENTS.md 里没提这些单元：{missing}\n"
+        "（新增/改名单元时，deploy.md 有守卫拦着，AGENTS.md 也得跟上）"
+    )
+
+
+def test_agents_md_points_at_the_real_source_of_truth() -> None:
+    """它得把读者引到 deploy.md，而不是自己再写一份会漂的副本。"""
+    body = AGENTS.read_text(encoding="utf-8")
+    for target in ("docs/deploy.md", "docs/handoff.md", "scripts/deploy.sh"):
+        assert target in body, f"AGENTS.md 里没指向 {target}"
+    assert (ROOT / "scripts" / "deploy.sh").is_file(), "AGENTS.md 说部署走 deploy.sh，但它不在"
+
+
 def test_plan_service_is_not_in_the_agent_unit() -> None:
     """下载口和轮询是**两个**进程。
 
