@@ -186,6 +186,38 @@ def test_every_registered_tool_has_a_description_and_schema() -> None:
             assert schema["function"]["parameters"]["type"] == "object"
 
 
+def test_member_name_is_explained_in_both_places() -> None:
+    """`member_name` 必须在**工具描述**和**提示词**里都交代。
+
+    这条守卫来自真机问题：QQ 通知发给谁，全靠 LLM 把文档里「申请人：」搬进
+    `member_name`，而——工具 schema 里它是个裸的 `STR`（没有 description），
+    提示词里 `member_name` **零命中**。字段名自解释所以能用，但那是靠运气，
+    而且漂了没人会发现（同 `accepted` 那次的毛病）。
+
+    后果很具体：填错一个字 → 查不到 → 通知进 `unrouted/`，那位社员什么都收不到。
+    """
+    schema = tools.tool_schemas("polling")
+    notice = next(t for t in schema if t["function"]["name"] == "emit_notice")
+    param = notice["function"]["parameters"]["properties"]["member_name"]
+    described = param.get("description") or ""
+    assert described, "emit_notice.member_name 没有 description —— LLM 只能猜它是什么"
+    assert "申请人" in described, f"描述里要说清它是文档里那个人名，实际：{described!r}"
+
+    text = PromptLoader().load("polling")
+    assert "member_name" in text, "提示词里没提 member_name（契约有、提示词不提=会漂）"
+    assert "申请人" in text
+
+
+def test_member_name_tells_the_llm_not_to_make_one_up() -> None:
+    """文档里没写申请人时**不许编**。
+
+    编一个名字的后果比留空严重：留空只进 `unrouted/`（可恢复），
+    编出来可能命中另一个真实成员 → **通知发错人**。
+    """
+    text = PromptLoader().load("polling")
+    assert "不要编" in text or "绝不要编" in text, "没告诉它「没写就留空、别编」"
+
+
 def test_prompt_tells_the_llm_about_every_notice_kind() -> None:
     """契约里承诺的每一种通知，提示词都必须交代怎么用。
 

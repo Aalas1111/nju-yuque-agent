@@ -627,7 +627,17 @@ COMMON_TOOLS: tuple[Tool, ...] = (
                 "message": {**STR, "description": "给社员看的完整中文正文"},
                 "doc_id": INT,
                 "doc_title": STR,
-                "member_name": STR,
+                "member_name": {
+                    **STR,
+                    "description": (
+                        "文档里「申请人：」后面那个人名，**照抄别改**。"
+                        "程序拿它查表决定这条通知发给谁（某个社员的 QQ，或某个群）。"
+                        "写错一个字 → 查不到 → 通知进 unrouted/，那位社员什么都收不到；"
+                        "写别人的名字 → 通知发错人。"
+                        "文档里没写申请人就留空（不要编一个名字出来），通知照样产出，"
+                        "会进 unrouted/ 等人补。"
+                    ),
+                },
                 "reasons": STRLIST,
                 "warnings": STRLIST,
             },

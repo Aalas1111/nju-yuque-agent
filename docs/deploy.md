@@ -270,6 +270,7 @@ yqa-as-service render <run_id>              # 把某次 run 渲染成人话
 
 ## 7. 上线后的验收清单
 
+- [ ] `yqa-as-service doctor` 的「配置体检」没有告警（**尤其「通知无法投递」**）
 - [ ] `yqa-as-service doctor` 全绿（尤其 **语雀 token / LLM key / 知识库 / 写权限 / 时区**）
   - 注意 `LLM key` 那行**只说明变量存在**；末尾的 `LLM 可用性` 才是真打了一发 API。
     它显示失败时，直接看它写的原因（`key 无效` / `余额不足` / `网络不通` …）——
@@ -322,6 +323,31 @@ outbox/
 **`plan.json` 每次写申请就重发**——下游拿不到推送，它只能看到「文件是不是新的」。
 注意 `defaults`（借用人姓名/电话）会被落盘保存到 `plan.defaults.json`，
 否则那次重发就把它们丢了。
+
+### ⚠️ 上线前必须做：填 `notify.members`
+
+**不填的话，任何通知都发不出去**——全都会堆进 `outbox/notify/unrouted/`，
+而 `outbox/` 看上去一切正常，社员却什么都收不到。
+
+```bash
+# 工作区里的 qqbot.json（不是 ~/.yuque/ 那个凭证文件）
+#   notify.members: { "语雀里写的申请人名": "c2c:<他的 user_openid>" }
+#   （也可以是 "group:<群 openid>" —— 那会发到群里）
+# 让本人先在 QQ 里给机器人发 /whoami，拿到自己的 openid，再填进去。
+```
+
+`inbound.admin_groups`（哪些群能用命令）**和通知投递无关** —— 两套东西不共享。
+
+另外 `plan_updated`（提醒 cac 去下载）发给 `YQA_PLAN_ADMIN` 指定的那个名字，
+所以要把它也加进 `notify.members`：
+
+```bash
+printf 'YQA_PLAN_ADMIN=%s
+' "<管理员的语雀人名>" >> /home/yuque/.yuque/agent.env
+chmod 600 /home/yuque/.yuque/agent.env && systemctl restart yuque-agent-qq
+```
+
+`yqa doctor` 的「配置体检」那一行会告警「通知无法投递」——**上线验收时看它**。
 
 ### 取件通道（cac 用）
 

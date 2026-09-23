@@ -669,7 +669,11 @@ def qq_doctor_rows(settings: Settings) -> list[tuple[str, str]]:
         payload = qq_status_payload(settings)
     except Exception as exc:  # noqa: BLE001 - doctor 自己不能崩
         return [("QQBot", f"[red]{type(exc).__name__}: {exc}[/red]")]
-    wanted = {"凭证", "入站命令", "通知积压", "二维码"}
+    # 「配置体检」必须带上：它装着 config.problems() 的告警，而那里面有的是
+    # **致命**的（例如「notify.members 与 default_target 都空 → 通知无法投递」）。
+    # 原来没挑这一行，于是「所有通知都发不出去」在主 yqa doctor 里完全看不见——
+    # 而主 doctor 正是上线验收清单上那一条。
+    wanted = {"凭证", "入站命令", "通知积压", "二维码", "配置体检"}
     return [(key, value) for key, value in payload["rows"] if key in wanted]
 
 
