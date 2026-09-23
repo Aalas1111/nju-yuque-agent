@@ -27,17 +27,49 @@
 ## 2. 目录布局
 
 ```
-/opt/yuque-agent           代码（root 所有，服务只读）
-/var/lib/yuque-agent      运行状态：workspace/（yuque 用户所有）
-/home/yuque/.yuque/        凭证（600，yuque 用户所有）
-  ├── auth.json            {"token": "<语雀写权限令牌>"}
-  └── agent.env            DEEPSEEK_API_KEY=<key>
+/opt/yuque-agent/                    代码：git clone（root 所有，服务只读）
+├── src/yuque_agent/                 17 个模块 + qqbot/ 子包
+│   ├── prompts/                     提示词：polling.md · archive.md
+│   └── kb/                          投放到语雀的：guide.md · template.md
+├── tests/  docs/  scripts/  examples/
+└── .venv/                           依赖（预建；服务用 --no-sync，不写它）
+
+/var/lib/yuque-agent/                运行状态（yuque 用户所有）
+├── workspace/<group>_<repo>/        每个知识库一个工作区
+│   ├── state.json                   快照 + 轮询状态
+│   ├── runs/<stamp>-<kind>-<id>/    每次会话一个目录
+│   │   ├── payload.json             喂给 LLM 的输入（含当时的提示词，留底）
+│   │   ├── session.jsonl            逐条留痕：工具调用 / 返回 / 思考
+│   │   ├── result.json              这轮的结构化结果
+│   │   └── journal.json             要写回《工作日志》的内容
+│   ├── outbox/
+│   │   ├── applications/index.json  给下游（crb）的申请索引
+│   │   └── notify/                  QQ 通知桥
+│   │       ├── pending/  done/      状态机（unrouted/ failed/ 按需建）
+│   │       ├── outbox.jsonl         追加日志
+│   │       └── .seq                 全局序号
+│   └── notes/                       LLM 的跨轮记忆（格式它自己定，不解析）
+└── .uv-cache/                       uv 缓存（服务与 yqa-as-service 共用这份）
+
+/home/yuque/.yuque/                  凭证（目录 700，文件 600，yuque 所有）
+├── auth.json                        {"token": "<语雀写权限令牌>"}
+└── agent.env                        DEEPSEEK_API_KEY=<key>
+
 /etc/systemd/system/yuque-agent.service
-/usr/local/bin/yqa-as-service   手动调试用的包装脚本（见 §6）
+/etc/sudoers.d/<协作账号>             按需（给协作方开账号时才建）
+/usr/local/bin/yqa-as-service        手动调试用的包装脚本（见 §6）
+/var/log/journal/                    服务日志（journald，已设持久化）
 ```
 
 **为什么分这么细**：代码只读、状态可写、凭证最紧——服务不需要写自己的代码，
 也不需要碰别人的东西。即使这个进程被攻破，能改的也只限于它自己的状态目录。
+
+**工作区目录名 = `<group>_<repo>`**（`config.Settings.slug`，把 `/` 换成 `_`）。
+不是硬编码知识库名——同一台机器上跑第二个知识库时状态不会互相覆盖。
+
+**`runs/` 是唯一的事实来源**：那四个文件合起来能还原「那一轮到底发生了什么」。
+`state.json` 和 `outbox/` 都是从它派生的，所以清理测试数据时**默认不动 `runs/`**
+（见 §7 的 `reset-test-data`）。
 
 ## 3. 安装
 
@@ -72,6 +104,7 @@ cd /opt/yuque-agent && sudo -u yuque env HOME=/home/yuque uv run --no-sync pytes
 ```ini
 [Unit]
 Description=yuque-agent — 让 LLM 接管语雀知识库（程序只做感知与留痕）
+Documentation=https://github.com/Aalas1111/nju-yuque-agent
 After=network-online.target
 Wants=network-online.target
 
@@ -84,10 +117,9 @@ EnvironmentFile=/home/yuque/.yuque/agent.env
 Environment=HOME=/home/yuque
 Environment=PYTHONUNBUFFERED=1
 Environment=UV_CACHE_DIR=/var/lib/yuque-agent/.uv-cache
+SyslogIdentifier=yuque-agent
 
-ExecStart=/usr/local/bin/uv run --no-sync yqa run \
-    --workspace /var/lib/yuque-agent/workspace \
-    --interval 60 --quiet-seconds 45 --journal
+ExecStart=/usr/local/bin/uv run --no-sync yqa run --workspace /var/lib/yuque-agent/workspace --interval 60 --quiet-seconds 45 --journal
 
 Restart=always
 RestartSec=15
@@ -198,6 +230,9 @@ exec sudo -u yuque bash -c '
   . /home/yuque/.yuque/agent.env
   set +a
   export HOME=/home/yuque
+  # 和服务用**同一份**缓存：不设的话手动命令走 ~/.cache/uv，
+  # 于是同一台机器上养出两份 uv 缓存，排查时先得想「哪份是新的」。
+  export UV_CACHE_DIR=/var/lib/yuque-agent/.uv-cache
   exec /usr/local/bin/uv run --no-sync --directory /opt/yuque-agent yqa "$@"
 ' -- "$@"
 WRAP
@@ -214,6 +249,9 @@ yqa-as-service render <run_id>              # 把某次 run 渲染成人话
 ## 7. 上线后的验收清单
 
 - [ ] `yqa-as-service doctor` 全绿（尤其 **语雀 token / LLM key / 知识库 / 写权限 / 时区**）
+  - 注意 `LLM key` 那行**只说明变量存在**；末尾的 `LLM 可用性` 才是真打了一发 API。
+    它显示失败时，直接看它写的原因（`key 无效` / `余额不足` / `网络不通` …）——
+    那是**真的打了**，不是猜的。
 - [ ] `systemctl is-enabled yuque-agent` 是 `enabled`（开机自启）
 - [ ] `journalctl -u yuque-agent` 能看到「开始常驻：每 60s 轮询 …」
 - [ ] 让一个真社员写一篇申请，**等 1~2 分钟**，确认：
