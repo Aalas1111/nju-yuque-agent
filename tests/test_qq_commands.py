@@ -409,3 +409,47 @@ def test_command_result_to_dict() -> None:
     router, _, _ = make_router()
     payload = router.dispatch(c2c("/help")).to_dict()
     assert payload["handled"] is True and payload["command"] == "help"
+
+
+# ---------------------------------------------------------------- 参数解析
+
+
+def test_slash_command_preserves_arguments() -> None:
+    """回归：/cmd arg1 arg2 的参数不能被静默丢弃。"""
+    from yuque_agent.qqbot.commands import _parse
+
+    # 斜杠命令带参数
+    spec, args = _parse("/status arg1 arg2")
+    assert spec is not None
+    assert spec.name == "status"
+    assert args == "arg1 arg2", f"参数被丢弃了：'{args}'"
+
+
+def test_slash_command_without_arguments() -> None:
+    """没有参数的斜杠命令应该正常工作。"""
+    from yuque_agent.qqbot.commands import _parse
+
+    spec, args = _parse("/status")
+    assert spec is not None
+    assert spec.name == "status"
+    assert args == ""
+
+
+def test_chinese_command_preserves_arguments() -> None:
+    """中文命令（无斜杠）的参数也必须保留。"""
+    from yuque_agent.qqbot.commands import _parse
+
+    spec, args = _parse("状态 arg1 arg2")
+    assert spec is not None
+    assert spec.name == "status"
+    assert args == "arg1 arg2"
+
+
+def test_exclamation_command_preserves_arguments() -> None:
+    """!cmd 格式的命令参数也必须保留。"""
+    from yuque_agent.qqbot.commands import _parse
+
+    spec, args = _parse("!run --archive")
+    assert spec is not None
+    assert spec.name == "run"
+    assert args == "--archive"

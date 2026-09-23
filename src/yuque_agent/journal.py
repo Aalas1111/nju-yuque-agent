@@ -211,12 +211,12 @@ def append_to_journal(
     new_body = f"{head.rstrip()}\n\n{section_markdown}\n"
     if tail.strip():
         new_body += f"\n{tail.lstrip()}"
-    client.update_doc(existing["doc_id"], body=new_body)
+    client.update_doc(existing["slug"], body=new_body)
     return {
         "created": False,
         "doc_id": existing["doc_id"],
         "doc_title": doc_title,
-        "url": f"https://nova.yuque.com/{settings.repo}/{existing['slug']}",
+        "url": f"{settings.host.rstrip('/')}/{settings.repo}/{existing['slug']}",
     }
 
 

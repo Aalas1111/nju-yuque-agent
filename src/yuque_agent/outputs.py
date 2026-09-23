@@ -441,23 +441,66 @@ def write_notice(settings: Settings, *, kind: str, payload: dict[str, Any]) -> d
 
 
 def _next_seq(settings: Settings) -> int:
+    """原子地获取下一个 seq（文件锁保护，避免并发写入产生重复序号）。"""
+    import contextlib
+
     counter = settings.notify_dir / ".seq"
-    current = 0
-    try:
-        current = int(counter.read_text(encoding="utf-8").strip() or "0")
-    except (OSError, ValueError):
+    lock_path = settings.notify_dir / ".seq.lock"
+
+    @contextlib.contextmanager
+    def _locked():
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        lock_fd = lock_path.open("w")
+        locked = False
+        try:
+            # 跨平台文件锁：Windows 用 msvcrt，Unix 用 fcntl
+            # 如果锁失败（比如在某些环境下），就跳过锁保护继续执行
+            try:
+                import msvcrt
+
+                msvcrt.locking(lock_fd.fileno(), msvcrt.LK_NBLCK, 1)
+                locked = True
+            except (ImportError, OSError):
+                try:
+                    import fcntl
+
+                    fcntl.flock(lock_fd.fileno(), fcntl.LOCK_EX)
+                    locked = True
+                except (ImportError, OSError):
+                    pass  # 锁失败，继续执行（降级为非原子操作）
+            yield
+        finally:
+            if locked:
+                try:
+                    import msvcrt
+
+                    msvcrt.locking(lock_fd.fileno(), msvcrt.LK_UNLCK, 1)
+                except (ImportError, OSError):
+                    try:
+                        import fcntl
+
+                        fcntl.flock(lock_fd.fileno(), fcntl.LOCK_UN)
+                    except (ImportError, OSError):
+                        pass
+            lock_fd.close()
+
+    with _locked():
         current = 0
-    # 兜底：目录里已经有更大的 seq（比如 counter 被删了）就别倒退
-    for folder in ("pending", "done"):
-        for path in (settings.notify_dir / folder).glob("*.json"):
-            head = path.name.split("-", 1)[0]
-            if head.isdigit():
-                current = max(current, int(head))
-    nxt = current + 1
-    if not settings.dry_run:
-        counter.parent.mkdir(parents=True, exist_ok=True)
-        counter.write_text(str(nxt), encoding="utf-8")
-    return nxt
+        try:
+            current = int(counter.read_text(encoding="utf-8").strip() or "0")
+        except (OSError, ValueError):
+            current = 0
+        # 兜底：目录里已经有更大的 seq（比如 counter 被删了）就别倒退
+        for folder in ("pending", "done"):
+            for path in (settings.notify_dir / folder).glob("*.json"):
+                head = path.name.split("-", 1)[0]
+                if head.isdigit():
+                    current = max(current, int(head))
+        nxt = current + 1
+        if not settings.dry_run:
+            counter.parent.mkdir(parents=True, exist_ok=True)
+            counter.write_text(str(nxt), encoding="utf-8")
+        return nxt
 
 
 def _append_outbox(settings: Settings, record: dict[str, Any]) -> None:

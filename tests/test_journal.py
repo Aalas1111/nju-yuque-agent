@@ -247,6 +247,30 @@ def test_repeated_appends_do_not_accumulate_headers(settings: Settings) -> None:
     assert current.index("第9次") < current.index("第0次"), "最新的应当在最上面"
 
 
+def test_append_uses_slug_not_doc_id_for_update(settings: Settings) -> None:
+    """回归：update_doc 必须用 slug 而不是 doc_id（语雀 API 只接受 slug）。"""
+    client = _existing_log(f"{HEADER}\n\n旧内容\n")
+    result = append_to_journal(client, settings, "新内容")  # type: ignore[arg-type]
+
+    assert result["created"] is False
+    op, kwargs = client.calls[0]
+    assert op == "update_doc"
+    # 关键断言：第一个参数必须是 slug（"log"），不是 doc_id（9）
+    assert kwargs.get("doc_id") == "log" or (
+        len(client.calls[0]) > 1 and client.calls[0][1].get("doc_id") == "log"
+    ), f"update_doc 应该用 slug 'log'，但实际参数是 {kwargs}"
+
+
+def test_append_url_uses_settings_host(settings: Settings) -> None:
+    """回归：URL 必须用 settings.host，不能硬编码 nova.yuque.com。"""
+    settings.host = "https://custom.yuque.com"
+    client = _existing_log(f"{HEADER}\n\n旧内容\n")
+    result = append_to_journal(client, settings, "新内容")  # type: ignore[arg-type]
+
+    assert result["url"].startswith("https://custom.yuque.com/")
+    assert "nova.yuque.com" not in result["url"]
+
+
 def test_split_journal_handles_empty_and_header_only() -> None:
     assert split_journal("") == ("", "")
     assert split_journal(HEADER) == (HEADER, "")

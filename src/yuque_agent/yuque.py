@@ -281,11 +281,13 @@ class YuqueClient:
             "POST", f"/api/v2/repos/{self.repo}/docs", op="create_doc", json_body=payload
         )
 
-    def update_doc(self, doc_id: int | str, *, title: str = "", body: str = "") -> dict[str, Any]:
+    def update_doc(
+        self, doc_id: int | str, *, title: str | None = None, body: str | None = None
+    ) -> dict[str, Any]:
         payload: dict[str, Any] = {"format": "markdown"}
-        if title:
+        if title is not None:
             payload["title"] = title
-        if body:
+        if body is not None:
             payload["body"] = body
         return self._write(
             "PUT", f"/api/v2/repos/{self.repo}/docs/{doc_id}", op="update_doc", json_body=payload

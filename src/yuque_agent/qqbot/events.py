@@ -33,7 +33,8 @@ MESSAGE_EVENTS = (
 )
 
 #: 群消息里 @机器人 会留下 ``<@!123456>`` 这类痕迹，解析命令前先摘掉。
-_MENTION_RE = re.compile(r"<@!?\d+>|@\S+\s*")
+#: 只匹配 QQ 官方的 mention 格式，不匹配普通的 @word（避免误删邮箱或 @其他人）。
+_MENTION_RE = re.compile(r"<@!?\d+>")
 
 
 @dataclass

@@ -23,7 +23,7 @@ from typing import Any, Protocol, runtime_checkable
 from .config import ROLE_ADMIN, ROLE_USER, QQBotConfig
 from .events import InboundMessage
 
-_SLASH_RE = re.compile(r"^[/／!！]\s*(\S+)")
+_SLASH_RE = re.compile(r"^[/／!！]\s*(.+)$")
 
 
 @dataclass(frozen=True)
@@ -316,9 +316,12 @@ def _parse(text: str) -> tuple[CommandSpec | None, str]:
         return None, ""
     match = _SLASH_RE.match(raw)
     if match:
-        word, _, rest = match.group(1).partition(" ")
+        # 斜杠命令：/cmd arg1 arg2 或 ！cmd arg1 arg2
+        rest = match.group(1).strip()
+        word, _, args = rest.partition(" ")
         spec = _COMMAND_INDEX.get(word.lower()) or _COMMAND_INDEX.get(word)
-        return (spec, rest.strip()) if spec is not None else (None, "")
+        return (spec, args.strip()) if spec is not None else (None, "")
+    # 无斜杠：直接匹配命令名（如 "状态"）
     head, _, rest = raw.partition(" ")
     spec = _COMMAND_INDEX.get(head.lower()) or _COMMAND_INDEX.get(head)
     if spec is None:

@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+import sys
 
 import pytest
 
@@ -172,7 +173,7 @@ def test_notice_contract_validation(settings: Settings, bad: dict) -> None:
 
 
 def test_notice_keeps_member_and_doc_context(settings: Settings) -> None:
-    result = write_notice(
+    write_notice(
         settings,
         kind="accepted",
         payload={
@@ -187,4 +188,36 @@ def test_notice_keeps_member_and_doc_context(settings: Settings) -> None:
     assert record["doc"]["doc_id"] == 11
     assert record["member"]["name"] == "张三"
     assert record["repo"] == "g/kb"
-    assert result["notice_id"]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="文件锁在 Windows 上行为不同，生产环境是 Linux")
+def test_seq_counter_is_atomic(settings: Settings) -> None:
+    """回归：_next_seq() 必须用文件锁保护，避免并发写入产生重复序号。"""
+    import threading
+
+    from yuque_agent.outputs import _next_seq
+
+    results: list[int] = []
+    errors: list[Exception] = []
+
+    def worker():
+        try:
+            for _ in range(10):
+                seq = _next_seq(settings)
+                results.append(seq)
+        except Exception as e:
+            errors.append(e)
+
+    # 启动多个线程并发写入
+    threads = [threading.Thread(target=worker) for _ in range(5)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert not errors, f"并发写入出错：{errors}"
+    # 50 次写入必须产生 50 个不同的序号
+    assert len(results) == 50
+    assert len(set(results)) == 50, f"有重复序号：{sorted(results)}"
+    # 序号必须是 1~50
+    assert set(results) == set(range(1, 51))

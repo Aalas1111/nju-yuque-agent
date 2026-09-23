@@ -63,6 +63,37 @@ def test_mentions_are_stripped_from_text() -> None:
     assert message.text == "/run"
 
 
+def test_regular_at_mentions_are_not_stripped() -> None:
+    """回归：只有 QQ 官方的 <@!12345> 格式才被剥离，普通的 @word 必须保留。"""
+    message = parse_event(
+        EVENT_GROUP_AT_MESSAGE_CREATE,
+        {
+            "id": "m",
+            "content": "/status check @admin",
+            "group_openid": "g",
+            "author": {"member_openid": "u"},
+        },
+    )
+    assert message is not None
+    # @admin 必须保留，不能被当成 bot mention 剥掉
+    assert "@admin" in message.text
+    assert message.text == "/status check @admin"
+
+
+def test_email_in_command_is_preserved() -> None:
+    """命令参数里的邮箱地址不能被剥离。"""
+    message = parse_event(
+        EVENT_C2C_MESSAGE_CREATE,
+        {
+            "id": "m",
+            "content": "/notify user@example.com",
+            "author": {"user_openid": "u"},
+        },
+    )
+    assert message is not None
+    assert "user@example.com" in message.text
+
+
 def test_guild_message_is_parsed_but_has_no_reply_target() -> None:
     message = parse_event(
         EVENT_AT_MESSAGE_CREATE,

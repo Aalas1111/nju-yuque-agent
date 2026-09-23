@@ -349,7 +349,9 @@ def _emit_application(ctx: RunContext, args: dict[str, Any]) -> Any:
 
     # 日期范围的「提醒」由程序算（校方规则：今天 +2 ~ +9 天），但不阻止受理。
     today = ctx.today
-    if today is not None:
+    if today is None:
+        warnings.append("无法验证日期范围：本轮缺少当前日期信息（ctx.today 为空）")
+    else:
         lo, hi = school.bookable_range(today)
         if activity_day < lo:
             warnings.append(
@@ -758,7 +760,8 @@ def _need(args: dict[str, Any], key: str, _schema: dict[str, Any]) -> Any:
 def _doc_url(ctx: RunContext, doc_id: int) -> str:
     if not doc_id:
         return ""
+    host = ctx.settings.host.rstrip("/")
     for doc in ctx.docs.values():
         if doc.doc_id == doc_id and doc.slug:
-            return f"https://nova.yuque.com/{ctx.settings.repo}/{doc.slug}"
-    return f"https://nova.yuque.com/{ctx.settings.repo}"
+            return f"{host}/{ctx.settings.repo}/{doc.slug}"
+    return f"{host}/{ctx.settings.repo}"

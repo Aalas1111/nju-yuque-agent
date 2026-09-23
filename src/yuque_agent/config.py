@@ -152,9 +152,6 @@ class Settings:
     verbose: bool = False
 
     plan_admin: str = ""
-
-    plan_port: int = 8787
-    """下载口监听端口。"""
     """「申请清单已更新」这条通知发给谁（**语雀侧人名**）。
 
     它必须是人名而不是 QQ 号：本层不认识 QQ 身份，映射在 ``qqbot.json`` 的
@@ -163,6 +160,9 @@ class Settings:
     留空 = 走 ``notify.default_target`` 兜底；连兜底也没配就进 ``unrouted/``
     等人处理（**不会默默丢掉**）。
     """
+
+    plan_port: int = 8787
+    """下载口监听端口。"""
 
     @classmethod
     def from_env(cls, **overrides: Any) -> Settings:
