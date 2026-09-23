@@ -282,3 +282,137 @@ yqa-as-service render <run_id>              # 把某次 run 渲染成人话
   （`yqa export-plan` 能汇总成下游可直接吃的 `plan.json`）。协议见 `docs/handoff.md` §2。
 * **借不到怎么办**：目前**没有任何通道**把「借失败了」回传。这个闭环要不要做、谁做，
   见 `docs/handoff.md` §4 的待确认项。
+
+## 9. 申请清单的交付（outbox 的分区与取件）
+
+产物目录**按申请周期分区**。周期翻转为周六 00:00，和语雀那边的归档同一时刻：
+
+```
+outbox/
+├── applications/          活跃：当前周期
+│   ├── <申请id>.json
+│   └── index.json
+├── plan.json              活跃交付件（下游 cac 就取这个文件）
+├── plan.defaults.json     借用人信息（JYRXM / JYRDH …），**不随周期归档**
+├── notify/                QQ 通知桥
+└── archive/
+    └── 0919-0925/         往期，和活跃期**完全同形**
+        ├── plan.json      当周那个版本（冻结，交付凭证）
+        └── applications/{*.json, index.json}
+```
+
+**为什么必须分区**（原来不分，是真机上的一个 bug）：`build_plan_json()` 扫的是
+整个 `applications/` 目录，而没有任何代码会移走旧申请——于是周期翻转后，
+上几周的申请仍然留在 `plan.json` 里，cac 照着提交就是**订一个已经过去的日期**。
+当时看不出来，只因为知识库刚清空过。
+
+**翻转由程序做**（`Runner.rotate_cycle_if_needed`），**不依赖 LLM 的归档会话**：
+归档会话会失败（网络、模型、token 上限），而产物边界不能跟着它一起失败。
+它每轮只做一次字符串比较，**零 token**。
+
+**`plan.json` 每次写申请就重发**——下游拿不到推送，它只能看到「文件是不是新的」。
+注意 `defaults`（借用人姓名/电话）会被落盘保存到 `plan.defaults.json`，
+否则那次重发就把它们丢了。
+
+### 取件通道（cac 用）
+
+下游跑的是浏览器里的油猴脚本，**没法直连服务器**，所以取件只能靠人工。两条路：
+
+```bash
+# ① scp（零新增攻击面，推荐日常用）
+scp lihe@<服务器地址>:/var/lib/yuque-agent/workspace/lqogh0_jsjysq/outbox/plan.json .
+# 往期的：
+scp "lihe@<服务器地址>:/var/lib/yuque-agent/workspace/lqogh0_jsjysq/outbox/archive/0919-0925/plan.json" .
+
+# ② 网页（见 §10；输密钥下载）
+#    http://<服务器地址>:8787/
+```
+
+两条都在 `docs/handoff.md` 里给下游写了。
+
+> **每次取完请对一眼 `cycle` 字段**：它必须是本周的周期号。这是唯一能一眼看出
+> 「我拿到的是不是上周那份」的标记——服务器不会替你验证这一点。
+
+## 10. 下载口（`yqa serve-plan`）
+
+`deploy/yuque-agent-plan.service`：
+
+```ini
+[Unit]
+Description=yuque-agent 申请清单下载口（带密钥的 HTTP，给 cac 手动取件）
+Documentation=https://github.com/Aalas1111/nju-yuque-agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=yuque
+Group=yuque
+WorkingDirectory=/opt/yuque-agent
+EnvironmentFile=/home/yuque/.yuque/agent.env
+Environment=HOME=/home/yuque
+Environment=PYTHONUNBUFFERED=1
+Environment=UV_CACHE_DIR=/var/lib/yuque-agent/.uv-cache
+SyslogIdentifier=yuque-agent-plan
+
+ExecStart=/usr/local/bin/uv run --no-sync yqa serve-plan --workspace /var/lib/yuque-agent/workspace --port 8787
+
+Restart=always
+RestartSec=15
+
+# systemctl stop 时 Python 以 143（SIGTERM）退出，那是正常停止，不是故障。
+SuccessExitStatus=143
+
+# 加固：这个进程只需要读产物 + 对外监听，不需要新特权、不需要改系统。
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+
+[Install]
+WantedBy=multi-user.target
+```
+
+### 装它
+
+```bash
+# ① 配密钥（**必须**，否则服务拒绝启动——失败关闭）
+printf 'YQA_PLAN_KEY=%s\n' "$(openssl rand -hex 16)" >> /home/yuque/.yuque/agent.env
+# 另外可选：指定管理员人名（见 docs/handoff.md §3.3 的 plan_updated）
+printf 'YQA_PLAN_ADMIN=%s\n' "<管理员的语雀人名>" >> /home/yuque/.yuque/agent.env
+chmod 600 /home/yuque/.yuque/agent.env
+
+# ② 装单元并起服务
+install -m 644 /opt/yuque-agent/deploy/yuque-agent-plan.service \
+    /etc/systemd/system/yuque-agent-plan.service
+systemctl daemon-reload && systemctl enable --now yuque-agent-plan
+curl -s http://127.0.0.1:8787/healthz      # 应回 ok
+```
+
+### 放行端口
+
+云厂商的安全组**默认不放行** 8787，这一步只能在控制台做：
+
+- 阿里云轻量应用服务器 → 防火墙 → 添加规则：TCP `8787`，源 `0.0.0.0/0`
+- 服务器本机一般不用再动（没有 ufw/iptables 规则）
+
+放行后从**外网**验一次：`curl http://<公网IP>:8787/healthz`。
+
+### 它是哪个级别的东西（说清楚，免得被当成安全边界）
+
+服务器**没有域名**，所以只有明文 HTTP——**密钥和申请内容都在网上裸奔**。
+项目负责人明确接受了这个风险（活动信息不算机密信息）。
+
+所以它做不到「防住有心人」，能做到的是三件（都有测试）：
+
+1. **失败关闭**：没配 `YQA_PLAN_KEY` 就拒绝启动，不会出现「没密钥也能下」；
+2. **路径不可越狱**：只放行 `outbox/plan.json` 和 `outbox/archive/<周期>/plan.json`
+   那两类由程序自己算出来的文件，URL 里的周期还要过格式校验。
+   特别地 `plan.defaults.json`（**借用人姓名与电话**）就在隔壁，取不到；
+3. **尝试可见**：请求进 `journalctl -u yuque-agent-plan`，**但不记密钥**；
+   同一来源失败超限锁 5 分钟（不影响别的来源）。
+
+> 别把 `plan.defaults.json` 放进下载口。它比申请清单敏感得多（真名 + 手机号），
+> 而且 cac 不需要它——`defaults` 已经内联在 `plan.json` 里了。

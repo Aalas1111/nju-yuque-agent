@@ -1,0 +1,35 @@
+[Unit]
+Description=yuque-agent 申请清单下载口（带密钥的 HTTP，给 cac 手动取件）
+Documentation=https://github.com/Aalas1111/nju-yuque-agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=yuque
+Group=yuque
+WorkingDirectory=/opt/yuque-agent
+EnvironmentFile=/home/yuque/.yuque/agent.env
+Environment=HOME=/home/yuque
+Environment=PYTHONUNBUFFERED=1
+Environment=UV_CACHE_DIR=/var/lib/yuque-agent/.uv-cache
+SyslogIdentifier=yuque-agent-plan
+
+ExecStart=/usr/local/bin/uv run --no-sync yqa serve-plan --workspace /var/lib/yuque-agent/workspace --port 8787
+
+Restart=always
+RestartSec=15
+
+# systemctl stop 时 Python 以 143（SIGTERM）退出，那是正常停止，不是故障。
+SuccessExitStatus=143
+
+# 加固：这个进程只需要读产物 + 对外监听，不需要新特权、不需要改系统。
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+
+[Install]
+WantedBy=multi-user.target
