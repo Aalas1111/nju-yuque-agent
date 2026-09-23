@@ -7,6 +7,8 @@ from pathlib import Path
 
 from yuque_agent.config import Settings
 from yuque_agent.qqbot.config import (
+    ROLE_ADMIN,
+    ROLE_USER,
     NotifyTarget,
     QQBotConfig,
     default_config_path,
@@ -84,31 +86,108 @@ def test_resolve_member_falls_back_to_default_or_skip() -> None:
     assert basis == "unmapped" and target is None
 
 
-def test_inbound_allowlist_and_group_gate() -> None:
-    config = QQBotConfig(inbound_allow=("u-1",), inbound_admins=("u-1",), inbound_groups=("g-1",))
-    assert config.is_allowed("u-1") is True
-    assert config.is_allowed("u-2") is False
-    assert config.is_allowed("u-1", "g-1") is True
-    assert config.is_allowed("u-1", "g-2") is False  # 群不在名单里
-    assert config.is_admin("u-1") is True
-    assert config.is_admin("u-2") is False
+def roles_config() -> QQBotConfig:
+    return QQBotConfig(
+        inbound_allow=("U-user",),
+        inbound_admins=("U-admin",),
+        inbound_user_groups=("G-user",),
+        inbound_admin_groups=("G-admin",),
+    )
+
+
+def test_role_of_covers_all_four_sources() -> None:
+    """四档权限：个人 allow/admins 与群 user_groups/admin_groups 各自独立生效。"""
+    config = roles_config()
+    # 私聊：只认个人名单（群的 id 空间和私聊不同，不能互相推导）
+    assert config.role_of("U-admin") == ROLE_ADMIN
+    assert config.role_of("U-user") == ROLE_USER
+    assert config.role_of("U-stranger") == ""
+    assert config.role_of("U-user", "G-user") == ROLE_USER  # 群里也算
+    # 群：用户群里谁发言都是用户；管理员群里谁发言都是管理员
+    assert config.role_of("M-anyone", "G-user") == ROLE_USER
+    assert config.role_of("M-anyone", "G-admin") == ROLE_ADMIN
+    # 群不在任何名单里 → 拒绝（默认拒绝；除非发言人自己在个人名单里）
+    assert config.role_of("M-anyone", "G-other") == ""
+    assert config.role_of("U-admin", "G-other") == ROLE_ADMIN
+    assert config.role_of("U-user", "G-other") == ROLE_USER
+
+
+def test_role_requires_group_to_be_listed_for_strangers() -> None:
+    """「用户直接从用户群读取」= 群本身是边界：群里谁发言都算用户。"""
+    config = QQBotConfig(inbound_user_groups=("G-user",))
+    assert config.is_allowed("M-1", "G-user") is True
+    assert config.is_allowed("M-2", "G-user") is True  # 不用逐个登记 openid
+    assert config.is_allowed("M-1", "G-other") is False
+
+
+def test_legacy_groups_key_reads_as_user_groups(tmp_path: Path) -> None:
+    """老配置里的 ``groups`` 仍当成用户群读，不用改文件。"""
+    path = tmp_path / "qqbot.json"
+    path.write_text(
+        json.dumps({"inbound": {"groups": ["G-legacy"], "allow": ["U-1"]}}), encoding="utf-8"
+    )
+    config = QQBotConfig.load(path)
+    assert config.inbound_user_groups == ("G-legacy",)
+    assert config.role_of("M-1", "G-legacy") == ROLE_USER
+
+
+def test_explain_role_says_why() -> None:
+    config = roles_config()
+    assert any("admin_groups" in item for item in config.explain_role("M-1", "G-admin"))
+    assert any("user_groups" in item for item in config.explain_role("M-1", "G-user"))
+    assert any("admins" in item for item in config.explain_role("U-admin"))
+    assert config.explain_role("M-1", "G-other") == []
 
 
 def test_inbound_disabled_rejects_everyone() -> None:
-    config = QQBotConfig(inbound_enabled=False, inbound_allow=("u-1",))
+    config = QQBotConfig(
+        inbound_enabled=False,
+        inbound_allow=("u-1",),
+        inbound_admins=("u-2",),
+        inbound_user_groups=("g-1",),
+        inbound_admin_groups=("g-2",),
+    )
     assert config.is_allowed("u-1") is False
+    assert config.is_allowed("u-2") is False
+    assert config.is_allowed("m-1", "g-1") is False
+    assert config.is_allowed("m-1", "g-2") is False
 
 
-def test_problems_reports_dangerous_misconfiguration() -> None:
-    bad = QQBotConfig(inbound_admins=("u-1",))
-    problems = bad.problems()
-    assert any("默认拒绝" in item for item in problems)
+def test_problems_flags_admin_group_risk() -> None:
+    risky = QQBotConfig(
+        notify_default=NotifyTarget("group", "g-1"),
+        members={"张三": NotifyTarget("c2c", "u-1")},
+        inbound_admin_groups=("g-admin",),
+    )
+    problems = risky.problems()
+    assert any("管理员群" in item and "删文档" in item for item in problems)
 
+
+def test_problems_flags_group_in_both_lists() -> None:
+    config = QQBotConfig(
+        notify_default=NotifyTarget("group", "g-1"),
+        members={"张三": NotifyTarget("c2c", "u-1")},
+        inbound_user_groups=("g-1",),
+        inbound_admin_groups=("g-1",),
+    )
+    assert any("同时在 user_groups 与 admin_groups" in item for item in config.problems())
+
+
+def test_problems_flags_nobody_can_talk() -> None:
+    config = QQBotConfig(
+        notify_default=NotifyTarget("group", "g-1"),
+        members={"张三": NotifyTarget("c2c", "u-1")},
+    )
+    assert any("默认拒绝" in item for item in config.problems())
+
+
+def test_problems_empty_when_configured() -> None:
     ok = QQBotConfig(
         notify_default=NotifyTarget("group", "g-1"),
         members={"张三": NotifyTarget("c2c", "u-1")},
         inbound_allow=("u-1",),
         inbound_admins=("u-1",),
+        inbound_user_groups=("g-user",),
     )
     assert ok.problems() == []
 
@@ -164,4 +243,6 @@ def test_describe_is_human_readable(tmp_path: Path) -> None:
     config = QQBotConfig(members={"张三": NotifyTarget("c2c", "u-1")}, path=tmp_path / "q.json")
     text = config.describe()
     assert "成员映射 1 条" in text
-    assert "白名单 0 人" in text
+    assert "个人 0 人" in text
+    assert "用户群 0 个" in text
+    assert "管理员群 0 个" in text

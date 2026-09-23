@@ -20,7 +20,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, Protocol, runtime_checkable
 
-from .config import QQBotConfig
+from .config import ROLE_ADMIN, ROLE_USER, QQBotConfig
 from .events import InboundMessage
 
 _SLASH_RE = re.compile(r"^[/／!！]\s*(\S+)")
@@ -36,18 +36,23 @@ class CommandSpec:
 
 #: 命令表。``aliases`` 里放了中文写法，手机上不打斜杠也能用。
 COMMANDS: tuple[CommandSpec, ...] = (
-    CommandSpec("help", "看看我能做什么", aliases=("帮助", "?", "？", "h")),
+    CommandSpec(
+        "whoami",
+        "把你的 openid 打出来（群里还会给群 openid）",
+        aliases=("myid", "我是谁", "id"),
+    ),
+    CommandSpec("help", "列出你能用的命令", aliases=("帮助", "?", "？", "h")),
     CommandSpec("status", "看一眼知识库与 agent 的状态", aliases=("状态", "s")),
     CommandSpec("pending", "还有几条通知没投递出去", aliases=("待投递", "通知", "p")),
     CommandSpec(
         "run",
-        "立刻跑一轮轮询（仅管理员；会花 token）",
+        "立刻跑一轮轮询（会花 token）",
         admin_only=True,
         aliases=("跑一轮", "once", "r"),
     ),
     CommandSpec(
         "archive",
-        "立刻跑一次归档会话（仅管理员；会改知识库结构）",
+        "立刻跑一次归档会话（会改知识库结构）",
         admin_only=True,
         aliases=("归档", "a"),
     ),
@@ -60,16 +65,47 @@ for _spec in COMMANDS:
         _COMMAND_INDEX[_alias] = _spec
 
 
-HELP_TEXT = "\n".join(
-    [
-        "我是语雀知识库的看门 agent，能做的事：",
-        *[
-            f"  /{spec.name} —— {spec.help}" + ("（仅管理员）" if spec.admin_only else "")
-            for spec in COMMANDS
-        ],
-        "我只认命令，不接受自由文本——判断权在 agent 自己的提示词里，不在这里。",
-    ]
-)
+def _line(spec: CommandSpec, *, marker: bool = False) -> str:
+    tail = "（仅管理员）" if marker and spec.admin_only else ""
+    return f"  /{spec.name} —— {spec.help}{tail}"
+
+
+def help_text(
+    config: QQBotConfig | None = None, *, sender_id: str = "", group_openid: str = ""
+) -> str:
+    """``/help`` 的回复。**按身份给不同的清单**：
+
+    * 管理员（在 ``inbound.admins`` 里，或身在 ``inbound.admin_groups`` 的群里）
+      → **全部命令**，并按「只读 / 管理员」分组；
+    * 普通用户 → 只列他真正能用的那几条：写操作列出来他也跑不了，列了只是噪音。
+
+    回复里**只有信息**：身份一行 + 命令清单。没有开场白，也没有结尾的声明——
+    那些是文档该说的话，不该占消息。
+
+    不传 ``config`` 时按「全部命令」列（:data:`HELP_TEXT` 就是这么来的）。
+    """
+    if config is None:
+        return "\n".join(_line(spec, marker=True) for spec in COMMANDS)
+
+    role = config.role_of(sender_id, group_openid)
+    admin = role == ROLE_ADMIN
+    label = {ROLE_ADMIN: "管理员", ROLE_USER: "用户"}.get(role, "不在名单")
+    readable = [spec for spec in COMMANDS if not spec.admin_only]
+    lines = [f"你现在的身份：{label}", ""]
+    if admin:
+        lines.append("全部命令：")
+        lines.append("  只读（人人可用）")
+        lines += [_line(spec) for spec in readable]
+        lines.append("  管理员专用")
+        lines += [_line(spec) for spec in COMMANDS if spec.admin_only]
+    else:
+        lines.append("你能用的命令：")
+        lines += [_line(spec) for spec in readable]
+        lines.append("跑轮询 / 归档这类写操作只有管理员能用。")
+    return "\n".join(lines)
+
+
+HELP_TEXT = help_text()
 
 
 @dataclass
@@ -135,21 +171,36 @@ class CommandRouter:
 
     # -- 入口 -------------------------------------------------------------
     def dispatch(self, msg: InboundMessage) -> CommandResult:
-        admin = self.config.is_admin(msg.sender_id)
+        # 权限档位：个人名单（allow/admins）与群名单（user_groups/admin_groups）各自独立生效
+        role = self.config.role_of(msg.sender_id, msg.group_openid)
+        admin = role == ROLE_ADMIN
+        spec, args = _parse(msg.text)
 
-        if not self.config.is_allowed(msg.sender_id, msg.group_openid):
+        # ``/whoami`` 是**唯一**在白名单之前放行的命令：它只回你自己的 openid，
+        # 是「怎么把自己加进去」的引导。没有它，第一次用的人会陷入死循环——
+        # 机器人跟他说「找管理员加白名单」，而管理员正是他自己，他却拿不到自己的 openid。
+        if spec is not None and spec.name == "whoami":
+            self._log(f"[qqbot:cmd] whoami ← {msg.sender_id or '?'}（免白名单）")
+            return CommandResult(
+                handled=True,
+                command="whoami",
+                reply=whoami_text(msg, self.config),
+                admin=admin,
+            )
+
+        if not role:
             reason = f"不在白名单（sender={msg.sender_id or '?'} group={msg.group_openid or '-'}）"
             self._log(f"[qqbot:cmd] 拒绝：{reason}")
             if msg.kind == "group":
+                # 群里被陌生人 @ 到不打扰大家；要看自己的 id 就显式发 /whoami
                 return CommandResult(handled=False, reason=reason, admin=admin, silent=True)
             return CommandResult(
                 handled=False,
                 reason=reason,
                 admin=admin,
-                reply="你不在这个机器人的白名单里，找管理员把你加进 qqbot.json 的 inbound.allow。",
+                reply=(f"你不在这个机器人的白名单里。\n你的 openid：{msg.sender_id or '(拿不到)'}"),
             )
 
-        spec, args = _parse(msg.text)
         if spec is None:
             if not msg.text:
                 return CommandResult(handled=False, reason="空消息", admin=admin, silent=True)
@@ -157,7 +208,8 @@ class CommandRouter:
                 handled=False,
                 reason="不是命令",
                 admin=admin,
-                reply="我只认命令。\n\n" + HELP_TEXT,
+                reply="我只认命令。\n\n"
+                + help_text(self.config, sender_id=msg.sender_id, group_openid=msg.group_openid),
             )
 
         if spec.admin_only and not admin:
@@ -197,7 +249,9 @@ class CommandRouter:
         服务层要用它把「回执 + 后续分段播报」挂到同一个发送器上。
         """
         if spec.name == "help":
-            return HELP_TEXT, {}
+            return help_text(
+                self.config, sender_id=msg.sender_id, group_openid=msg.group_openid
+            ), {}
         if spec.name == "status":
             return render_status(self.gateway.status()), {}
         if spec.name == "pending":
@@ -231,6 +285,28 @@ class CommandRouter:
     def _log(self, text: str) -> None:
         if self.log is not None:
             self.log(text)
+
+
+def whoami_text(msg: InboundMessage, config: QQBotConfig | None = None) -> str:
+    """``/whoami`` 的回复：**只回事实**——你自己的 id 和当前身份，不带配置指南。
+
+    只暴露调用者自己的身份（per-bot openid 本来就只对他自己有意义），所以可以在
+    白名单之外安全地回。
+    """
+    lines: list[str] = []
+    if config is not None:
+        role = config.role_of(msg.sender_id, msg.group_openid)
+        label = {ROLE_ADMIN: "管理员", ROLE_USER: "用户"}.get(role, "不在白名单（默认拒绝）")
+        lines.append(f"身份：{label}")
+        reason = config.explain_role(msg.sender_id, msg.group_openid)
+        if reason:
+            lines.append("依据：" + "；".join(reason))
+    if msg.kind == "group":
+        lines.append(f"群 openid   ：{msg.group_openid or '(拿不到)'}")
+        lines.append(f"群内成员 id ：{msg.sender_id or '(拿不到)'}")
+    else:
+        lines.append(f"user_openid：{msg.sender_id or '(拿不到)'}")
+    return "\n".join(lines)
 
 
 def _parse(text: str) -> tuple[CommandSpec | None, str]:
@@ -287,9 +363,11 @@ def render_status(payload: dict[str, Any]) -> str:
 __all__ = [
     "COMMANDS",
     "HELP_TEXT",
+    "help_text",
     "AgentGateway",
     "CommandResult",
     "CommandRouter",
     "CommandSpec",
     "render_status",
+    "whoami_text",
 ]

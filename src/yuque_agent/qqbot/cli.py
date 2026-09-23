@@ -22,6 +22,7 @@ from typing import Annotated, Any
 
 import typer
 from rich.console import Console
+from rich.markup import escape
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
@@ -33,7 +34,6 @@ from ..watcher import Watcher
 from ..yuque import YuqueClient
 from .bridge import NotifyBridge
 from .client import MessageSender, NullSender, QQBotClient, Target
-from .commands import HELP_TEXT
 from .config import QQBotConfig, default_config_path, init_config
 from .credentials import (
     CredentialStore,
@@ -253,7 +253,10 @@ def auto_login(
         reason = result.message if result is not None else "已取消"
         raise QQBotError(f"扫码绑定没有完成（{reason}），服务不启动。")
     bound = saved["account"]
-    say(f"[qqbot] ✓ 已绑定 AppID {bound.app_id}，凭证写入 {store.path}")
+    say(
+        f"[qqbot] ✓ 已绑定 AppID {bound.app_id}，凭证写入 {store.path}"
+        f"（备份 {store.backup_path.name}，丢了会自动恢复，不用重扫）"
+    )
     return bound
 
 
@@ -575,7 +578,13 @@ def qq_status_payload(
         rows.append(("凭证", f"[green]已绑定[/green] · {resolved.describe()}"))
     else:
         rows.append(("凭证", "[yellow]未绑定[/yellow]（跑 yqa qq login 扫码）"))
-    rows.append(("凭证文件", f"{store.path}（{'存在' if store.path.exists() else '不存在'}）"))
+    backup = "有" if store.backup_path.exists() else "无"
+    rows.append(
+        (
+            "凭证文件",
+            f"{store.path}（{'存在' if store.path.exists() else '不存在'}；备份 {backup}）",
+        )
+    )
     rows.append(("配置文件", f"{config.path or default_config_path(settings)}"))
     rows.append(
         (
@@ -586,7 +595,9 @@ def qq_status_payload(
     rows.append(
         (
             "入站命令",
-            f"{'开' if config.inbound_enabled else '关'}；白名单 {len(config.inbound_allow)} 人 / 管理员 {len(config.inbound_admins)} 人",
+            f"{'开' if config.inbound_enabled else '关'}；"
+            f"个人 {len(config.inbound_allow)} 人 / 个人管理员 {len(config.inbound_admins)} 人；"
+            f"用户群 {len(config.inbound_user_groups)} 个 / 管理员群 {len(config.inbound_admin_groups)} 个",
         )
     )
     rows.append(
@@ -607,7 +618,7 @@ def qq_status_payload(
             client.get_access_token()
             token_note = "[green]OK[/green]"
         except QQBotError as exc:
-            token_note = f"[red]{exc}[/red]"
+            token_note = f"[red]{escape(str(exc))}[/red]"
         finally:
             client.close()
     rows.append(("access_token", token_note))
@@ -616,7 +627,12 @@ def qq_status_payload(
     rows.append(
         (
             "配置体检",
-            "[green]没问题[/green]" if not problems else "[yellow]；".join(problems) + "[/yellow]",
+            "[green]没问题[/green]"
+            if not problems
+            # 注意：不能写成 "[yellow]；".join(problems) + "[/yellow]" ——
+            # 那样只在 problems ≥ 2 时「碰巧」有开标签，正好 1 条时 rich 会抛
+            # MarkupError（closing tag '[/yellow]' doesn't match any open tag）。
+            else "[yellow]" + escape("；".join(problems)) + "[/yellow]",
         )
     )
 
@@ -631,6 +647,8 @@ def qq_status_payload(
             "enabled": config.inbound_enabled,
             "allow": list(config.inbound_allow),
             "admins": list(config.inbound_admins),
+            "user_groups": list(config.inbound_user_groups),
+            "admin_groups": list(config.inbound_admin_groups),
         },
         "problems": problems,
         "rows": rows,
@@ -817,7 +835,6 @@ def qq_config(
         for item in problems:
             console.print(f"  · {item}")
     console.print(f"[dim]路径：{path}[/dim]")
-    console.print(f"[dim]{HELP_TEXT.splitlines()[0]}[/dim]")
 
 
 # ---------------------------------------------------------------- serve
@@ -927,7 +944,8 @@ def qq_serve(
             f"通知泵 每 {notify_interval}s 扫一次 outbox/notify/pending/\n"
             f"分段播报 {'关（--no-progress）' if no_progress else f'开（保活 {progress_idle:.0f}s）'}\n"
             f"QQ 入站 {'关（--no-inbound）' if no_inbound else ('开' if client else '关（未绑定）')}"
-            f" · 白名单 {len(config.inbound_allow)} 人 / 管理员 {len(config.inbound_admins)} 人",
+            f" · 个人 {len(config.inbound_allow)}/{len(config.inbound_admins)} 人"
+            f" · 群 {len(config.inbound_user_groups)}/{len(config.inbound_admin_groups)} 个（用户/管理员）",
             title="yqa qq serve",
         )
     )

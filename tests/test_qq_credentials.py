@@ -77,6 +77,68 @@ def test_multiple_accounts_and_delete(tmp_path: Path) -> None:
     assert store.delete("second") is False
 
 
+def test_save_leaves_a_backup_next_to_the_file(tmp_path: Path) -> None:
+    store = CredentialStore(tmp_path / "qqbot.json")
+    store.save(QQBotAccount(app_id="a", app_secret="s"))
+    assert store.backup_path.exists()
+    assert store.backup_path.read_text(encoding="utf-8") == store.path.read_text(encoding="utf-8")
+
+
+@pytest.mark.skipif(sys.platform.startswith("win"), reason="Windows 没有 POSIX 权限位")
+def test_backup_is_also_0600(tmp_path: Path) -> None:
+    store = CredentialStore(tmp_path / "qqbot.json")
+    store.save(QQBotAccount(app_id="a", app_secret="s"))
+    assert stat.S_IMODE(store.backup_path.stat().st_mode) == 0o600
+
+
+def test_deleted_main_file_is_restored_from_backup_without_rescan(tmp_path: Path) -> None:
+    """手滑删了凭证文件 → 下一次读自动从备份恢复，不用重新扫码。"""
+    CredentialStore(tmp_path / "qqbot.json").save(
+        QQBotAccount(app_id="a", app_secret="s", user_openid="u-1")
+    )
+    (tmp_path / "qqbot.json").unlink()
+
+    # 新建一个 store：模拟服务重启后重新解析凭证
+    store = CredentialStore(tmp_path / "qqbot.json")
+    account = store.get("default")
+    assert account is not None
+    assert account.app_id == "a" and account.app_secret == "s"
+    assert store.path.exists()  # 恢复回主文件，不是只在内存里
+
+
+def test_broken_main_file_is_restored_from_backup(tmp_path: Path) -> None:
+    store = CredentialStore(tmp_path / "qqbot.json")
+    store.save(QQBotAccount(app_id="a", app_secret="s"))
+    store.path.write_text("{ 这不是 json", encoding="utf-8")
+    assert CredentialStore(store.path).get("default") is not None
+
+
+def test_incomplete_main_file_is_restored_from_backup(tmp_path: Path) -> None:
+    """主文件只剩半个账户（缺 secret）时也算「读不出可用凭证」，备份要顶上来。"""
+    store = CredentialStore(tmp_path / "qqbot.json")
+    store.save(QQBotAccount(app_id="a", app_secret="s"))
+    store.path.write_text(json.dumps({"accounts": {"default": {"appId": "a"}}}), encoding="utf-8")
+    account = CredentialStore(store.path).get("default")
+    assert account is not None and account.app_secret == "s"
+
+
+def test_logout_removes_the_backup_too(tmp_path: Path) -> None:
+    """logout 要删干净：否则下次读又把备份「恢复」回来，等于没登出。"""
+    store = CredentialStore(tmp_path / "qqbot.json")
+    store.save(QQBotAccount(app_id="a", app_secret="s"))
+    assert store.delete("default") is True
+    assert not store.path.exists()
+    assert not store.backup_path.exists()
+    assert store.load() == {}
+
+
+def test_no_backup_means_no_resurrection(tmp_path: Path) -> None:
+    """没有备份时，坏文件仍然只是坏文件（不会被凭空恢复出凭证）。"""
+    store = CredentialStore(tmp_path / "qqbot.json")
+    assert not store.backup_path.exists()
+    assert store.load() == {}
+
+
 def test_save_refuses_incomplete_account(tmp_path: Path) -> None:
     store = CredentialStore(tmp_path / "qqbot.json")
     with pytest.raises(QQBotError, match="不完整"):

@@ -4,7 +4,14 @@ from __future__ import annotations
 
 from typing import Any
 
-from yuque_agent.qqbot.commands import HELP_TEXT, CommandRouter, render_status
+from yuque_agent.qqbot.commands import (
+    COMMANDS,
+    HELP_TEXT,
+    CommandRouter,
+    help_text,
+    render_status,
+    whoami_text,
+)
 from yuque_agent.qqbot.config import QQBotConfig
 from yuque_agent.qqbot.events import InboundMessage
 
@@ -51,7 +58,7 @@ def make_router(*, config: QQBotConfig | None = None, gateway=None, clock=None):
         or QQBotConfig(
             inbound_allow=("u-1", "u-admin"),
             inbound_admins=("u-admin",),
-            inbound_groups=("g-1",),
+            inbound_user_groups=("g-1",),
             inbound_rate_limit=30,
         ),
         gateway=gateway,
@@ -82,10 +89,15 @@ def test_unknown_sender_is_denied() -> None:
     assert "白名单" in result.reply
 
 
-def test_group_speaker_outside_allowlist_is_silent() -> None:
+def test_unlisted_group_speaker_is_silent() -> None:
+    """群不在任何群名单里、人也不在名单里 → 群里静默不回（不打扰大家）。"""
     router, _, _ = make_router()
     msg = InboundMessage(
-        kind="group", sender_id="u-stranger", group_openid="g-1", content="/status", message_id="m"
+        kind="group",
+        sender_id="m-stranger",
+        group_openid="g-999",
+        content="/status",
+        message_id="m",
     )
     result = router.dispatch(msg)
     assert result.handled is False
@@ -93,23 +105,137 @@ def test_group_speaker_outside_allowlist_is_silent() -> None:
     assert result.reply == ""
 
 
-def test_group_must_be_allowlisted_too() -> None:
+def test_anyone_in_user_group_is_a_user() -> None:
+    """「用户直接从用户群读取」：用户群里谁发言都算用户，不用逐个登记 openid。"""
+    router, _, _ = make_router()  # make_router 把 g-1 配成 user_groups
+    for sender in ("m-1", "m-2", "m-完全没登记过"):
+        msg = InboundMessage(
+            kind="group", sender_id=sender, group_openid="g-1", content="/status", message_id="m"
+        )
+        assert router.dispatch(msg).handled is True
+
+
+def test_individual_grant_still_works_inside_an_unlisted_group() -> None:
+    """个人名单与群名单各自独立生效：人在 allow 里，群没登记也放行。"""
     router, _, _ = make_router()
     msg = InboundMessage(
         kind="group", sender_id="u-1", group_openid="g-999", content="/status", message_id="m"
     )
-    assert router.dispatch(msg).handled is False
+    assert router.dispatch(msg).handled is True
+
+
+def test_admin_group_makes_everyone_admin() -> None:
+    """管理员群里谁发言都是管理员（能用 /archive）——文档里明确警告过风险。"""
+    config = QQBotConfig(
+        inbound_allow=("u-admin",),
+        inbound_admins=("u-admin",),
+        inbound_user_groups=("g-1",),
+        inbound_admin_groups=("g-admin",),
+        inbound_rate_limit=0,
+    )
+    router, gateway, _ = make_router(config=config)
+    msg = InboundMessage(
+        kind="group",
+        sender_id="m-anyone",
+        group_openid="g-admin",
+        content="/archive",
+        message_id="m",
+    )
+    result = router.dispatch(msg)
+    assert result.handled is True
+    assert result.admin is True
+    assert gateway.calls[-1]["archive"] is True
+
+
+def test_user_group_cannot_run_write_commands() -> None:
+    """用户群里的人只是「用户」：/run 会被拒。"""
+    router, gateway, _ = make_router()  # g-1 = user_groups
+    msg = InboundMessage(
+        kind="group", sender_id="m-1", group_openid="g-1", content="/run", message_id="m"
+    )
+    result = router.dispatch(msg)
+    assert result.handled is False
+    assert "只有管理员" in result.reply
+    assert gateway.calls == []
 
 
 # ---------------------------------------------------------------- 读命令
 
 
-def test_help_command() -> None:
+def test_help_command_lists_what_a_user_can_actually_use() -> None:
+    """普通用户拿到的清单里**只有他能用的**：写操作不列（列了也跑不了）。"""
     router, _, _ = make_router()
-    result = router.dispatch(c2c("/help"))
+    result = router.dispatch(c2c("/help"))  # c2c 默认 sender=u-1，普通用户
     assert result.handled is True
-    assert result.reply == HELP_TEXT
-    assert "/run" in result.reply
+    assert "你现在的身份：用户" in result.reply
+    for name in ("/whoami", "/help", "/status", "/pending"):
+        assert name in result.reply
+    for name in ("/run", "/archive"):
+        assert name not in result.reply
+
+
+def test_help_for_admin_lists_every_command() -> None:
+    """管理员拿到的是**全部**命令，写操作单独一组。"""
+    router, _, _ = make_router()
+    result = router.dispatch(c2c("/help", sender="u-admin"))
+    assert result.handled is True
+    assert "你现在的身份：管理员" in result.reply
+    assert "管理员专用" in result.reply
+    for spec in COMMANDS:
+        assert f"/{spec.name}" in result.reply
+
+
+def test_help_in_admin_group_lists_every_command() -> None:
+    """管理员群里的人（openid 从没登记过）也是管理员 → 同样看到全部命令。"""
+    config = QQBotConfig(inbound_admin_groups=("g-admin",), inbound_rate_limit=0)
+    router, _, _ = make_router(config=config)
+    msg = InboundMessage(
+        kind="group",
+        sender_id="m-谁都没登记过",
+        group_openid="g-admin",
+        content="/help",
+        message_id="m",
+    )
+    result = router.dispatch(msg)
+    assert result.handled is True
+    assert "你现在的身份：管理员" in result.reply and "/archive" in result.reply
+
+
+def test_help_in_user_group_only_lists_user_commands() -> None:
+    """用户群里的人只是「用户」→ 清单里没有写操作。"""
+    router, _, _ = make_router()  # make_router 把 g-1 配成 user_groups
+    msg = InboundMessage(
+        kind="group", sender_id="m-1", group_openid="g-1", content="/help", message_id="m"
+    )
+    result = router.dispatch(msg)
+    assert "你现在的身份：用户" in result.reply
+    assert "/archive" not in result.reply
+
+
+def test_help_has_no_small_talk_or_footer() -> None:
+    """命令回复只留信息：开场白（「我是…能做的事：」）与结尾声明都不该出现。"""
+    router, _, _ = make_router()
+    for text in ("/help", "你好"):
+        for sender in ("u-1", "u-admin"):
+            reply = router.dispatch(c2c(text, sender=sender)).reply
+            assert "看门 agent" not in reply
+            assert "能做的事" not in reply
+            assert "判断权在 agent" not in reply
+            assert not reply.startswith("我是")
+
+
+def test_help_text_without_config_still_lists_everything() -> None:
+    """``HELP_TEXT`` 保持「全部命令」语义（CLI 拿它当标语，测试也用它）。"""
+    text = help_text()
+    assert text == HELP_TEXT
+    for spec in COMMANDS:
+        assert f"/{spec.name}" in text
+
+
+def test_free_text_hint_is_also_role_aware() -> None:
+    router, _, _ = make_router()
+    assert "/archive" not in router.dispatch(c2c("你好", sender="u-1")).reply
+    assert "/archive" in router.dispatch(c2c("你好", sender="u-admin")).reply
 
 
 def test_chinese_alias_works_without_slash() -> None:
@@ -144,6 +270,77 @@ def test_empty_message_is_silent() -> None:
     router, _, _ = make_router()
     result = router.dispatch(c2c("   "))
     assert result.silent is True
+
+    # ------------------------------------------------------------ 引导
+
+
+def test_whoami_works_before_being_allowlisted() -> None:
+    """``/whoami`` 必须在白名单之前放行——否则第一次用的人拿不到自己的 openid。"""
+    router, _gateway, _ = make_router(config=QQBotConfig())  # allow 为空 = 默认拒绝
+    result = router.dispatch(c2c("/whoami", sender="U-stranger"))
+
+    assert result.handled is True
+    assert result.command == "whoami"
+    assert "U-stranger" in result.reply
+
+
+def test_whoami_aliases_work() -> None:
+    router, _gateway, _ = make_router(config=QQBotConfig())
+    for text in ("/myid", "我是谁", "id"):
+        assert router.dispatch(c2c(text, sender="U-x")).command == "whoami"
+
+
+def test_whoami_in_group_gives_both_ids() -> None:
+    router, _gateway, _ = make_router(config=QQBotConfig())
+    msg = InboundMessage(
+        kind="group", sender_id="M-xyz", group_openid="G-123", content="/whoami", message_id="m"
+    )
+    result = router.dispatch(msg)
+
+    assert result.handled is True
+    assert "G-123" in result.reply and "M-xyz" in result.reply
+
+
+def test_denial_for_direct_message_shows_your_own_openid() -> None:
+    """被拒时把自己的 openid 给他（是事实，不是让他去翻配置）。"""
+    router, _gateway, _ = make_router(config=QQBotConfig())
+    result = router.dispatch(c2c("你好", sender="U-stranger"))
+
+    assert result.handled is False
+    assert "U-stranger" in result.reply
+
+
+def test_replies_are_information_only_never_config_guides() -> None:
+    """命令只回信息，不回指南：回复里不该出现配置片段或「怎么改配置」的说明。"""
+    forbidden = ('"allow"', '"admins"', '"user_groups"', '"admin_groups"', "填进", "重启服务")
+    router, _gateway, _ = make_router(config=QQBotConfig())
+    replies = [
+        router.dispatch(c2c("/whoami", sender="U-stranger")).reply,
+        router.dispatch(c2c("你好", sender="U-stranger")).reply,
+        router.dispatch(
+            InboundMessage(
+                kind="group",
+                sender_id="M-xyz",
+                group_openid="G-123",
+                content="/whoami",
+                message_id="m",
+            )
+        ).reply,
+    ]
+    for reply in replies:
+        for bad in forbidden:
+            assert bad not in reply, f"{bad!r} 出现在回复里：{reply}"
+
+
+def test_whoami_text_never_leaks_other_peoples_ids() -> None:
+    msg = InboundMessage(kind="c2c", sender_id="U-mine", content="/whoami", message_id="m")
+    text = whoami_text(msg)
+    assert "U-mine" in text
+    assert "U-other" not in text
+
+
+def test_help_lists_whoami() -> None:
+    assert "/whoami" in HELP_TEXT
 
 
 # ---------------------------------------------------------------- 写命令
