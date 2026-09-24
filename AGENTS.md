@@ -9,6 +9,7 @@
 |---|---|
 | [`docs/deploy.md`](docs/deploy.md) | 部署真相：目录布局、三个 systemd 单元、二选一矩阵、验收清单 |
 | [`docs/handoff.md`](docs/handoff.md) | 对下游（cac / 洋芋）的**冻结契约**：申请 JSON 与通知事件 |
+| [`docs/interface.md`](docs/interface.md) | 与 QQ 桥接方的**接口与边界**：目标态是两个仓库各管各的，桥不 import 核心内部 |
 | `AGENTS.md`（本文件） | 干活规矩：怎么改、怎么部署、什么绝对不许做 |
 
 ## 1. 一条上游，feature 分支交付
