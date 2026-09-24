@@ -115,6 +115,46 @@ def deleted_ids(env: dict[str, Any]) -> list[int]:
     return [c[1]["doc_id"] for c in env["client"].calls if c[0] == "delete_doc"]
 
 
+# ---------------------------------------------------------------- 工作区守卫
+
+
+def test_refuses_a_workspace_inside_the_code_checkout(env, tmp_path, monkeypatch) -> None:
+    """`--workspace` 指到代码检出里 → 直接拒绝。
+
+    这是实测踩出来的坑（2026-09-25）：`yqa-as-service` 没带 `--workspace`，
+    默认落到 `<检出>/workspace`——语雀里的申请文档照样被删，本地产出却清了个空。
+    """
+    monkeypatch.setattr(cli, "CHECKOUT_ROOT", tmp_path)
+    inside = tmp_path / "checkout" / "workspace"
+    result = CliRunner().invoke(
+        cli.app,
+        ["reset-test-data", "--repo", "g/kb", "--workspace", str(inside), "--yes"],
+    )
+    assert result.exit_code == 2
+    assert deleted_ids(env) == [], "守卫拦下之后不该再删任何语雀文档"
+
+
+def test_force_overrides_the_checkout_guard(env, tmp_path, monkeypatch) -> None:
+    """知道自己在干什么时用 --force 放行。"""
+    monkeypatch.setattr(cli, "CHECKOUT_ROOT", tmp_path)
+    inside = tmp_path / "checkout" / "workspace"
+    Settings(repo="g/kb", workspace=inside).ensure_dirs()
+    result = CliRunner().invoke(
+        cli.app,
+        [
+            "reset-test-data",
+            "--repo",
+            "g/kb",
+            "--workspace",
+            str(inside),
+            "--yes",
+            "--force",
+        ],
+    )
+    assert result.exit_code == 0
+    assert deleted_ids(env) != []
+
+
 # ---------------------------------------------------------------- 预览是默认
 
 

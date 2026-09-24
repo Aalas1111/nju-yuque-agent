@@ -293,7 +293,15 @@ yqa-as-service doctor                       # 自检（这是第一条该跑的�
 yqa-as-service once --workspace /var/lib/yuque-agent/workspace   # 跑一轮
 yqa-as-service sessions                     # 看本地留了哪些 run
 yqa-as-service render <run_id>              # 把某次 run 渲染成人话
+yqa-as-service reset-test-data --workspace /var/lib/yuque-agent/workspace --scope all --journal
 ```
+
+> ⚠️ **任何会动工作区的命令都必须显式写 `--workspace /var/lib/yuque-agent/workspace`。**
+> CLI 的默认值是相对路径 `workspace`，而这个脚本的工作目录是检出目录
+> （`uv run --directory /opt/yuque-agent`）——不写就会落到 `<检出>/workspace`。
+> 实测踩过（2026-09-25）：`reset-test-data` 因此把检出里一个陈旧的 `workspace/`
+> 当成目标，**语雀里的申请文档照样被删了，本地产出却清了个空**。
+> 现在这种工作区会被直接拒绝（要强跑加 `--force`）。
 
 ## 7. 上线后的验收清单
 

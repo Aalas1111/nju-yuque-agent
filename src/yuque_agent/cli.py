@@ -505,6 +505,19 @@ def sync_guide(
 
 # ---------------------------------------------------------------- 清空测试数据
 
+#: 代码检出的根目录 —— 服务的工作区**不该**落在它里面（`src/yuque_agent/cli.py` 往上三层）。
+CHECKOUT_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _inside_checkout(path: Path) -> bool:
+    """``path`` 是否落在代码检出里。"""
+    try:
+        Path(path).resolve().relative_to(CHECKOUT_ROOT)
+    except ValueError:
+        return False
+    return True
+
+
 #: 永远不碰的系统性文档（跟 `Settings.ignore_doc_titles` 一起用）。
 _SYSTEM_DOC_TITLES = ("指导文档（必读）", "指导文档")
 
@@ -550,10 +563,19 @@ def reset_test_data(
         typer.Option("--runs", help="连 runs/ 留痕一起删（默认保留——那是证据）"),
     ] = False,
     yes: Annotated[bool, typer.Option("--yes", help="真的执行；不加这个只预览")] = False,
+    force: Annotated[
+        bool,
+        typer.Option("--force", help="工作区看起来不对（落在代码检出里）也照跑"),
+    ] = False,
 ) -> None:
     """清空测试数据：删掉知识库里的申请文档 + 本地产出与状态，回到干净起点。
 
     **默认只预览**（列出会删什么），确认无误再加 `--yes`。
+
+    ⚠️ **必须显式给对 `--workspace`**：默认值是相对路径 `workspace`，
+    在检出目录里跑就会落到 `<检出>/workspace`。那是最坏的一种错——
+    知识库里的申请文档**照样被删**，而本地产出清了个空
+    （2026-09-25 实测踩到）。所以工作区落在代码检出里时这里会直接拒绝。
 
     目的是「测试完回到能交付的干净状态」：
 
@@ -571,6 +593,15 @@ def reset_test_data(
         raise typer.Exit(2)
 
     settings = _settings(repo, workspace, False, False, DEFAULT_MODEL, 60, False)
+    if _inside_checkout(settings.root) and not force:
+        console.print(
+            f"[red]工作区落在代码检出里：{settings.root}[/red]\n"
+            "这几乎一定是 `--workspace` 写错了。它是最坏的一种错：\n"
+            "  知识库里的申请文档**照样会被删**，而本地产出清了个空（实测踩到过）。\n"
+            f"服务的工作区应当是 /var/lib/yuque-agent/workspace；确认无误要强跑加 --force。",
+            markup=False,
+        )
+        raise typer.Exit(2)
     cycle_title = cycle_targets(clock.now())[0].title
     protected = set(_SYSTEM_DOC_TITLES) | set(settings.ignore_doc_titles) | {settings.journal_title}
 

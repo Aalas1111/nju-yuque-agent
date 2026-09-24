@@ -433,6 +433,7 @@ def _emit_notice(ctx: RunContext, args: dict[str, Any]) -> Any:
             "（这一类由程序自己发，不需要你产出）" if kind in outputs.PROGRAM_NOTICE_KINDS else ""
         )
         raise ToolError(f"kind 必须是 {list(outputs.LLM_NOTICE_KINDS)} 之一，收到 {kind!r}{hint}")
+    message = str(args.get("message") or "")
     payload = {
         "doc": {
             "doc_id": int(args.get("doc_id") or 0),
@@ -441,7 +442,7 @@ def _emit_notice(ctx: RunContext, args: dict[str, Any]) -> Any:
         },
         "member": {"name": str(args.get("member_name") or "")},
         "summary": str(args.get("summary") or ""),
-        "message": str(args.get("message") or ""),
+        "message": message,
         "reasons": [str(r) for r in (args.get("reasons") or [])],
         "warnings": [str(w) for w in (args.get("warnings") or [])],
     }
