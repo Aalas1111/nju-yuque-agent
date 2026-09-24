@@ -42,7 +42,7 @@ exec 9>"$LOCK"
 flock -n 9 || die "另一个部署正在进行（$LOCK 被占用）。等它结束再来，别抢同一个工作区。"
 
 cd "$REPO"
-[ -f deploy/yuque-agent-qq.service ] || die "$REPO 看起来不是这个项目的检出"
+[ -f deploy/yuque-agent.service ] || die "$REPO 看起来不是这个项目的检出"
 
 say "工作区必须干净（跟踪的文件）"
 if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
