@@ -238,6 +238,11 @@ class Settings:
         """LLM 唯一允许自己写的目录（跨轮记忆）。"""
         return self.root / "notes"
 
+    @property
+    def conversations_dir(self) -> Path:
+        """QQ bot 交互式申请的会话存储目录。"""
+        return self.root / "conversations"
+
     def ensure_dirs(self) -> None:
         for path in (
             self.root,
@@ -246,6 +251,7 @@ class Settings:
             self.notify_dir / "pending",
             self.notify_dir / "done",
             self.notes_dir,
+            self.conversations_dir,
         ):
             path.mkdir(parents=True, exist_ok=True)
 

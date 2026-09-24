@@ -9,7 +9,7 @@ QQ 侧同理：**能不能让 agent 干活，由配置里的白名单决定，�
 * 其他任何文本**不会**被当成提示词发给 LLM（那等于把能力边界让位给提示词），
   只会回一句「我只认命令，发 /help 看看」。
 
-默认拒绝：``inbound.allow`` 为空时，**谁的命令都不接受**。
+默认拒绝：``inbound.users`` 为空时，**谁的命令都不接受**。
 """
 
 from __future__ import annotations
@@ -44,6 +44,11 @@ COMMANDS: tuple[CommandSpec, ...] = (
     CommandSpec("help", "列出你能用的命令", aliases=("帮助", "?", "？", "h")),
     CommandSpec("status", "看一眼知识库与 agent 的状态", aliases=("状态", "s")),
     CommandSpec("pending", "还有几条通知没投递出去", aliases=("待投递", "通知", "p")),
+    CommandSpec(
+        "apply",
+        "填写教室借用申请（交互式，一步步来）",
+        aliases=("申请", "借用", "borrow"),
+    ),
     CommandSpec(
         "run",
         "立刻跑一轮轮询（会花 token）",
@@ -150,6 +155,8 @@ class AgentGateway(Protocol):
         requested_by: str,
         reply_target: Any = None,
     ) -> dict[str, Any]: ...
+
+    def request_apply(self, *, user_id: str) -> dict[str, Any]: ...
 
 
 class CommandRouter:
@@ -259,6 +266,9 @@ class CommandRouter:
             if count <= 0:
                 return "通知都投递出去了，pending 是空的。", {}
             return f"还有 {count} 条通知在 outbox/notify/pending/ 里等着投递。", {}
+        if spec.name == "apply":
+            payload = self.gateway.request_apply(user_id=msg.sender_id)
+            return payload.get("message", "申请已启动。"), payload
         if spec.name == "run":
             payload = self.gateway.request_run(
                 archive=False, requested_by=msg.sender_id, reply_target=msg.reply_target

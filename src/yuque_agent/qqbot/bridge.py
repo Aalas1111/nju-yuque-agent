@@ -206,19 +206,31 @@ class NotifyBridge:
             self._audit(result)
             return result
 
-        target, basis = self.config.resolve_member(result.member)
-        if target is None:
-            result.status = STATUS_UNROUTED
-            result.reason = basis
-            self._move(path, self.unrouted_dir, result)
-            self._audit(result)
-            self._log(
-                f"[qqbot:notify] {path.name}：语雀成员 {result.member or '(空)'} 认不出，"
-                f"挪到 unrouted/（在 qqbot.json 的 notify.members 里加一条即可）"
-            )
-            return result
+        # 扩展：如果通知记录里有 direct_target，直接用它，跳过 member name 查表。
+        # 这是给 QQ bot 交互式申请这类「不经过语雀文档、直接知道用户 QQ 身份」的场景用的。
+        direct = record.get("direct_target")
+        if isinstance(direct, dict) and direct.get("scope") and direct.get("target_id"):
+            from .client import Target as _Target
+            _t = _Target(str(direct["scope"]), str(direct["target_id"]))
+            target = _t  # Target object directly
+            basis = "direct_target"
+            send_target = _t
+        else:
+            nt, basis = self.config.resolve_member(result.member)
+            if nt is None:
+                result.status = STATUS_UNROUTED
+                result.reason = basis
+                self._move(path, self.unrouted_dir, result)
+                self._audit(result)
+                self._log(
+                    f"[qqbot:notify] {path.name}：语雀成员 {result.member or '(空)'} 认不出，"
+                    f"挪到 unrouted/（在 qqbot.json 的 notify.members 里加一条即可）"
+                )
+                return result
+            target = nt  # NotifyTarget
+            send_target = nt.target  # Convert to Target for send_text
 
-        result.target = target.to_str()
+        result.target = target.to_str() if hasattr(target, "to_str") else str(target)
         if self.dry_run:
             result.status = STATUS_DRY_RUN
             self._audit(result)
@@ -226,7 +238,7 @@ class NotifyBridge:
             return result
 
         try:
-            self.sender.send_text(target.target, message)
+            self.sender.send_text(send_target, message)
         except Exception as exc:  # noqa: BLE001 - 任何发送失败都留在 pending 重试
             result.status = STATUS_FAILED
             result.error = f"{type(exc).__name__}: {exc}"

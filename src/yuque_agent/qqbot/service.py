@@ -39,8 +39,10 @@ from ..runner import Runner
 from ..watcher import Watcher
 from .bridge import NotifyBridge
 from .client import QQBotClient, Target
+from .agent import AgentResult, RouterAgent, register_default_workflows
 from .commands import AgentGateway, CommandRouter
 from .config import QQBotConfig
+from .conversations import ConversationManager, first_question
 from .events import InboundMessage
 from .gateway import GatewayOptions, intents_from_env, run_gateway
 from .progress import ProgressOptions, ProgressSender
@@ -99,6 +101,16 @@ class QQBotService:
         self.progress_enabled = progress_enabled
 
         self.router = CommandRouter(config=config, gateway=self, log=log)
+        self.conversations = ConversationManager(conversations_dir=settings.conversations_dir)
+
+        # Router Agent：统一意图路由
+        self.agent = RouterAgent(
+            conversations=self.conversations,
+            config=config,
+            gateway=self,
+            log=log,
+        )
+        register_default_workflows(self.agent)
 
         self._queue: deque[AgentRequest] = deque()
         self._lock = threading.Lock()
@@ -155,6 +167,12 @@ class QQBotService:
             "message": f"收到，已排队跑{what}；跑完我把结论发给你（约几十秒到几分钟）。",
             "request_id": request.request_id,
         }
+
+    def request_apply(self, *, user_id: str) -> dict[str, Any]:
+        """开始一次交互式申请会话。"""
+        session = self.conversations.get_or_create(user_id)
+        question = first_question(session)
+        return {"message": question}
 
     def status(self) -> dict[str, Any]:
         return {
@@ -364,32 +382,34 @@ class QQBotService:
 
     # -- 入站 -------------------------------------------------------------
     def handle_inbound(self, message: InboundMessage) -> dict[str, Any]:
-        """收到一条 QQ 消息：过命令路由，能回就回。跑在线程池里（可能很慢）。"""
+        """收到一条 QQ 消息：交给 RouterAgent 统一处理。跑在线程池里。"""
         self._log(f"[qqbot:in] {message.kind} {message.sender_id}: {message.text[:80]!r}")
-        result = self.router.dispatch(message)
-        if result.silent or not result.reply:
-            return result.to_dict()
+
         target = message.reply_target
+
+        # RouterAgent 统一处理：安全层 → 意图路由 → 工作流执行
+        result = self.agent.process(message, settings=self.settings)
+
+        if result.silent or not result.reply:
+            return {"handled": True, "command": result.command, "reply": "", "silent": True}
         if target is None:
             self._log("[qqbot:in] 这条消息没有可回复的目标（缺 message_id？），只记日志")
-            return result.to_dict()
+            return {"handled": True, "command": result.command, "reply": result.reply}
         if self.qq_client is None:
-            return result.to_dict()
+            return {"handled": True, "command": result.command, "reply": result.reply}
 
-        # /run 与 /archive 的「回执 + 运行中的分段播报 + 保活」串成一条消息流：
-        # 同一条 msg_id、msg_seq 递增（QQ 被动回复窗口内的正规多发姿势）。
-        # 发送器是 request_run 在锁内就建好的，这里只是认领它并把回执当第 1 条发出去。
-        sender = self._take_progress((getattr(result, "data", None) or {}).get("request_id", ""))
+        # /run 与 /archive 的分段播报：如果有 progress sender，串成消息流
+        sender = self._take_progress(result.data.get("request_id", ""))
         if sender is not None:
             sender.start()
             sender.segment(result.reply)
-            return result.to_dict()
+            return {"handled": True, "command": result.command, "reply": result.reply, "data": result.data}
 
         try:
             self.qq_client.send_text(target, result.reply)
         except Exception as exc:  # noqa: BLE001
             self._log(f"[qqbot:in] 回复失败：{type(exc).__name__}: {exc}")
-        return result.to_dict()
+        return {"handled": True, "command": result.command, "reply": result.reply}
 
     def _make_progress(self, reply_target: Target | None) -> ProgressSender | None:
         """按需建一个播报发送器（调用方必须持有 ``self._lock``）。"""

@@ -596,7 +596,7 @@ def qq_status_payload(
         (
             "入站命令",
             f"{'开' if config.inbound_enabled else '关'}；"
-            f"个人 {len(config.inbound_allow)} 人 / 个人管理员 {len(config.inbound_admins)} 人；"
+            f"个人 {len(config.inbound_users)} 人 / 个人管理员 {len(config.inbound_admins)} 人；"
             f"用户群 {len(config.inbound_user_groups)} 个 / 管理员群 {len(config.inbound_admin_groups)} 个",
         )
     )
@@ -645,7 +645,7 @@ def qq_status_payload(
         "notify": stats,
         "inbound": {
             "enabled": config.inbound_enabled,
-            "allow": list(config.inbound_allow),
+            "allow": list(config.inbound_users),
             "admins": list(config.inbound_admins),
             "user_groups": list(config.inbound_user_groups),
             "admin_groups": list(config.inbound_admin_groups),
@@ -948,7 +948,7 @@ def qq_serve(
             f"通知泵 每 {notify_interval}s 扫一次 outbox/notify/pending/\n"
             f"分段播报 {'关（--no-progress）' if no_progress else f'开（保活 {progress_idle:.0f}s）'}\n"
             f"QQ 入站 {'关（--no-inbound）' if no_inbound else ('开' if client else '关（未绑定）')}"
-            f" · 个人 {len(config.inbound_allow)}/{len(config.inbound_admins)} 人"
+            f" · 个人 {len(config.inbound_users)}/{len(config.inbound_admins)} 人"
             f" · 群 {len(config.inbound_user_groups)}/{len(config.inbound_admin_groups)} 个（用户/管理员）",
             title="yqa qq serve",
         )

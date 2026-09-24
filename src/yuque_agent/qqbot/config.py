@@ -17,20 +17,20 @@
   },
   "inbound": {
     "enabled": true,
-    "allow":  ["用户 openid"],             // 谁能给 bot 发命令；**空 = 谁都不许**（默认拒绝）
-    "admins": ["用户 openid"],             // 谁能触发 /run 与 /archive（写操作）
-    "groups": ["群 openid"],               // 群聊里还要群本身在名单内
+    "users":  ["用户 openid"],             // 用户权限：借用教室、查帮助等
+    "admins": ["管理员 openid"],           // 管理员权限：跑轮询、归档、查后端状态等
+    "user_groups": ["群 openid"],          // 用户群：群里任何人发言都算用户
+    "admin_groups": ["群 openid"],         // 管理员群：群里任何人发言都算管理员
     "rate_limit_seconds": 30
   }
 }
 ```
 
-两条与本项目立场一致的设计：
-
-1. **默认拒绝**：``inbound.allow`` 为空 = 谁都不能用命令。想让 bot 干活必须显式写名单，
-   而不是「默认开放、出事再加黑名单」。
-2. **身份映射在本层**（``notify.members``）：agent 只给语雀侧的人名
-   （``member.name``，文档里手填的），语雀身份 → QQ 号由这里负责，与 ``docs/handoff.md`` §3.4 一致。
+权限模型：
+- 两层权限：user（用户）和 admin（管理员）
+- 管理员自动拥有用户权限
+- 一个 OpenID 只能在一个层级（users 和 admins 不能重复）
+- 默认拒绝：users 和 admins 都空 = 谁都不能用
 """
 
 from __future__ import annotations
@@ -102,16 +102,14 @@ class QQBotConfig:
     notify_default: NotifyTarget | None = None
     members: dict[str, NotifyTarget] = field(default_factory=dict)
     inbound_enabled: bool = True
-    inbound_allow: tuple[str, ...] = ()
-    """个人用户：私聊里这些 ``user_openid`` 能用只读命令（也认群内的 ``member_openid``）。"""
+    inbound_users: tuple[str, ...] = ()
+    """个人用户：这些 openid 拥有用户权限（借用教室、查帮助等）。"""
 
     inbound_admins: tuple[str, ...] = ()
-    """个人管理员：这些 openid 能用 ``/run`` ``/archive``（在群里同样生效）。"""
+    """个人管理员：这些 openid 拥有管理员权限（跑轮询、归档等），自动拥有用户权限。"""
 
     inbound_user_groups: tuple[str, ...] = ()
-    """**用户群**：这些群里的任何人发言都算「用户」——不用逐个登记 openid
-    （QQ 只给机器人 per-bot 的 ``member_openid``，且只在成员发言时出现，
-    没有「列出群成员」的接口，所以群本身才是可用的授权边界）。"""
+    """**用户群**：这些群里的任何人发言都算「用户」——不用逐个登记 openid。"""
 
     inbound_admin_groups: tuple[str, ...] = ()
     """**管理员群**：这些群里的任何人发言都算「管理员」。
@@ -140,8 +138,8 @@ class QQBotConfig:
         notify = data.get("notify") if isinstance(data.get("notify"), dict) else {}
         inbound = data.get("inbound") if isinstance(data.get("inbound"), dict) else {}
         members: dict[str, NotifyTarget] = {}
-        raw_members = notify.get("members") if isinstance(notify.get("members"), dict) else {}
-        for name, entry in raw_members.items():
+        raw_users = notify.get("members") if isinstance(notify.get("members"), dict) else {}
+        for name, entry in raw_users.items():
             parsed = NotifyTarget.from_dict(entry)
             if parsed is not None:
                 members[str(name).strip()] = parsed
@@ -154,6 +152,9 @@ class QQBotConfig:
         except (TypeError, ValueError):
             rate_limit = 30
 
+        # 兼容旧键 allow → users
+        users_val = _str_tuple(inbound.get("users")) or _str_tuple(inbound.get("allow"))
+
         return cls(
             version=int(data.get("version") or CONFIG_VERSION),
             source=str(data.get("source") or "yuque-agent"),
@@ -161,9 +162,8 @@ class QQBotConfig:
             notify_default=NotifyTarget.from_dict(notify.get("default_target")),
             members=members,
             inbound_enabled=bool(inbound.get("enabled", True)),
-            inbound_allow=_str_tuple(inbound.get("allow")),
+            inbound_users=users_val,
             inbound_admins=_str_tuple(inbound.get("admins")),
-            # 旧键 groups 当成「用户群」读（老配置不用改）
             inbound_user_groups=_str_tuple(inbound.get("user_groups"))
             or _str_tuple(inbound.get("groups")),
             inbound_admin_groups=_str_tuple(inbound.get("admin_groups")),
@@ -185,7 +185,7 @@ class QQBotConfig:
             },
             "inbound": {
                 "enabled": self.inbound_enabled,
-                "allow": list(self.inbound_allow),
+                "users": list(self.inbound_users),
                 "admins": list(self.inbound_admins),
                 "user_groups": list(self.inbound_user_groups),
                 "admin_groups": list(self.inbound_admin_groups),
@@ -224,14 +224,14 @@ class QQBotConfig:
     def role_of(self, sender_id: str, group_openid: str = "") -> str:
         """判定这条消息的权限档位：``"admin"`` / ``"user"`` / ``""``（默认拒绝）。
 
-        四个来源**各自独立生效**，满足其一即可::
+        权限模型：
+        - 管理员（admins / admin_groups）自动拥有用户权限
+        - 一个 OpenID 只能在一个层级
+        - 四个来源各自独立生效，满足其一即可::
 
-            群消息： 群 ∈ admin_groups 或 发言人 ∈ admins  → admin
-                    群 ∈ user_groups  或 发言人 ∈ allow   → user
-            私聊：  发言人 ∈ admins → admin ／ ∈ allow → user
-
-        群的判定是「整个群」，这正是「用户直接从用户群读取」的含义：
-        群里谁发言谁是用户，不需要逐个登记 openid。
+            群消息：  群 ∈ admin_groups 或 发言人 ∈ admins  → admin
+                     群 ∈ user_groups  或 发言人 ∈ users   → user
+            私聊：   发言人 ∈ admins → admin ／ ∈ users → user
         """
         if not self.inbound_enabled:
             return ""
@@ -240,12 +240,12 @@ class QQBotConfig:
         if group:
             if group in self.inbound_admin_groups or person in self.inbound_admins:
                 return ROLE_ADMIN
-            if group in self.inbound_user_groups or person in self.inbound_allow:
+            if group in self.inbound_user_groups or person in self.inbound_users:
                 return ROLE_USER
             return ""
         if person and person in self.inbound_admins:
             return ROLE_ADMIN
-        if person and person in self.inbound_allow:
+        if person and person in self.inbound_users:
             return ROLE_USER
         return ""
 
@@ -264,8 +264,8 @@ class QQBotConfig:
                 reason.append(f"群 {group} 配在 inbound.user_groups 里")
         if person in self.inbound_admins:
             reason.append("你的 openid 配在 inbound.admins 里")
-        elif person in self.inbound_allow:
-            reason.append("你的 openid 配在 inbound.allow 里")
+        elif person in self.inbound_users:
+            reason.append("你的 openid 配在 inbound.users 里")
         return reason
 
     def is_allowed(self, sender_id: str, group_openid: str = "") -> bool:
@@ -284,25 +284,32 @@ class QQBotConfig:
         issues: list[str] = []
         if not any(
             (
-                self.inbound_allow,
+                self.inbound_users,
                 self.inbound_admins,
                 self.inbound_user_groups,
                 self.inbound_admin_groups,
             )
         ):
             issues.append(
-                "入站命令对所有人都关着（默认拒绝）：要开放就填 allow/admins，或把群加进 user_groups"
+                "入站命令对所有人都关着（默认拒绝）：要开放就填 users/admins，或把群加进 user_groups"
             )
         if self.inbound_admin_groups:
             issues.append(
                 f"配了 {len(self.inbound_admin_groups)} 个管理员群 → 群里任何人都能跑 "
                 "/run /archive（后者能删文档、移目录）。确认群成员可控；更稳的是用 admins 逐个授权"
             )
-        overlap = set(self.inbound_user_groups) & set(self.inbound_admin_groups)
-        if overlap:
+        overlap_groups = set(self.inbound_user_groups) & set(self.inbound_admin_groups)
+        if overlap_groups:
             issues.append(
                 "这些群同时在 user_groups 与 admin_groups 里，按管理员处理："
-                + "、".join(sorted(overlap))
+                + "、".join(sorted(overlap_groups))
+            )
+        # 检查 users 和 admins 是否有重复
+        overlap_users = set(self.inbound_users) & set(self.inbound_admins)
+        if overlap_users:
+            issues.append(
+                "这些 openid 同时在 users 与 admins 里（一个 openid 只能在一个层级）："
+                + "、".join(sorted(overlap_users))
             )
         if self.notify_unmapped == UNMAPPED_DEFAULT and self.notify_default is None:
             issues.append(
@@ -318,8 +325,8 @@ class QQBotConfig:
             f"成员映射 {len(self.members)} 条",
             f"兜底目标 {self.notify_default.to_str() if self.notify_default else '(无)'}",
             f"入站 {'开' if self.inbound_enabled else '关'}",
-            f"个人 {len(self.inbound_allow)} 人",
-            f"个人管理员 {len(self.inbound_admins)} 人",
+            f"用户 {len(self.inbound_users)} 人",
+            f"管理员 {len(self.inbound_admins)} 人",
             f"用户群 {len(self.inbound_user_groups)} 个",
             f"管理员群 {len(self.inbound_admin_groups)} 个",
         ]
