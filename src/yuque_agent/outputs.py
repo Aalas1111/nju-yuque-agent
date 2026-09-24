@@ -424,6 +424,11 @@ def write_notice(settings: Settings, *, kind: str, payload: dict[str, Any]) -> d
         "warnings": payload.get("warnings") or [],
         "extra": payload.get("extra") or {},
     }
+    target = payload.get("target")
+    if isinstance(target, dict) and target.get("scope") and target.get("target_id"):
+        # 直投目标：给「不经过 notify.members 人名映射」的接收人（QQ 桥用，
+        # 例如在 QQ 里自助申请的社员本人）。契约见 docs/handoff.md §3、docs/interface.md §1.1。
+        record["target"] = {"scope": str(target["scope"]), "target_id": str(target["target_id"])}
 
     path = settings.notify_dir / "pending" / f"{seq:06d}-{kind}-{notice_id}.json"
     if not settings.dry_run:

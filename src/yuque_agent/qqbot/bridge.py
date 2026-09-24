@@ -206,11 +206,14 @@ class NotifyBridge:
             self._audit(result)
             return result
 
-        # 扩展：如果通知记录里有 direct_target，直接用它，跳过 member name 查表。
-        # 这是给 QQ bot 交互式申请这类「不经过语雀文档、直接知道用户 QQ 身份」的场景用的。
-        direct = record.get("direct_target")
+        # 直投目标：不经过人名映射，直接发给通知里指定的 QQ（契约字段 ``target``，
+        # 见 docs/handoff.md §3、docs/interface.md §1.1；兼容旧名 ``direct_target``）。
+        direct = record.get("target")
+        if not (isinstance(direct, dict) and direct.get("scope") and direct.get("target_id")):
+            direct = record.get("direct_target")
         if isinstance(direct, dict) and direct.get("scope") and direct.get("target_id"):
             from .client import Target as _Target
+
             _t = _Target(str(direct["scope"]), str(direct["target_id"]))
             target = _t  # Target object directly
             basis = "direct_target"

@@ -243,6 +243,24 @@ class Settings:
         """QQ bot 交互式申请的会话存储目录。"""
         return self.root / "conversations"
 
+    @property
+    def control_dir(self) -> Path:
+        """控制请求队列：外部进程（QQ 桥）→ 核心常驻进程的**唯一**触发通道。
+
+        请求方只写 ``control/requests/*.json``，由常驻进程消费（``state.json``
+        只能有一个写者），回执写回 ``control/done/<同名>.json``。
+        格式与用法见 ``docs/interface.md`` §1.2。
+        """
+        return self.root / "control"
+
+    @property
+    def control_requests_dir(self) -> Path:
+        return self.control_dir / "requests"
+
+    @property
+    def control_done_dir(self) -> Path:
+        return self.control_dir / "done"
+
     def ensure_dirs(self) -> None:
         for path in (
             self.root,
@@ -252,6 +270,8 @@ class Settings:
             self.notify_dir / "done",
             self.notes_dir,
             self.conversations_dir,
+            self.control_requests_dir,
+            self.control_done_dir,
         ):
             path.mkdir(parents=True, exist_ok=True)
 

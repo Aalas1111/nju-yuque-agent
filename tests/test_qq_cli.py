@@ -57,7 +57,7 @@ def test_config_init_creates_template(tmp_path: Path) -> None:
     path = workspace_settings(tmp_path).root / "qqbot.json"
     assert path.exists()
     payload = json.loads(path.read_text(encoding="utf-8"))
-    assert payload["inbound"]["allow"] == []
+    assert payload["inbound"]["users"] == []
 
 
 def test_config_show_prints_json(tmp_path: Path) -> None:
@@ -102,7 +102,7 @@ def test_status_and_doctor_survive_exactly_one_problem(tmp_path: Path) -> None:
             "version": 1,
             "notify": {"unmapped": "skip", "default_target": None, "members": {}},
             # 入站配好（否则「谁都不能用命令」也会进体检，就不止 1 条了）
-            "inbound": {"enabled": True, "allow": ["u-1"], "admins": ["u-1"]},
+            "inbound": {"enabled": True, "users": ["u-1"], "admins": ["u-admin"]},
         },
     )
     assert len(QQBotConfig.load(path).problems()) == 1  # 先锁住触发条件
@@ -128,7 +128,7 @@ def test_yqa_doctor_survives_one_problem(tmp_path: Path) -> None:
         {
             "version": 1,
             "notify": {"unmapped": "skip", "default_target": None, "members": {}},
-            "inbound": {"enabled": True, "allow": ["u-1"], "admins": ["u-1"]},
+            "inbound": {"enabled": True, "users": ["u-1"], "admins": ["u-admin"]},
         },
     )
     result = runner.invoke(
@@ -156,8 +156,8 @@ def test_status_shows_no_problem_when_config_is_complete(tmp_path: Path) -> None
             },
             "inbound": {
                 "enabled": True,
-                "allow": ["u-1"],
-                "admins": ["u-1"],
+                "users": ["u-1"],
+                "admins": ["u-admin"],
                 "user_groups": ["g-1"],
             },
         },
@@ -382,7 +382,6 @@ def test_serve_without_credentials_tells_user_to_scan(tmp_path: Path) -> None:
         qq_app,
         [
             "serve",
-            "--no-watch",
             "--no-inbound",
             "--workspace",
             str(tmp_path / "ws"),
@@ -401,7 +400,6 @@ def test_serve_no_login_flag_errors_instead(tmp_path: Path) -> None:
         [
             "serve",
             "--no-login",
-            "--no-watch",
             "--no-inbound",
             "--workspace",
             str(tmp_path / "ws"),
@@ -412,17 +410,6 @@ def test_serve_no_login_flag_errors_instead(tmp_path: Path) -> None:
     )
     assert result.exit_code == 1
     assert "还没有绑定机器人" in result.output
-
-
-def test_serve_checks_yuque_token_before_qr(tmp_path: Path) -> None:
-    """缺语雀 token 时先报错，别让人白扫一次码。"""
-    result = runner.invoke(
-        qq_app,
-        ["serve", "--no-watch", "--no-inbound", "--workspace", str(tmp_path / "ws")],
-        env=CLEAN_ENV,
-    )
-    assert result.exit_code == 1
-    assert "语雀 token" in result.output
 
 
 def qq_manual_config(settings: Settings) -> Path:
@@ -438,7 +425,7 @@ def qq_manual_config(settings: Settings) -> Path:
                     "default_target": {"scope": "group", "targetId": "g-1"},
                     "members": {"张三": {"scope": "c2c", "targetId": "u-1"}},
                 },
-                "inbound": {"enabled": True, "allow": ["u-1"], "admins": ["u-1"]},
+                "inbound": {"enabled": True, "users": ["u-1"], "admins": ["u-admin"]},
             },
             ensure_ascii=False,
         ),

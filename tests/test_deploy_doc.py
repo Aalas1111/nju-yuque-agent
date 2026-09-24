@@ -29,8 +29,11 @@ UNITS = {
     "yuque-agent-qq.service": "11",
 }
 
-#: 二选一的两组单元（都会轮询同一个工作区 → 不能同时跑）。
-EXCLUSIVE_PAIRS = [("yuque-agent.service", "yuque-agent-qq.service")]
+#: 轮询只有一个写者：`yuque-agent.service` 是**唯一**允许轮询的单元。
+#: （2026-09-24 解耦前 QQ 服务内嵌轮询、两者用 Conflicts= 二选一；
+#: 现在 QQ 单元只投递通知 + 处理命令，两者可以同时跑。）
+POLLING_UNIT = "yuque-agent.service"
+DELIVERY_UNIT = "yuque-agent-qq.service"
 
 
 def _unit_block_in_doc(section_no: str) -> str:
@@ -172,33 +175,32 @@ def test_plan_service_is_not_in_the_agent_unit() -> None:
     assert "serve-plan" in _unit("yuque-agent-plan.service")
 
 
-# -- 互斥：会轮询的两个单元绝不能同时跑 -----------------------------------
+# -- 轮询只有一个写者（2026-09-24 解耦后）--------------------------------
 
 
-def test_polling_units_declare_mutual_conflicts() -> None:
-    """轮询类单元必须在 systemd 层面**互斥**，而不是只在文档里写一句「别同时跑」。
+def test_only_the_agent_unit_polls() -> None:
+    """轮询/归档只能由 ``yuque-agent.service`` 跑。
 
-    实测踩到过：有人手工起了 `yqa qq serve`，而 `yuque-agent.service` 还在跑。
-    两个进程都会轮询同一个工作区、都会写 state.json，而 state.json 是「上一轮快照」,
-    每个进程都在自己内存里留一份、每轮整份覆盖回去 → 后写的盖掉对方 →
-    快照回退 → 已处理的文档被当成新增再跑一遍（重复申请、重复通知）。
-
-    `--no-watch` 救不了：`/run` `/archive` 仍然会走 poll_once()，照样写 state.json。
-
-    所以两边都要写 `Conflicts=<另一个>`：启一个，systemd 自动停另一个。
+    背景：``state.json`` 只能有一个写者——两个轮询进程互相覆盖快照是记过事故的
+    （重复申请、重复通知、快照回退，见 AGENTS.md §2.2）。
+    解耦前 QQ 服务内嵌轮询，两者的共存靠 ``Conflicts=`` 二选一；现在 QQ 单元
+    只投递通知 + 处理命令（``/run`` ``/apply`` 写 control/requests/ 交给核心），
+    所以**两个单元可以同时跑，谁也不该再声明 Conflicts**。
     """
-    for left, right in EXCLUSIVE_PAIRS:
-        assert f"Conflicts={right}" in _unit(left), f"{left} 里没声明与 {right} 互斥"
-        assert f"Conflicts={left}" in _unit(right), f"{right} 里没声明与 {left} 互斥"
+    agent = _unit(POLLING_UNIT)
+    assert "yqa run" in agent, "轮询单元必须自己跑 `yqa run`"
+    assert "--journal" in agent, "写回工作日志在轮询侧（它才知道这一轮改了什么）"
+
+    delivery = _unit(DELIVERY_UNIT)
+    for forbidden in ("--interval", "--quiet-seconds", "--watch", "--journal", "--progress-idle"):
+        assert forbidden not in delivery, f"QQ 单元不该再带 {forbidden}（它不轮询）"
+    assert "qq serve" in delivery
+    assert "/var/lib/yuque-agent/workspace" in delivery
+
+    for name in (POLLING_UNIT, DELIVERY_UNIT):
+        assert "Conflicts=" not in _unit(name), f"{name} 不该再声明 Conflicts（它们可以共存）"
 
 
-def test_qq_unit_uses_no_login_and_keeps_polling() -> None:
-    """带 QQ 的那个单元：不能扫码（systemd 里没终端），而且**必须照常轮询**。"""
-    body = _unit("yuque-agent-qq.service")
-    assert "--no-login" in body, "systemd 里显示不了二维码，必须 --no-login"
-    assert "--no-watch" not in body, (
-        "带 QQ 的部署是**那唯一一个**进程，它必须自己轮询；"
-        "加了 --no-watch 就没人轮询了（另一个单元已被 Conflicts 停掉）"
-    )
-    assert "qq serve" in body
-    assert "/var/lib/yuque-agent/workspace" in body
+def test_qq_unit_uses_no_login() -> None:
+    """systemd 里没有终端可以显示二维码，必须 ``--no-login``。"""
+    assert "--no-login" in _unit(DELIVERY_UNIT)

@@ -42,6 +42,9 @@
 │   │   ├── session.jsonl            逐条留痕：工具调用 / 返回 / 思考
 │   │   ├── result.json              这轮的结构化结果
 │   │   └── journal.json             要写回《工作日志》的内容
+│   ├── control/                     控制请求队列：外部（QQ 桥）→ 核心常驻进程
+│   │   ├── requests/                请求（once / archive / apply），核心消费
+│   │   └── done/                    回执（核心写，请求方读），7 天自动清理
 │   ├── outbox/
 │   │   ├── applications/index.json  给下游（crb）的申请索引
 │   │   └── notify/                  QQ 通知桥
@@ -97,10 +100,11 @@ install -d -m 750 -o yuque -g yuque /var/lib/yuque-agent
 cd /opt/yuque-agent && sudo -u yuque env HOME=/home/yuque uv run --no-sync pytest -q
 ```
 
-## 4. systemd 单元（不带 QQ 的那个）
+## 4. systemd 单元（轮询 + 归档：唯一写 state.json 的那个）
 
-> **两个单元二选一**，别同时跑 —— 见 §11。两者都会轮询同一个工作区、都会写
-> `state.json`，同时跑会互相覆盖。单元里用 `Conflicts=` 把它变成了机制。
+> **轮询只有一个写者**：`state.json` 由本单元独占写。带 QQ 的那个（§11）
+> 只投递通知 + 处理命令、不轮询，所以两者**可以同时跑**（2026-09-24 解耦前
+> QQ 服务内嵌轮询，两者才需要 `Conflicts=` 二选一；见 `docs/interface.md`）。
 
 **权威副本在仓库里：`deploy/yuque-agent.service`。** 直接装它，别手工粘贴——
 当初这份文档就是手工维护的，结果和真机漂了（少了 `Documentation=` 和
@@ -124,11 +128,9 @@ Documentation=https://github.com/Aalas1111/nju-yuque-agent
 After=network-online.target
 Wants=network-online.target
 
-# 和「带 QQ 的那个」是**二选一**：两者都会轮询同一个工作区、都会写 state.json，
-# 同时跑会互相覆盖（轻则重复通知，重则快照回退）。用 Conflicts 把它变成
-# 机制而不是文档：启一个，systemd 会自动停另一个。
-# （实测踩到过：有人手工起了 `yqa qq serve`，而本服务还在跑。）
-Conflicts=yuque-agent-qq.service
+# 本单元是**唯一**的轮询者（state.json 只能有一个写者，AGENTS.md §2.2）。
+# 和 yuque-agent-qq.service 可以同时跑：那个只投递通知、处理 QQ 命令，
+# 不轮询、不写 state.json（2026-09-24 解耦，见 docs/interface.md）。
 
 [Service]
 Type=simple
@@ -499,22 +501,21 @@ GET /healthz                   给监控用，不泄任何内容
 > 反过来：**别**把 `plan.defaults.json` 加进下载口的路由。它比申请清单敏感得多，
 > 而且 cac 不需要它——`defaults` 已经内联在 `plan.json` 里了。
 
-## 11. 带 QQ 的部署（推荐的主部署）
+## 11. 带 QQ 的部署（投递 + 命令入口，与 §4 同时跑）
 
 `deploy/yuque-agent-qq.service`：
 
 ```ini
 [Unit]
-Description=yuque-agent（带 QQ 投递与命令入口）：轮询 + 通知泵 + 网关
+Description=yuque-agent QQ 桥：通知投递 + 入站命令（不轮询）
 Documentation=https://github.com/Aalas1111/nju-yuque-agent
 After=network-online.target
 Wants=network-online.target
 
-# 和「不带 QQ 的那个」是**二选一**：两者都会轮询同一个工作区、都会写 state.json，
-# 同时跑会互相覆盖（轻则重复通知，重则快照回退）。用 Conflicts 把它变成
-# 机制而不是文档：启一个，systemd 会自动停另一个。
-# （实测踩到过：有人手工起了 `yqa qq serve`，而本服务还在跑。）
-Conflicts=yuque-agent.service
+# 和 yuque-agent.service **可以同时跑**：本单元不轮询、不写 state.json，
+# 只搬 outbox/notify/ 里的通知、处理 QQ 命令（/run、/apply 走 control/requests/，
+# 由 yuque-agent.service 消费）。历史上这两个单元互斥，是因为 QQ 服务曾经内嵌
+# 轮询循环；2026-09-24 解耦后不再如此（见 docs/interface.md）。
 
 [Service]
 Type=simple
@@ -525,11 +526,11 @@ EnvironmentFile=/home/yuque/.yuque/agent.env
 Environment=HOME=/home/yuque
 Environment=PYTHONUNBUFFERED=1
 Environment=UV_CACHE_DIR=/var/lib/yuque-agent/.uv-cache
-SyslogIdentifier=yuque-agent
+SyslogIdentifier=yuque-agent-qq
 
 # --no-login：systemd 里没有终端可以显示二维码，没有缓存凭证时**不要**试着扫码登录，
-#             直接以「只投递通知」的方式起来（日志里会说清楚），轮询不受影响。
-ExecStart=/usr/local/bin/uv run --no-sync yqa qq serve --workspace /var/lib/yuque-agent/workspace --interval 60 --quiet-seconds 45 --journal --no-login --progress-idle 60
+#             直接以「只投递通知」的方式起来（日志里会说清楚）。
+ExecStart=/usr/local/bin/uv run --no-sync yqa qq serve --workspace /var/lib/yuque-agent/workspace --no-login
 
 Restart=always
 RestartSec=15
@@ -552,47 +553,45 @@ WantedBy=multi-user.target
 ```bash
 install -m 644 /opt/yuque-agent/deploy/yuque-agent-qq.service     /etc/systemd/system/yuque-agent-qq.service
 systemctl daemon-reload
-systemctl disable --now yuque-agent      # ← 先停掉不带 QQ 的那个
-systemctl enable --now yuque-agent-qq
+systemctl enable --now yuque-agent        # ← 轮询侧（唯一写 state.json 的那个）
+systemctl enable --now yuque-agent-qq     # ← 投递 + 命令侧（不轮询）
 ```
 
-### 为什么必须二选一（不是「最好别」，是「跑不出来」）
+### 为什么轮询只能有一个写者（不是「最好别」，是「跑不出来」）
 
-两个单元都会**轮询同一个工作区**、都会写 `state.json`。而 `state.json` 是
-「上一轮快照」，每个进程都在**自己内存里**留一份、每轮整份覆盖回去。于是：
+`state.json` 是「上一轮快照」，每个轮询进程都在**自己内存里**留一份、每轮整份
+覆盖回去。两个写者并存时：
 
 * 后写的那个会把对方的进度盖掉 → **快照回退**；
 * 快照一回退，下一轮就会把已经处理过的文档当成「新增」再跑一遍 →
   **重复申请、重复通知、重复写工作日志**。
 
-**`--no-watch` 救不了这个**：它确实不自动轮询了，但 `/run`、`/archive` 这两个
-命令仍然会走 `poll_once()`，照样写 `state.json`（那条路径是刻意保留的——
-管理员敲了命令就该立刻有结果，不该被静默期吃掉）。
-
-所以两个单元里都写了 `Conflicts=`：**启一个，systemd 会自动停另一个**。
-这比写在文档里靠谱 —— 实测就踩到过一次「手工起了 `yqa qq serve`，而
-`yuque-agent.service` 还在跑」。
+解耦前 QQ 服务内嵌轮询，靠 `Conflicts=` 二选一兜住这件事（实测踩到过「手工起了
+`yqa qq serve`，而 `yuque-agent.service` 还在跑」）。2026-09-24 起 QQ 服务**不再
+轮询**：`/run`、`/archive` 只是往 `control/requests/` 写一条请求，由
+`yuque-agent.service` 消费（见 `docs/interface.md` §1.2）——机制上只有一个写者，
+所以两个单元可以同时跑，`Conflicts=` 也就不需要了。
 
 ### `--no-login` 是必须的
 
 systemd 里没有终端，显示不了二维码。没有缓存凭证时加 `--no-login` 会以
-「只投递通知」的方式起来（日志会说明），**轮询不受影响**；不加的话它会试图扫码、
+「只投递通知」的方式起来（日志会说明）；不加的话它会试图扫码、
 然后失败退出，systemd 就来一轮 `Restart=always` 的崩溃循环。
 
-### 网关挂了会不会连累轮询？不会
+### 网关挂了会不会连累投递？不会
 
 `run_gateway` 自带重连（`max_attempts` 次、退避 + 抖动），放弃时是 **return**
 而不是抛异常；而通知泵的循环永不退出 —— `asyncio.gather` 会一直等，
-所以进程不会退，**agent 线程（轮询 + 归档）继续跑**。
-最坏情况只是「命令入口没了」，`outbox/` 照常产出。
+所以进程不会退，`outbox/` 照常投递。最坏情况只是「命令入口没了」。
 
 ### 验收
 
 ```bash
-systemctl is-active yuque-agent-qq          # active
-systemctl is-active yuque-agent             # inactive（被 Conflicts 停掉了）
-journalctl -u yuque-agent-qq -n 30          # 应能看到「轮询 开」与通知泵的日志
+systemctl is-active yuque-agent             # active（轮询 + 归档）
+systemctl is-active yuque-agent-qq          # active（投递 + 命令）
+journalctl -u yuque-agent -n 30             # 应能看到「开始常驻：每 60s 轮询 …」
+journalctl -u yuque-agent-qq -n 30          # 应能看到「通知泵」与网关 READY 的日志
 ```
 
 然后让管理员在 QQ 里发 `/status`、`/whoami`、`/pending` 各验一次；
-`/run` 会真花 token，确认没问题再试。
+`/run` 会真花 token（并且最多等一轮轮询间隔才开始），确认没问题再试。

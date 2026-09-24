@@ -21,7 +21,7 @@ def test_missing_config_is_deny_by_default(tmp_path: Path) -> None:
     config = QQBotConfig.load(tmp_path / "nope.json")
     assert config.members == {}
     assert config.notify_default is None
-    assert config.inbound_allow == ()
+    assert config.inbound_users == ()
     assert config.is_allowed("anyone") is False
     assert config.is_admin("anyone") is False
 
@@ -58,7 +58,7 @@ def test_load_full_config(tmp_path: Path) -> None:
     assert config.notify_default == NotifyTarget("group", "g-default")
     assert config.members["张三"].target.to_str() == "c2c:u-zhang"
     assert config.members["李四"].scope == "c2c"  # openid 简写默认私聊
-    assert config.inbound_allow == ("u-zhang",)
+    assert config.inbound_users == ("u-zhang",)
     assert config.inbound_rate_limit == 5
 
 
@@ -88,7 +88,7 @@ def test_resolve_member_falls_back_to_default_or_skip() -> None:
 
 def roles_config() -> QQBotConfig:
     return QQBotConfig(
-        inbound_allow=("U-user",),
+        inbound_users=("U-user",),
         inbound_admins=("U-admin",),
         inbound_user_groups=("G-user",),
         inbound_admin_groups=("G-admin",),
@@ -142,7 +142,7 @@ def test_explain_role_says_why() -> None:
 def test_inbound_disabled_rejects_everyone() -> None:
     config = QQBotConfig(
         inbound_enabled=False,
-        inbound_allow=("u-1",),
+        inbound_users=("u-1",),
         inbound_admins=("u-2",),
         inbound_user_groups=("g-1",),
         inbound_admin_groups=("g-2",),
@@ -185,8 +185,8 @@ def test_problems_empty_when_configured() -> None:
     ok = QQBotConfig(
         notify_default=NotifyTarget("group", "g-1"),
         members={"张三": NotifyTarget("c2c", "u-1")},
-        inbound_allow=("u-1",),
-        inbound_admins=("u-1",),
+        inbound_users=("u-user",),
+        inbound_admins=("u-admin",),
         inbound_user_groups=("g-user",),
     )
     assert ok.problems() == []
@@ -198,14 +198,15 @@ def test_roundtrip_save_and_load(tmp_path: Path) -> None:
         notify_default=NotifyTarget("group", "g-1"),
         members={"张三": NotifyTarget("c2c", "u-1", note="部长")},
         notify_unmapped="skip",
-        inbound_allow=("u-1",),
-        inbound_admins=("u-1",),
+        inbound_users=("u-user",),
+        inbound_admins=("u-admin",),
     )
     config.save(path)
     reloaded = QQBotConfig.load(path)
     assert reloaded.members["张三"].note == "部长"
     assert reloaded.notify_unmapped == "skip"
-    assert reloaded.inbound_admins == ("u-1",)
+    assert reloaded.inbound_admins == ("u-admin",)
+    assert reloaded.inbound_users == ("u-user",)
 
 
 def test_bad_config_file_is_ignored(tmp_path: Path) -> None:
@@ -233,7 +234,7 @@ def test_init_config_creates_template_once(tmp_path: Path) -> None:
     path = init_config(settings)
     assert path.exists()
     payload = json.loads(path.read_text(encoding="utf-8"))
-    assert payload["inbound"]["allow"] == []
+    assert payload["inbound"]["users"] == []
     first = path.read_text(encoding="utf-8")
     init_config(settings)  # 第二次不应覆盖
     assert path.read_text(encoding="utf-8") == first
@@ -243,6 +244,6 @@ def test_describe_is_human_readable(tmp_path: Path) -> None:
     config = QQBotConfig(members={"张三": NotifyTarget("c2c", "u-1")}, path=tmp_path / "q.json")
     text = config.describe()
     assert "成员映射 1 条" in text
-    assert "个人 0 人" in text
+    assert "用户 0 人" in text
     assert "用户群 0 个" in text
     assert "管理员群 0 个" in text

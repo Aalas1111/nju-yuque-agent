@@ -1,135 +1,98 @@
-"""常驻服务：把「agent 轮询」和「QQ 收发」接在一个进程里。
+"""常驻服务：QQ 通知投递 + 入站命令（**不跑轮询**）。
 
 ```
-                ┌──────────── 线程：agent 工作循环 ────────────┐
-  /run  /archive│  队列 → runner.poll_once / archive_once      │
-  ──────────────►│  否则 → watcher.tick()（轮询 + 每周归档）    │
-   (入站命令)     │  每轮结束 → bridge.drain()（把通知投出去）    │
-                └──────────────────────┬───────────────────────┘
-                                       │ outbox/notify/pending
-   事件循环 ── 通知泵（每 N 秒 drain 一次）│
-           └─ WS 网关（收消息 → CommandRouter → 回一句）
+   事件循环 ── 通知泵（每 N 秒 drain 一次）┐
+            └─ WS 网关（收消息 → RouterAgent → 回一句）
+   通知泵顺带看一眼 control/done/：/run、/archive 的回执在那儿取
 ```
 
-为什么要分成「一个 agent 线程 + 一个事件循环」：
+轮询与归档**不在这里**——它们由核心的常驻进程（``yqa run`` / ``yuque-agent.service``）
+唯一负责：``state.json`` 只能有一个写者，两个轮询进程互相覆盖快照是记过事故的
+（``AGENTS.md`` §2.2、``docs/deploy.md`` §11）。
 
-* agent 那一半是**同步**的（httpx + LLM + 语雀），而且一次要跑几十秒；
-* QQ 那一半是 **asyncio** 的（websockets 网关）。
-* 两边共用的只有 ``outbox/notify/`` 这个目录，所以不需要任何跨事件循环的魔法。
+所以这里的 ``/run`` ``/archive`` ``/apply`` 只是往 ``control/requests/`` 写一条请求
+（``docs/interface.md`` §1.2/§1.4），由核心消费：
 
-**所有会跑 LLM 的入口都排进同一个队列**（包括定时轮询、``/run``、``/archive``），
-由唯一的 agent 线程串行执行 —— 永远不会有两个 LLM run 同时动同一个知识库。
-这也是本项目「能力边界」在工程上的落点：并发本身就是一种失控。
+* 跑轮询/归档的回执走 ``control/done/``，通知泵取回来发给发起人；
+* 申请的回执是核心发的 ``accepted`` / ``rejected`` 通知（走通知队列，直投给本人）。
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import threading
-import time
-import uuid
-from collections import deque
 from collections.abc import Callable
-from dataclasses import dataclass
+from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 from .. import clock
 from ..config import Settings
-from ..runner import Runner
-from ..watcher import Watcher
+from .agent import RouterAgent, register_default_workflows
 from .bridge import NotifyBridge
 from .client import QQBotClient, Target
-from .agent import AgentResult, RouterAgent, register_default_workflows
-from .commands import AgentGateway, CommandRouter
 from .config import QQBotConfig
+from .control_client import drop_control_result, read_control_result, write_control_request
 from .conversations import ConversationManager, first_question
 from .events import InboundMessage
 from .gateway import GatewayOptions, intents_from_env, run_gateway
-from .progress import ProgressOptions, ProgressSender
 
 DEFAULT_NOTIFY_INTERVAL = 5.0
-"""通知泵间隔（秒）。比轮询间隔小得多，这样社员几乎立刻收到通知。"""
-
-
-@dataclass
-class AgentRequest:
-    """一次「请 agent 干活」的请求（由 QQ 命令或 CLI 塞进队列）。"""
-
-    kind: str
-    force: bool = False
-    requested_by: str = ""
-    source: str = "qq"
-    request_id: str = ""
-    created_at: str = ""
-    reply_target: Target | None = None
-    """从哪来的（带 msg_id，用来做被动回复）；CLI 触发时为 ``None``。"""
-
-    progress: ProgressSender | None = None
-    """负责「分段发送 + 保活心跳」的发送器；由 :meth:`handle_inbound` 挂上来。"""
-
-    def describe(self) -> str:
-        who = self.requested_by or "(未知)"
-        return f"{self.kind} ← {self.source}:{who} (force={self.force})"
+"""通知泵间隔（秒）。顺带在这里取控制请求的回执，所以别调太大。"""
 
 
 class QQBotService:
-    """常驻服务：agent 工作线程 + QQ 通知泵/网关。"""
+    """常驻服务：通知泵 + QQ 网关（命令处理）。"""
 
     def __init__(
         self,
         *,
         settings: Settings,
-        runner: Runner,
-        watcher: Watcher,
         bridge: NotifyBridge,
         config: QQBotConfig,
         qq_client: QQBotClient | None = None,
         log: Callable[[str], None] | None = None,
         notify_interval: float = DEFAULT_NOTIFY_INTERVAL,
-        progress_options: ProgressOptions | None = None,
-        progress_enabled: bool = True,
     ) -> None:
         self.settings = settings
-        self.runner = runner
-        self.watcher = watcher
         self.bridge = bridge
         self.config = config
         self.qq_client = qq_client
         self.log = log
         self.notify_interval = notify_interval
-        self.progress_options = progress_options or ProgressOptions()
-        self.progress_enabled = progress_enabled
 
-        self.router = CommandRouter(config=config, gateway=self, log=log)
         self.conversations = ConversationManager(conversations_dir=settings.conversations_dir)
-
-        # Router Agent：统一意图路由
         self.agent = RouterAgent(
             conversations=self.conversations,
             config=config,
             gateway=self,
-            log=log,
+            log=self._log,
         )
         register_default_workflows(self.agent)
 
-        self._queue: deque[AgentRequest] = deque()
         self._lock = threading.Lock()
-        self._wake = threading.Event()
         self._stop = threading.Event()
-        self._busy = False
-        self._watch_started = False
-        self._last_run: dict[str, Any] = {}
-        self._served = 0
-        # request_id → 播报发送器。**必须在入队的同一把锁里建好**，
-        # 否则 agent 线程可能在「回执还没挂上」之前就把请求取走跑掉（实测踩到过）。
-        self._progress_pending: dict[str, ProgressSender] = {}
+        # 请求文件名 → {kind, target}：核心跑完后从 control/done/ 取回执
+        self._control_watch: dict[str, dict[str, Any]] = {}
 
-    # ══════════════════════ AgentGateway（给命令路由用） ══════════════════════
+    # ══════════════════════ AgentGateway（工作流用） ══════════════════════
     def pending_notices(self) -> int:
         try:
             return self.bridge.pending_count()
         except OSError:  # pragma: no cover
             return 0
+
+    def status(self) -> dict[str, Any]:
+        """``/status`` 用。**只读**工作区（轮询/归档归核心进程，见 interface.md §1.3）。"""
+        return {
+            "repo": self.settings.repo,
+            "workspace": str(self.settings.root),
+            "watching": _core_daemon_alive(self.settings),
+            "pending": self.pending_notices(),
+            "last_run": _newest_run_summary(self.settings),
+            "inbound": bool(self.qq_client) and self.config.inbound_enabled,
+        }
 
     def request_run(
         self,
@@ -138,209 +101,56 @@ class QQBotService:
         requested_by: str = "",
         reply_target: Target | None = None,
     ) -> dict[str, Any]:
-        """把一次跑轮次排进队列（不阻塞）。真正的执行在 agent 线程里。"""
+        """把「跑一轮」写成控制请求（由核心的常驻进程执行；单飞）。"""
+        kind = "archive" if archive else "once"
         with self._lock:
-            if self._busy or self._queue:
+            if self._control_watch:
                 return {
                     "queued": False,
-                    "message": "agent 正在忙（或队列里已经有一次了），等它跑完再来。",
+                    "message": "上一个请求还在跑（核心进程最多要等一分钟才开始），稍后再来。",
                     "request_id": "",
                 }
-            request = AgentRequest(
-                kind="archive" if archive else "polling",
-                force=True,
-                requested_by=requested_by,
-                source="qq" if (requested_by or reply_target) else "cli",
-                request_id=uuid.uuid4().hex[:12],
-                created_at=_stamp(),
-                reply_target=reply_target,
-            )
-            sender = self._make_progress(reply_target)
-            request.progress = sender
-            if sender is not None:
-                self._progress_pending[request.request_id] = sender
-            self._queue.append(request)
-        self._wake.set()
-        what = "归档会话（会动知识库结构）" if archive else "一轮轮询"
+            request: dict[str, Any] = {"kind": kind, "requested_by": requested_by}
+            if reply_target is not None:
+                request["target"] = {
+                    "scope": reply_target.scope,
+                    "target_id": reply_target.target_id,
+                }
+            try:
+                request_id = write_control_request(self.settings, request)
+            except OSError as exc:
+                return {"queued": False, "message": f"写请求失败：{exc}", "request_id": ""}
+            self._control_watch[request_id] = {"kind": kind, "target": reply_target}
+        what = "归档（会动知识库结构）" if archive else "一轮轮询"
         return {
             "queued": True,
-            "message": f"收到，已排队跑{what}；跑完我把结论发给你（约几十秒到几分钟）。",
-            "request_id": request.request_id,
+            "message": f"收到，已请核心进程跑{what}；跑完我把结论发给你（最多 1 分钟内开始）。",
+            "request_id": request_id,
         }
 
     def request_apply(self, *, user_id: str) -> dict[str, Any]:
         """开始一次交互式申请会话。"""
         session = self.conversations.get_or_create(user_id)
-        question = first_question(session)
-        return {"message": question}
-
-    def status(self) -> dict[str, Any]:
-        return {
-            "repo": self.settings.repo,
-            "workspace": str(self.settings.root),
-            "watching": self._watch_started,
-            "pending": self.pending_notices(),
-            "last_run": dict(self._last_run),
-            "inbound": bool(self.qq_client) and self.config.inbound_enabled,
-            "queued": len(self._queue),
-            "busy": self._busy,
-            "served": self._served,
-            "config": str(self.config.path) if self.config.path else "",
-        }
+        return {"message": first_question(session)}
 
     # ══════════════════════════ 常驻 ══════════════════════════
-    def serve(self, *, watch: bool = True, inbound: bool = True) -> None:
-        """阻塞运行：agent 线程 + （可选）通知泵与 WS 网关。"""
+    def serve(self, *, inbound: bool = True) -> None:
+        """阻塞运行：通知泵 + （可选）WS 网关。"""
         self.settings.ensure_dirs()
         self.bridge.ensure_dirs()
-        worker = threading.Thread(
-            target=self.work_loop, args=(watch,), name="yuque-agent-worker", daemon=True
-        )
-        worker.start()
         try:
             asyncio.run(self._serve_async(inbound))
         except KeyboardInterrupt:
             raise
         finally:
             self.stop()
-            worker.join(timeout=10)
 
     def stop(self) -> None:
         self._stop.set()
-        self._wake.set()
 
     @property
     def stopped(self) -> bool:
         return self._stop.is_set()
-
-    # -- agent 线程 -------------------------------------------------------
-    def work_loop(self, watch: bool = True) -> None:
-        """唯一会跑 LLM 的循环。可以单独调（测试里就是这么用的）。"""
-        self._watch_started = watch
-        self._log(
-            f"[qqbot:serve] agent 线程启动："
-            f"{'轮询 + 归档' if watch else '只处理队列请求'}；"
-            f"每 {self.settings.interval}s 一轮"
-        )
-        while not self._stop.is_set():
-            request = self._take()
-            if request is not None:
-                self._execute(request)
-            elif watch:
-                try:
-                    self.watcher.tick()
-                except Exception as exc:  # noqa: BLE001 - 常驻进程不能因为一轮失败就死
-                    self._log(
-                        f"[qqbot:serve] 本轮异常（已忽略并继续）：{type(exc).__name__}: {exc}"
-                    )
-                self._record_watcher()
-            try:
-                self._drain_notices()
-            except Exception as exc:  # noqa: BLE001
-                self._log(f"[qqbot:serve] 投递通知异常（已忽略）：{type(exc).__name__}: {exc}")
-            self._wake.wait(timeout=max(1, int(self.settings.interval)))
-            self._wake.clear()
-        self._log("[qqbot:serve] agent 线程退出")
-
-    def _take(self) -> AgentRequest | None:
-        with self._lock:
-            if not self._queue:
-                return None
-            return self._queue.popleft()
-
-    def _execute(self, request: AgentRequest) -> None:
-        with self._lock:
-            self._busy = True
-        self._log(f"[qqbot:serve] 开始执行 {request.describe()}")
-        progress = request.progress
-        # 只有助手文本会变成消息；工具调用只用来喂保活文案（见 make_progress_observer）
-        observer = make_progress_observer(progress) if progress is not None else None
-        started = time.monotonic()
-        result = None
-        try:
-            if request.kind == "archive":
-                result = self.runner.archive_once(observer=observer)
-            else:
-                # ``debounce=False``：``/run`` 是**人工命令**（管理员在手机上敲的），
-                # 跟 ``yqa once`` 同理——敲了就该立刻看到结果，不该被静默期吃掉后
-                # 回头告诉他「没有变化」（那是假话）。
-                # 静默期只对常驻轮询有意义（合并语雀分步投稿产生的噪声）。
-                result = self.runner.poll_once(
-                    force=request.force, debounce=False, observer=observer
-                )
-        except Exception as exc:  # noqa: BLE001 - 失败也要回话，别让用户干等
-            self._log(f"[qqbot:serve] 执行失败：{type(exc).__name__}: {exc}")
-            self._deliver(request, f"跑失败了：{type(exc).__name__}: {exc}")
-            return
-        finally:
-            with self._lock:
-                self._busy = False
-            self._finish_progress(request)
-        elapsed = time.monotonic() - started
-        self._served += 1
-        if result is None:
-            self._record_watcher()
-            self._deliver(request, "这一轮没有变化，没有唤醒 LLM（0 token）。")
-            return
-        self._set_last_run(result)
-        self._deliver(request, _summarize(result, elapsed))
-
-    def _record_watcher(self) -> None:
-        result = getattr(self.watcher, "last_result", None)
-        if result is not None:
-            self._set_last_run(result)
-
-    def _set_last_run(self, result: Any) -> None:
-        self._last_run = {
-            "kind": getattr(result, "kind", ""),
-            "verdict": getattr(result, "verdict", ""),
-            "summary": getattr(result, "summary", ""),
-            "run_id": getattr(result, "run_id", ""),
-            "at": _stamp(),
-        }
-
-    def _deliver(self, request: AgentRequest, text: str) -> None:
-        """把一段助手输出交给发起人。
-
-        有 :class:`ProgressSender` 时**整段作为一条消息**发（延续同一条 ``msg_id``、
-        ``msg_seq`` 递增）；没有时退回老的主动推送（CLI 触发 / 关掉播报时）。
-        """
-        if request.progress is not None:
-            request.progress.segment(text)
-            return
-        self._announce(request, text)
-
-    def _finish_progress(self, request: AgentRequest) -> None:
-        if request.progress is None:
-            return
-        request.progress.stop()
-        stats = request.progress.stats()
-        self._log(
-            f"[qqbot:serve] 播报结束：分段 {stats['segments']} 条 · 保活 {stats['heartbeats']} 条"
-            f" · 失败 {stats['failed']} 条"
-            + (f"（{stats['last_error']}）" if stats["failed"] else "")
-        )
-
-    def _announce(self, request: AgentRequest, text: str) -> None:
-        """把结果推给发起人。QQ 主动消息有配额限制，失败只记日志。"""
-        if request.source != "qq" or not request.requested_by:
-            self._log(f"[qqbot:serve] 结果（{request.requested_by or '本地'}）：{text}")
-            return
-        if self.qq_client is None:
-            return
-        try:
-            self.qq_client.send_text(Target("c2c", request.requested_by), text)
-        except Exception as exc:  # noqa: BLE001 - 主动推送被拒是常态
-            self._log(
-                f"[qqbot:serve] 结果没能推给 {request.requested_by}（{type(exc).__name__}: {exc}）；"
-                "结论仍在 runs/<run_id>/ 里"
-            )
-
-    def _drain_notices(self) -> None:
-        results = self.bridge.drain()
-        for item in results:
-            if item.status == "failed":
-                self._log(f"[qqbot:serve] 通知投递失败：{item.describe()}")
 
     # -- 事件循环 ---------------------------------------------------------
     async def _serve_async(self, inbound: bool) -> None:
@@ -368,6 +178,10 @@ class QQBotService:
                 await asyncio.to_thread(self._drain_notices)
             except Exception as exc:  # noqa: BLE001
                 self._log(f"[qqbot:serve] 通知泵异常：{type(exc).__name__}: {exc}")
+            try:
+                await asyncio.to_thread(self._drain_control_results)
+            except Exception as exc:  # noqa: BLE001
+                self._log(f"[qqbot:serve] 控制回执异常：{type(exc).__name__}: {exc}")
             await asyncio.sleep(max(1.0, self.notify_interval))
 
     async def _gateway_loop(self) -> None:
@@ -380,50 +194,53 @@ class QQBotService:
         )
         await run_gateway(self.qq_client, options)
 
+    def _drain_notices(self) -> None:
+        results = self.bridge.drain()
+        for item in results:
+            if item.status == "failed":
+                self._log(f"[qqbot:serve] 通知投递失败：{item.describe()}")
+
+    def _drain_control_results(self) -> None:
+        """把核心跑完的 ``/run``、``/archive`` 回执发给发起人。"""
+        with self._lock:
+            watching = dict(self._control_watch)
+        for request_id, item in watching.items():
+            record = read_control_result(self.settings, request_id)
+            if record is None:
+                continue
+            text = _control_reply(record)
+            target = item.get("target")
+            if isinstance(target, Target) and self.qq_client is not None:
+                try:
+                    self.qq_client.send_text(target, text)
+                except Exception as exc:  # noqa: BLE001 - 主动消息失败只记日志
+                    self._log(f"[qqbot:control] 回执发送失败：{type(exc).__name__}: {exc}")
+            else:
+                self._log(f"[qqbot:control] {request_id}：{text}")
+            with self._lock:
+                self._control_watch.pop(request_id, None)
+            drop_control_result(self.settings, request_id)
+
     # -- 入站 -------------------------------------------------------------
     def handle_inbound(self, message: InboundMessage) -> dict[str, Any]:
         """收到一条 QQ 消息：交给 RouterAgent 统一处理。跑在线程池里。"""
         self._log(f"[qqbot:in] {message.kind} {message.sender_id}: {message.text[:80]!r}")
-
-        target = message.reply_target
-
-        # RouterAgent 统一处理：安全层 → 意图路由 → 工作流执行
         result = self.agent.process(message, settings=self.settings)
-
+        out: dict[str, Any] = {"handled": True, "command": result.command, "reply": result.reply}
         if result.silent or not result.reply:
-            return {"handled": True, "command": result.command, "reply": "", "silent": True}
+            out["silent"] = True
+            return out
+        target = message.reply_target
         if target is None:
             self._log("[qqbot:in] 这条消息没有可回复的目标（缺 message_id？），只记日志")
-            return {"handled": True, "command": result.command, "reply": result.reply}
+            return out
         if self.qq_client is None:
-            return {"handled": True, "command": result.command, "reply": result.reply}
-
-        # /run 与 /archive 的分段播报：如果有 progress sender，串成消息流
-        sender = self._take_progress(result.data.get("request_id", ""))
-        if sender is not None:
-            sender.start()
-            sender.segment(result.reply)
-            return {"handled": True, "command": result.command, "reply": result.reply, "data": result.data}
-
+            return out
         try:
             self.qq_client.send_text(target, result.reply)
         except Exception as exc:  # noqa: BLE001
             self._log(f"[qqbot:in] 回复失败：{type(exc).__name__}: {exc}")
-        return {"handled": True, "command": result.command, "reply": result.reply}
-
-    def _make_progress(self, reply_target: Target | None) -> ProgressSender | None:
-        """按需建一个播报发送器（调用方必须持有 ``self._lock``）。"""
-        if reply_target is None or self.qq_client is None or not self.progress_enabled:
-            return None
-        return ProgressSender(
-            self.qq_client, reply_target, options=self.progress_options, log=self._log
-        )
-
-    def _take_progress(self, request_id: str) -> ProgressSender | None:
-        if not request_id:
-            return None
-        with self._lock:
-            return self._progress_pending.pop(request_id, None)
+        return out
 
     # -- 杂项 -------------------------------------------------------------
     def _log(self, text: str) -> None:
@@ -431,60 +248,63 @@ class QQBotService:
             self.log(text)
 
 
-def make_progress_observer(progress: ProgressSender) -> Callable[..., None]:
-    """把 agent 事件翻译成「分段发送 + 保活文案」。
-
-    **发出去的消息只有助手文本**：``assistant`` 事件里 ``content`` 非空 → 整段发一条。
-    工具调用**不发消息**，只写进 :meth:`ProgressSender.current`，供保活时使用。
-    """
-
-    def observe(kind: str, **fields: Any) -> None:
-        if kind == "assistant":
-            text = str(fields.get("content") or "").strip()
-            if text:
-                progress.segment(text)
-            calls = [str(name) for name in (fields.get("tool_calls") or [])]
-            if calls:
-                progress.current("调用 " + "、".join(calls))
-        elif kind == "tool":
-            progress.current(f"调用 {fields.get('name')}")
-        elif kind == "step":
-            progress.current(f"第 {fields.get('step')} 步")
-        # run_end 不在这里发：结论由 _deliver 作为最后一段发出去
-
-    return observe
+# ---------------------------------------------------------------- 只读辅助
 
 
-def _summarize(result: Any, elapsed: float) -> str:
-    bits = [
-        f"kind={getattr(result, 'kind', '?')}",
-        f"verdict={getattr(result, 'verdict', '') or '—'}",
-        f"steps={getattr(result, 'steps', '?')}",
-        f"tools={getattr(result, 'tool_calls', '?')}",
-        f"{elapsed:.0f}s",
-    ]
-    emitted = getattr(result, "emitted", None) or []
-    if emitted:
-        kinds = "、".join(str(item.get("type")) for item in emitted)
-        bits.append(f"产出={kinds}")
-    error = getattr(result, "error", "")
-    lines = [f"跑完了：{getattr(result, 'summary', '') or '(无摘要)'}", " · ".join(bits)]
-    if error:
-        lines.append(f"⚠️ {error}")
-    run_id = getattr(result, "run_id", "")
+def _core_daemon_alive(settings: Settings) -> bool:
+    """核心常驻进程还活着吗？看 ``state.json`` 是不是还在被写（只读判断）。"""
+    try:
+        age = clock.now().timestamp() - (settings.root / "state.json").stat().st_mtime
+    except OSError:
+        return False
+    return age < max(180.0, settings.interval * 3)
+
+
+def _newest_run_summary(settings: Settings) -> dict[str, Any]:
+    """从 ``runs/`` 里读最近一次 run 的结论（interface.md §1.3 允许只读的目录）。"""
+    runs: Path = settings.runs_dir
+    if not runs.exists():
+        return {}
+    newest: tuple[float, Path] | None = None
+    for path in runs.glob("*/result.json"):
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:  # pragma: no cover
+            continue
+        if newest is None or mtime > newest[0]:
+            newest = (mtime, path)
+    if newest is None:
+        return {}
+    try:
+        data = json.loads(newest[1].read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {
+        "kind": data.get("kind", ""),
+        "verdict": data.get("verdict", ""),
+        "summary": data.get("summary", ""),
+        "run_id": data.get("run_id", ""),
+        "at": datetime.fromtimestamp(newest[0], tz=clock.TZ).strftime("%m-%d %H:%M"),
+    }
+
+
+def _control_reply(record: dict[str, Any]) -> str:
+    ok = bool(record.get("ok"))
+    summary = str(record.get("summary") or "").strip()
+    error = str(record.get("error") or "").strip()
+    run_id = str(record.get("run_id") or "")
+    if ok:
+        text = summary or "跑完了（没有摘要）"
+    else:
+        text = f"跑失败：{error or '未知错误'}"
     if run_id:
-        lines.append(f"run: {run_id}")
-    return "\n".join(lines)
-
-
-def _stamp() -> str:
-    return clock.stamp()
+        text += f"\nrun: {run_id}"
+    return text
 
 
 __all__ = [
     "DEFAULT_NOTIFY_INTERVAL",
-    "AgentGateway",
-    "AgentRequest",
     "QQBotService",
-    "make_progress_observer",
 ]

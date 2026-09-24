@@ -224,7 +224,7 @@ def main() -> int:
     config = QQBotConfig(
         notify_default=NotifyTarget("group", "sim-group-openid"),
         members={args.member: NotifyTarget("c2c", "sim-user-openid")},
-        inbound_allow=("sim-admin-openid",),
+        inbound_users=("sim-admin-openid",),
         inbound_admins=("sim-admin-openid",),
     )
     bridge = NotifyBridge(notify_dir=settings.notify_dir, sender=client, config=config)

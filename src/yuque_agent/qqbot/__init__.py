@@ -8,14 +8,15 @@
 
 * **协议层** :mod:`.protocol` —— create_bind_task / poll_bind_result / AES-GCM 解密 / access_token / REST
 * **登录层** :mod:`.login` :mod:`.login_http` :mod:`.credentials` :mod:`.qr` —— 扫码绑定与凭证落盘
-* **业务层** :mod:`.bridge` :mod:`.commands` :mod:`.service` :mod:`.gateway` —— 通知投递 + 入站命令
+* **业务层** :mod:`.bridge` :mod:`.agent` :mod:`.service` :mod:`.gateway` —— 通知投递 + 入站命令
 
 一句话：**agent 照旧只做感知与留痕，QQ 只是它的一个收发口**。
+轮询/归档归核心的常驻进程；本层只做投递 + 命令（见 ``docs/interface.md``）。
 """
 
+from .agent import AgentResult, RouterAgent, register_default_workflows
 from .bridge import DeliveryResult, NotifyBridge
 from .client import MessageSender, NullSender, QQBotClient, Target
-from .commands import HELP_TEXT, CommandResult, CommandRouter
 from .config import (
     NotifyTarget,
     QQBotConfig,
@@ -46,12 +47,11 @@ from .qr import has_png_support, has_qr_support, qr_data_url, save_png, support_
 from .service import QQBotService
 
 __all__ = [
-    "HELP_TEXT",
+    "AgentResult",
     "ApiError",
     "BindStatus",
-    "CommandResult",
-    "CommandRouter",
     "CredentialStore",
+    "RouterAgent",
     "DeliveryResult",
     "InboundMessage",
     "LoginHttpServer",
@@ -81,6 +81,7 @@ __all__ = [
     "mask_secret",
     "parse_event",
     "qr_data_url",
+    "register_default_workflows",
     "resolve_account",
     "save_png",
     "serve_login_http",

@@ -298,13 +298,19 @@ outbox/notify/delivery.jsonl                          投递方的审计流水�
   "message": "「社团例会」这份申请我没法提交：活动时间写的是 17:00-16:00，结束时间比开始时间还早，应该是写反了……",
   "reasons": ["活动时间 17:00-16:00，结束早于开始"],
   "warnings": [],
-  "extra": {}
+  "extra": {},
+  "target": { "scope": "c2c", "target_id": "<openid>" }
 }
 ```
 
 * **`message` 已经是渲染好的中文正文，QQ 里直接发这一条就行**，不需要下游再拼。
 * `summary` 是一句话标题（适合做消息前缀）。
 * `reasons` / `warnings` 是结构化版本，想自己排版就用它。
+* `target`（**可选**）：直投目标，**不经过** `notify.members` 的人名映射。
+  用于「在 QQ 里自助申请、回复就该给他本人」这类场景（`scope` = `c2c`/`group`）。
+  投递方读到它就直接发，读不到就按 §3.1 的人名映射走。
+  （2026-09-24 由 program 侧正式产出，见 `docs/interface.md` §1.1；
+  兼容期仍可读旧名 `direct_target`。）
 
 ### 3.3 `kind` 取值
 

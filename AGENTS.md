@@ -47,8 +47,9 @@
 ### 2.2 常驻进程必须是仓库里的 systemd 单元
 
 * 只有三个单元，权威副本在 `deploy/`，生效位置是 `/etc/systemd/system/`：
-  * `yuque-agent.service` —— 裸轮询（不带 QQ）
-  * `yuque-agent-qq.service` —— 轮询 + 通知泵 + QQ 网关 + 运行中播报
+  * `yuque-agent.service` —— 轮询 + 归档。**唯一写 `state.json` 的进程**
+  * `yuque-agent-qq.service` —— 通知投递 + QQ 命令入口（**不轮询**；
+    `/run` `/archive` `/apply` 走 `control/requests/` 交给上面那个，见 `docs/interface.md`）
   * `yuque-agent-plan.service` —— 申请清单下载口（`yqa serve-plan`）。
   **无密钥，打开即下载**（`GET /download`）。密钥是刻意去掉的：服务器没有域名、
   只有明文 HTTP，密钥在 URL / 浏览器历史 / 截图里都会漏——与其维持一个「看着有防护、
@@ -56,10 +57,11 @@
   剩下的是**路径不可越狱**（只放行程序自己算出的那几个文件）。
   它暴露什么、`defaults` 一旦填了会怎样，见 `docs/deploy.md` §10。
   **别往里加路由，尤其别加 `plan.defaults.json`（里面是借用人姓名 + 手机号）。**
-* **前两个二选一**：都轮询同一个工作区、都写 `state.json`，同时跑会互相覆盖
-  （轻则重复通知，重则快照回退）。单元里用 `Conflicts=` 把它变成机制，不靠人记。
-  本机启用的是 `yuque-agent-qq.service`。
-* **不许** `nohup` / `setsid` / `&` 起常驻进程。实测踩过：有人手工起了 `yqa qq serve`，
+* **轮询只有一个写者**：`yuque-agent.service` 是唯一轮询的单元；QQ 桥自 2026-09-24
+  起不再内嵌轮询（那之前两者靠 `Conflicts=` 二选一，因为都会写 `state.json`）。
+  现在两个单元**可以同时跑**；`state.json` 一旦出现第二个写者就是事故
+  （快照回退 → 重复申请、重复通知）。
+* **不许** `nohup` / `setsid` / `&` 起常驻进程。实测踩过：有人手工起了轮询，
   和 systemd 里那个抢同一个工作区。
 * 改单元 = 改 `deploy/*.service` → `install` 到 `/etc` → `daemon-reload` →
   **同步 `docs/deploy.md` 里那份**。`tests/test_deploy_doc.py` 会拦住两边漂移。

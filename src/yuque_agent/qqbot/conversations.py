@@ -2,20 +2,20 @@
 
 设计：
 
-* 每个用户（按 sender_id 隔离）同一时刻最多一个活跃会话；
+* 每个用户（按 sender_id 隔离）同一时刻最多一个活跃会话（**内存态**，
+  进程重启即丢——重发 ``/apply`` 就是重来一轮）；
 * 每条用户消息都经过 LLM 提取结构化字段（活动名、日期、时间、校区、人数），
   能提多少提多少，然后只问还缺的部分；
 * 用户随时可以发 ``/cancel`` 或 ``取消`` 退出；
-* 收集完毕后调用 :func:`outputs.write_application` 落盘，
-  并写一条通知到 ``pending/``（带 ``direct_target``，直接回给申请人）。
+* 收集完毕后写一条 ``apply`` **控制请求**（见 ``docs/interface.md`` §1.2/§1.4）：
+  校验、规范化、落盘申请、发通知**全部由核心的常驻进程做**——
+  桥不直接写 ``outbox/applications/``（那会绕过契约校验与周期翻转）。
 
-LLM 只负责「从自然语言提取结构化信息」——校验、状态管理、payload 构造
-仍然是确定性的，零歧义。
+LLM 只负责「从自然语言提取结构化信息」——校验、状态管理仍然是确定性的，零歧义。
 """
 
 from __future__ import annotations
 
-import hashlib
 import json
 import threading
 import time
@@ -24,8 +24,9 @@ from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 
-from .. import clock, llm, outputs, school
+from .. import clock, llm, school
 from ..config import Settings
+from .control_client import write_control_request
 
 # ---------------------------------------------------------------- LLM 提取
 
@@ -49,11 +50,9 @@ _SYSTEM_PROMPT = """\
 _USER_PROMPT = "请从以下消息中提取信息：\n\n{user_text}"
 
 
-def _extract_with_llm(
-    client: llm.LLMClient, user_text: str
-) -> dict[str, Any]:
+def _extract_with_llm(client: llm.LLMClient, user_text: str) -> dict[str, Any]:
     """调 LLM 从用户消息提取结构化字段。失败返回空 dict。"""
-    today = date.today()
+    today = clock.today()
     system = _SYSTEM_PROMPT.format(
         today=today.isoformat(),
         tomorrow=(today + timedelta(days=1)).isoformat(),
@@ -108,7 +107,7 @@ def _validate_date_str(date_str: str) -> tuple[date | None, str | None]:
         d = date.fromisoformat(date_str)
     except ValueError:
         return None, f"日期格式不对（{date_str}），请用 YYYY-MM-DD。"
-    today = date.today()
+    today = clock.today()
     lo, hi = school.bookable_range(today)
     if d < lo:
         return None, f"日期 {d} 距今天不足 {school.MIN_DAYS_AHEAD} 天（最早 {lo}）"
@@ -117,9 +116,7 @@ def _validate_date_str(date_str: str) -> tuple[date | None, str | None]:
     return d, None
 
 
-def _validate_time_pair(
-    start: str, end: str
-) -> tuple[tuple[int, int] | None, str | None]:
+def _validate_time_pair(start: str, end: str) -> tuple[tuple[int, int] | None, str | None]:
     if not start or not end:
         return None, "请同时提供开始和结束时间（如 14:00-16:00）"
     if school.parse_time(start) is None or school.parse_time(end) is None:
@@ -130,9 +127,7 @@ def _validate_time_pair(
         return None, "结束时间必须晚于开始时间"
     span = school.periods_for(start, end)
     if span is None:
-        return None, (
-            f"{start}-{end} 对不上任何节次（可借 08:00-22:20，12:00-14:00 午休）"
-        )
+        return None, (f"{start}-{end} 对不上任何节次（可借 08:00-22:20，12:00-14:00 午休）")
     return span, None
 
 
@@ -194,7 +189,6 @@ class ApplicationSession:
 
 
 class ConversationManager:
-
     def __init__(self, *, conversations_dir: Path) -> None:
         self._sessions: dict[str, ApplicationSession] = {}
         self._lock = threading.Lock()
@@ -251,50 +245,9 @@ class ConversationManager:
         with self._lock:
             self._sessions.pop(user_id, None)
 
-    def try_auto_start(
-        self, user_id: str, text: str, *, settings: Settings
-    ) -> str | None:
-        """Try to auto-start a booking session from a natural language message.
-
-        Uses LLM extraction. If any booking fields are found, creates a session
-        and returns a reply. Returns None if no booking intent detected.
-        """
-        client = self._get_llm(settings)
-        if client is None:
-            return None
-
-        extracted = _extract_with_llm(client, text)
-        if not extracted:
-            return None
-
-        session = self.get_or_create(user_id)
-        self._merge_extracted(session, extracted)
-        session.touch()
-
-        # Build response directly (avoid redundant LLM call via _handle_collecting)
-        errors = self._collect_errors(session)
-        missing = _missing_fields(session.answers)
-
-        if errors:
-            return "\n".join(errors) + "\n请重新输入。"
-
-        if missing:
-            session.step = "collecting"
-            return (
-                "已收到。还缺：\n"
-                + "\n".join(f"  - {f}" for f in missing)
-                + "\n请补充。"
-            )
-
-        session.step = "confirm"
-        summary = _summary(session.answers)
-        return f"信息已收集完毕，请确认：\n\n{summary}\n\n回复「确认」提交，「取消」放弃。"
-
     # -- 消息处理 -------------------------------------------------------
 
-    def process_message(
-        self, user_id: str, text: str, *, settings: Settings
-    ) -> tuple[bool, str]:
+    def process_message(self, user_id: str, text: str, *, settings: Settings) -> tuple[bool, str]:
         """返回 (handled, reply)。"""
         session = self.get_active(user_id)
         if session is None:
@@ -330,10 +283,7 @@ class ConversationManager:
             missing = _missing_fields(session.answers)
             if not session.answers:
                 return "没看懂这条信息，请重新描述你要借教室的需求。"
-            return (
-                f"没能从这条消息中提取到新信息。还缺：\n"
-                + "\n".join(f"  - {f}" for f in missing)
-            )
+            return "没能从这条消息中提取到新信息。还缺：\n" + "\n".join(f"  - {f}" for f in missing)
 
         # 合并到 session
         self._merge_extracted(session, extracted)
@@ -342,20 +292,14 @@ class ConversationManager:
         missing = _missing_fields(session.answers)
         if missing:
             session.step = "collecting"
-            return (
-                f"已收到。还缺：\n"
-                + "\n".join(f"  - {f}" for f in missing)
-                + "\n请补充。"
-            )
+            return "已收到。还缺：\n" + "\n".join(f"  - {f}" for f in missing) + "\n请补充。"
 
         # 全部收集完毕
         session.step = "confirm"
         summary = _summary(session.answers)
         return f"信息已收集完毕，请确认：\n\n{summary}\n\n回复「确认」提交，「取消」放弃。"
 
-    def _merge_extracted(
-        self, session: ApplicationSession, extracted: dict[str, Any]
-    ) -> None:
+    def _merge_extracted(self, session: ApplicationSession, extracted: dict[str, Any]) -> None:
         """把 LLM 提取的字段合并进 session.answers，含校验。"""
         # 活动名
         if extracted.get("activity_name"):
@@ -411,9 +355,7 @@ class ConversationManager:
 
     # -- 确认 -----------------------------------------------------------
 
-    def _handle_confirm(
-        self, session: ApplicationSession, text: str, *, settings: Settings
-    ) -> str:
+    def _handle_confirm(self, session: ApplicationSession, text: str, *, settings: Settings) -> str:
         if text in ("确认", "确定", "提交", "是", "ok", "OK", "y", "yes"):
             return self._submit(session, settings=settings)
         if text in ("取消", "放弃", "否", "n", "no"):
@@ -444,33 +386,30 @@ class ConversationManager:
 
     def _submit(self, session: ApplicationSession, *, settings: Settings) -> str:
         a = session.answers
+        request = {
+            "kind": "apply",
+            "requested_by": session.user_id,
+            "target": {"scope": "c2c", "target_id": session.user_id},
+            "raw": {
+                "activity_name": a.get("activity_name", ""),
+                "date": a.get("date", ""),
+                "start": a.get("start", ""),
+                "end": a.get("end", ""),
+                "campus": a.get("campus_name") or a.get("campus", ""),
+                "people": a.get("people"),
+            },
+        }
         try:
-            payload = _build_application_payload(session)
-            result = outputs.write_application(settings, payload)
-        except outputs.ContractError as exc:
-            return f"申请格式校验失败：{exc}\n会话已重置，发 /apply 重新开始。"
-        except Exception as exc:
-            return f"申请写入失败：{type(exc).__name__}: {exc}\n会话已重置。"
-
-        try:
-            _write_accept_notice(
-                settings,
-                application_id=result["application_id"],
-                activity_name=a.get("activity_name", ""),
-                activity_date=a.get("date", ""),
-                user_id=session.user_id,
-            )
-        except Exception:
-            pass
+            write_control_request(settings, request)
+        except OSError as exc:
+            return f"申请提交失败：{exc}\n请稍后重试（发 /apply 可以重新开始）。"
 
         self.clear(session.user_id)
         return (
-            f"申请已提交！\n"
-            f"申请编号：{result['application_id']}\n"
-            f"校区：{a.get('campus_name', '')} "
-            f"日期：{a.get('date', '')} "
-            f"时间：{a.get('start', '')}-{a.get('end', '')}\n"
-            f"管理员会收到通知并处理。"
+            "申请已提交，受理结果马上会以通知形式发给你。\n"
+            f"活动：{a.get('activity_name', '')}\n"
+            f"日期：{a.get('date', '')} {a.get('start', '')}-{a.get('end', '')}"
+            f"（{a.get('campus_name', '')}）"
         )
 
     # -- 提问 -----------------------------------------------------------
@@ -484,139 +423,7 @@ class ConversationManager:
         return "还需要以下信息：\n" + "\n".join(f"  - {f}" for f in missing)
 
 
-# ---------------------------------------------------------------- payload
-
-
-def _build_application_payload(session: ApplicationSession) -> dict[str, Any]:
-    a = session.answers
-    ksjc = a.get("ksjc", 1)
-    jsjc = a.get("jsjc", ksjc)
-    people = a.get("people")
-    if people is None:
-        people = 30
-
-    ts = clock.stamp().replace("-", "").replace(":", "").replace(" ", "_")
-    user_hash = hashlib.sha256(session.user_id.encode()).hexdigest()[:8]
-    synthetic_doc_id = (
-        int(f"{int(date.today().strftime('%Y%m%d'))}{user_hash[:6]}", 16) % (10**9)
-    )
-
-    return {
-        "source": {
-            "repo": "",
-            "doc_id": synthetic_doc_id,
-            "title": f"QQ申请-{a.get('activity_name', '')}",
-            "author": session.user_id[:16],
-            "dir": "qq-bot",
-            "content_sha256": "",
-        },
-        "activity": {
-            "title": a.get("activity_name", ""),
-            "date": a.get("date", ""),
-            "period": school.period_label(ksjc, jsjc),
-            "people": people,
-            "campus": a.get("campus", ""),
-            "building": None,
-            "room_type": None,
-            "preferred_room": None,
-        },
-        "raw": {
-            "activity_name": a.get("activity_name", ""),
-            "date": a.get("date", ""),
-            "start": a.get("start", ""),
-            "end": a.get("end", ""),
-            "campus": a.get("campus_name", ""),
-            "people": a.get("people", 0),
-            "source": "qq_bot",
-        },
-        "derived": {
-            "campus_name": a.get("campus_name", ""),
-            "campus_code": a.get("campus", ""),
-            "ksjc": ksjc,
-            "jsjc": jsjc,
-            "people_source": "user_input" if a.get("people") is not None else "default",
-        },
-        "agent": {
-            "run_id": f"qq-{ts}",
-            "verdict": "accepted",
-            "confidence": "high",
-            "notes": ["QQ bot 交互式申请"],
-        },
-        "normalizations": [],
-        "warnings": [],
-    }
-
-
-# ---------------------------------------------------------------- 通知
-
-
-def _write_accept_notice(
-    settings: Settings,
-    *,
-    application_id: str,
-    activity_name: str,
-    activity_date: str,
-    user_id: str,
-) -> dict[str, Any]:
-    seq = _next_seq(settings)
-    notice_id = _short_hash(f"accepted\x00{application_id}\x00{seq}")
-    record = {
-        "schema_version": outputs.NOTICE_SCHEMA_VERSION,
-        "seq": seq,
-        "notice_id": notice_id,
-        "created_at": outputs.now_iso(),
-        "kind": "accepted",
-        "repo": settings.repo,
-        "doc": {},
-        "member": {"name": ""},
-        "summary": f"申请已受理（{application_id}）",
-        "message": (
-            f"你的教室借用申请已受理。\n"
-            f"申请编号：{application_id}\n"
-            f"活动：{activity_name}\n"
-            f"日期：{activity_date}\n"
-            f"管理员会尽快处理，请耐心等待。"
-        ),
-        "reasons": [],
-        "warnings": [],
-        "extra": {
-            "application_id": application_id,
-            "source": "qq_bot",
-        },
-        "direct_target": {"scope": "c2c", "target_id": user_id},
-    }
-
-    path = settings.notify_dir / "pending" / f"{seq:06d}-accepted-{notice_id}.json"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(record, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
-    return {"seq": seq, "notice_id": notice_id, "path": str(path)}
-
-
-def _next_seq(settings: Settings) -> int:
-    counter = settings.notify_dir / ".seq"
-    current = 0
-    try:
-        current = int(counter.read_text(encoding="utf-8").strip() or "0")
-    except (OSError, ValueError):
-        current = 0
-    for folder in ("pending", "done"):
-        d = settings.notify_dir / folder
-        if not d.exists():
-            continue
-        for p in d.glob("*.json"):
-            head = p.name.split("-", 1)[0]
-            if head.isdigit():
-                current = max(current, int(head))
-    nxt = current + 1
-    counter.parent.mkdir(parents=True, exist_ok=True)
-    counter.write_text(str(nxt), encoding="utf-8")
-    return nxt
-
-
-def _short_hash(text: str, length: int = 8) -> str:
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:length]
+# ---------------------------------------------------------------- 入口
 
 
 # ---------------------------------------------------------------- 入口

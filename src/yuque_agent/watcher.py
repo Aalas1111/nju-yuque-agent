@@ -19,7 +19,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 
-from . import clock
+from . import clock, control
 from .agent import RunResult
 from .config import Settings
 from .runner import Runner
@@ -114,6 +114,12 @@ class Watcher:
             + ("（写工作日志）" if self.settings.journal else "")
         )
         while True:
+            # 人工请求优先于定时轮询：QQ 桥（或别的下游）写进 control/requests/
+            # 的 /run、/archive、/apply 在这里被消费——**只有这一个进程碰 state.json**。
+            try:
+                control.process_pending(self.settings, runner=self.runner, log=self.log)
+            except Exception as exc:  # noqa: BLE001 - 队列出问题不能拖垮常驻
+                self.log(f"[watch] 控制请求处理异常（已忽略并继续）：{type(exc).__name__}: {exc}")
             try:
                 self.tick()
             except Exception as exc:  # noqa: BLE001 - 常驻进程不能因为一次失败就死

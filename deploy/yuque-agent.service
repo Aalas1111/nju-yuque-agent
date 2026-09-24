@@ -4,11 +4,9 @@ Documentation=https://github.com/Aalas1111/nju-yuque-agent
 After=network-online.target
 Wants=network-online.target
 
-# 和「带 QQ 的那个」是**二选一**：两者都会轮询同一个工作区、都会写 state.json，
-# 同时跑会互相覆盖（轻则重复通知，重则快照回退）。用 Conflicts 把它变成
-# 机制而不是文档：启一个，systemd 会自动停另一个。
-# （实测踩到过：有人手工起了 `yqa qq serve`，而本服务还在跑。）
-Conflicts=yuque-agent-qq.service
+# 本单元是**唯一**的轮询者（state.json 只能有一个写者，AGENTS.md §2.2）。
+# 和 yuque-agent-qq.service 可以同时跑：那个只投递通知、处理 QQ 命令，
+# 不轮询、不写 state.json（2026-09-24 解耦，见 docs/interface.md）。
 
 [Service]
 Type=simple

@@ -9,6 +9,9 @@
   Agent 根据用户角色动态生成路由清单。
 * **多轮会话透明**。如果用户有活跃的会话（如教室借用正在填写），
   消息直接路由到该会话，不经过 LLM 分类。
+* **显式命令零 LLM**。能精确匹配工作流名/别名的消息（``/status``、``帮助``、
+  ``/run``…）直接命中，不过分类器——省 token、行为确定、可离线测试，
+  而且 LLM 不可用时只读命令照样能用。
 
 提示词注入防御：
 
@@ -23,14 +26,14 @@ from __future__ import annotations
 
 import json
 import logging
+import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import date
-from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
-from .. import outputs, school
+from .. import clock
 from ..config import Settings
-from .config import QQBotConfig, ROLE_ADMIN, ROLE_USER
+from .config import ROLE_ADMIN, ROLE_USER, QQBotConfig
 from .conversations import (
     ConversationManager,
     _extract_with_llm,
@@ -127,6 +130,7 @@ class RouterAgent:
         self._gateway = gateway
         self._log = log or (lambda _: None)
         self._workflows: dict[str, WorkflowSpec] = {}
+        self._last_admin_call: dict[str, float] = {}
 
     # -- 工作流注册 ---------------------------------------------------
 
@@ -158,6 +162,41 @@ class RouterAgent:
                 continue
             result.append(wf)
         return result
+
+    # -- 显式命令与限流 -----------------------------------------------
+
+    def _direct_workflow(self, text: str) -> WorkflowSpec | None:
+        """能精确匹配工作流名/别名的消息直接命中（``/run``、``帮助``、``s``…）。
+
+        没有斜杠也认——和命令表时代的行为一致（``tests/test_qq_commands.py``
+        里那批别名用例）。匹配不上一律返回 ``None``，交给 LLM 分类。
+        """
+        stripped = (text or "").strip()
+        if not stripped:
+            return None
+        key = stripped[1:].strip() if stripped.startswith("/") else stripped
+        if not key or len(key.split()) != 1:
+            return None
+        wf = self._workflows.get(key) or self._workflows.get(key.lower())
+        return wf
+
+    def _rate_limit_wait(self, sender_id: str) -> float:
+        """管理员写操作的 per-sender 限流（秒）。0 = 放行。
+
+        以前在 ``CommandRouter.dispatch`` 里；入站改走本 Agent 后搬到这里，
+        行为不变（``tests/test_qq_commands.py`` 的限流用例）。
+        """
+        limit = max(0, int(getattr(self._config, "inbound_rate_limit", 0) or 0))
+        if limit <= 0:
+            return 0.0
+        now = time.monotonic()
+        last = self._last_admin_call.get(sender_id)
+        if last is not None:
+            wait = limit - (now - last)
+            if wait > 0:
+                return wait
+        self._last_admin_call[sender_id] = now
+        return 0.0
 
     # -- 主入口 -------------------------------------------------------
 
@@ -199,28 +238,49 @@ class RouterAgent:
             reply = self._conversations.process_message(sender_id, text, settings=settings)[1]
             return AgentResult(reply=reply, command="booking")
 
-        # 4. LLM 路由
-        workflows = self._visible_workflows(role)
-        wf_name = self._route(text, workflows, settings)
-
-        if wf_name is None:
-            return AgentResult(
-                reply=self._help_text(role),
-                command="unknown",
-            )
-
-        wf = self._workflows.get(wf_name)
+        # 4. 显式命令直接命中（零 LLM）；命不中才走 LLM 意图分类
+        wf = self._direct_workflow(text)
+        explicit = wf is not None
         if wf is None:
-            return AgentResult(reply=self._help_text(role), command="unknown")
+            workflows = self._visible_workflows(role)
+            wf_name = self._route(text, workflows, settings)
+            if wf_name is not None:
+                wf = self._workflows.get(wf_name)
+            if wf is None:
+                return AgentResult(reply=self._help_text(role), command="unknown")
 
-        # 5. 权限校验（双保险：路由可能传回了 admin_only 的工作流）
-        if wf.admin_only and role != ROLE_ADMIN:
+        return self._run_workflow(wf, ctx, role=role, sender_id=sender_id, explicit=explicit)
+
+    def _run_workflow(
+        self,
+        wf: WorkflowSpec,
+        ctx: HandlerCtx,
+        *,
+        role: str,
+        sender_id: str,
+        explicit: bool,
+    ) -> AgentResult:
+        # 权限校验（双保险：显式命令与 LLM 路由都过这里）
+        if wf.admin_only:
+            if role != ROLE_ADMIN:
+                return AgentResult(
+                    reply=f"/{wf.name} 是写操作，只有管理员能用。",
+                    command=wf.name,
+                )
+            wait = self._rate_limit_wait(sender_id)
+            if wait > 0:
+                return AgentResult(
+                    reply=f"刚跑过，{wait:.0f} 秒后再来（同一个人的写操作要限流）。",
+                    command=wf.name,
+                )
+
+        # 显式 `/apply`：直接开始填表（不拿「/apply」这串字去做信息提取）
+        if explicit and wf.name == "booking":
+            payload = self._gateway.request_apply(user_id=sender_id)
             return AgentResult(
-                reply=f"/{wf.name} 是写操作，只有管理员能用。",
-                command=wf_name,
+                reply=str(payload.get("message") or "申请已启动。"), command="booking"
             )
 
-        # 6. 执行
         self._log(f"[agent] {sender_id} → {wf.name}（role={role}）")
         try:
             reply = wf.handler(ctx)
@@ -242,11 +302,9 @@ class RouterAgent:
         if not workflows:
             return None
 
-        wf_lines = "\n".join(
-            f"- {wf.name}: {wf.description}" for wf in workflows
-        )
+        wf_lines = "\n".join(f"- {wf.name}: {wf.description}" for wf in workflows)
         system = _ROUTER_SYSTEM.format(workflows=wf_lines)
-        today = date.today().isoformat()
+        today = clock.today().isoformat()
         user_msg = _ROUTER_USER.format(today=today, user_text=user_text)
 
         client = self._conversations._get_llm(settings)
@@ -254,10 +312,12 @@ class RouterAgent:
             return None
 
         try:
-            resp = client.chat([
-                {"role": "system", "content": system},
-                {"role": "user", "content": user_msg},
-            ])
+            resp = client.chat(
+                [
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user_msg},
+                ]
+            )
         except Exception:
             return None
 
@@ -345,11 +405,7 @@ def _wf_booking(ctx: HandlerCtx) -> str:
         return "\n".join(errors) + "\n请重新输入。"
     if missing:
         session.step = "collecting"
-        return (
-            "已收到。还缺：\n"
-            + "\n".join(f"  - {f}" for f in missing)
-            + "\n请补充。"
-        )
+        return "已收到。还缺：\n" + "\n".join(f"  - {f}" for f in missing) + "\n请补充。"
 
     session.step = "confirm"
     summary = _summary(session.answers)
@@ -448,50 +504,64 @@ def _request_text(payload: dict[str, Any]) -> str:
 
 def register_default_workflows(agent: RouterAgent) -> None:
     """把所有默认工作流注册到 Agent。"""
-    agent.register(WorkflowSpec(
-        name="booking",
-        description="借用教室——描述时间、校区、人数等，我会帮你填写申请",
-        handler=_wf_booking,
-        aliases=("apply", "申请", "借用", "borrow"),
-    ))
-    agent.register(WorkflowSpec(
-        name="status",
-        description="查看系统状态（知识库、轮询、通知）",
-        handler=_wf_status,
-        aliases=("状态", "s"),
-    ))
-    agent.register(WorkflowSpec(
-        name="pending",
-        description="查看待投递的通知数量",
-        handler=_wf_pending,
-        aliases=("待投递", "通知", "p"),
-    ))
-    agent.register(WorkflowSpec(
-        name="run",
-        description="立刻跑一轮知识库轮询",
-        handler=_wf_run,
-        admin_only=True,
-        aliases=("跑一轮", "once", "r"),
-    ))
-    agent.register(WorkflowSpec(
-        name="archive",
-        description="立刻跑一次知识库归档",
-        handler=_wf_archive,
-        admin_only=True,
-        aliases=("归档", "a"),
-    ))
-    agent.register(WorkflowSpec(
-        name="help",
-        description="查看帮助和可用功能",
-        handler=_wf_help,
-        aliases=("帮助", "?", "？", "h"),
-    ))
-    agent.register(WorkflowSpec(
-        name="cancel",
-        description="取消当前正在进行的操作",
-        handler=_wf_cancel,
-        aliases=("取消", "放弃"),
-    ))
+    agent.register(
+        WorkflowSpec(
+            name="booking",
+            description="借用教室——描述时间、校区、人数等，我会帮你填写申请",
+            handler=_wf_booking,
+            aliases=("apply", "申请", "借用", "borrow"),
+        )
+    )
+    agent.register(
+        WorkflowSpec(
+            name="status",
+            description="查看系统状态（知识库、轮询、通知）",
+            handler=_wf_status,
+            aliases=("状态", "s"),
+        )
+    )
+    agent.register(
+        WorkflowSpec(
+            name="pending",
+            description="查看待投递的通知数量",
+            handler=_wf_pending,
+            aliases=("待投递", "通知", "p"),
+        )
+    )
+    agent.register(
+        WorkflowSpec(
+            name="run",
+            description="立刻跑一轮知识库轮询",
+            handler=_wf_run,
+            admin_only=True,
+            aliases=("跑一轮", "once", "r"),
+        )
+    )
+    agent.register(
+        WorkflowSpec(
+            name="archive",
+            description="立刻跑一次知识库归档",
+            handler=_wf_archive,
+            admin_only=True,
+            aliases=("归档", "a"),
+        )
+    )
+    agent.register(
+        WorkflowSpec(
+            name="help",
+            description="查看帮助和可用功能",
+            handler=_wf_help,
+            aliases=("帮助", "?", "？", "h"),
+        )
+    )
+    agent.register(
+        WorkflowSpec(
+            name="cancel",
+            description="取消当前正在进行的操作",
+            handler=_wf_cancel,
+            aliases=("取消", "放弃"),
+        )
+    )
 
 
 __all__ = [

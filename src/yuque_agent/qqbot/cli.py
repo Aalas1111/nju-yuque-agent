@@ -8,7 +8,7 @@ yqa qq send       # 手动发一条消息（联调用）
 yqa qq notify     # 把 outbox/notify/pending 里的通知投出去
 yqa qq config     # 看/初始化 qqbot.json（成员映射 + 入站白名单）
 yqa qq doctor     # 依赖 / 凭证 / 配置 / 二维码 / 网关 自检
-yqa qq serve      # 常驻：轮询 + 投递通知 + 接 QQ 命令
+yqa qq serve      # 常驻：投递通知 + 接 QQ 命令（轮询归核心进程 yqa run）
 ```
 """
 
@@ -28,10 +28,6 @@ from rich.table import Table
 from rich.text import Text
 
 from ..config import DEFAULT_MODEL, DEFAULT_REPO, Settings
-from ..llm import LLMClient
-from ..runner import Runner
-from ..watcher import Watcher
-from ..yuque import YuqueClient
 from .bridge import NotifyBridge
 from .client import MessageSender, NullSender, QQBotClient, Target
 from .config import QQBotConfig, default_config_path, init_config
@@ -44,7 +40,6 @@ from .credentials import (
 )
 from .login import QrLoginFlow, QrLoginManager, QrLoginResult
 from .login_http import LoginHttpServer
-from .progress import ProgressOptions
 from .protocol import QQBotError, QQBotProtocol
 from .qr import has_qr_support, save_png, support_note, terminal_qr
 from .service import QQBotService
@@ -851,14 +846,9 @@ def qq_serve(
     account: AccountOpt = "default",
     credentials: CredentialsOpt = None,
     env: EnvOpt = "production",
-    interval: Annotated[int, typer.Option("--interval", "-i", help="轮询间隔（秒）")] = 60,
-    quiet_seconds: Annotated[
-        int | None, typer.Option("--quiet-seconds", help="静默期（秒）；0=关闭")
-    ] = None,
     notify_interval: Annotated[
-        float, typer.Option("--notify-interval", help="通知泵间隔（秒）")
+        float, typer.Option("--notify-interval", help="通知泵（含控制回执）间隔（秒）")
     ] = 5.0,
-    no_watch: Annotated[bool, typer.Option("--no-watch", help="不轮询，只投通知 + 收命令")] = False,
     no_inbound: Annotated[bool, typer.Option("--no-inbound", help="不连网关收消息")] = False,
     no_login: Annotated[
         bool,
@@ -866,43 +856,20 @@ def qq_serve(
             "--no-login", help="没有缓存凭证时不要自动扫码登录，直接报错（给 systemd 用）"
         ),
     ] = False,
-    no_progress: Annotated[
-        bool,
-        typer.Option("--no-progress", help="不播报运行中的分段与保活，只在跑完回一条结论"),
-    ] = False,
-    progress_idle: Annotated[
-        float,
-        typer.Option(
-            "--progress-idle",
-            help="上一条消息后多久没动静就发一条保活（秒）；0=关保活",
-        ),
-    ] = 60.0,
-    progress_min_interval: Annotated[
-        float,
-        typer.Option("--progress-min-interval", help="两条消息之间的最小间隔（秒），防刷屏"),
-    ] = 2.0,
     dry_run: Annotated[bool, typer.Option("--dry-run", help="写操作只记录不执行")] = False,
-    journal: Annotated[bool, typer.Option("--journal", help="把 session 写回工作日志")] = False,
     model: Annotated[str, typer.Option("--model")] = DEFAULT_MODEL,
 ) -> None:
-    """常驻：轮询语雀 + 投递通知 + 接 QQ 命令（``/status`` ``/run`` …）。
+    """常驻：投递通知 + 接 QQ 命令（``/status`` ``/run`` …）。
+
+    **不跑轮询**：轮询与归档归核心的常驻进程（``yqa run`` / ``yuque-agent.service``）——
+    ``state.json`` 只能有一个写者（AGENTS.md §2.2）。这里的 ``/run`` ``/archive``
+    只是写一条控制请求到 ``control/requests/``，由核心消费，结果再发回给发起人。
 
     **第一次直接跑就行**：没有 ``~/.yuque/qqbot.json`` 时会在终端里出示二维码，
     手机 QQ 扫一下，凭证自动落盘，然后服务继续启动。加 ``--no-login`` 可关掉这个行为。
     """
-    settings = _settings(
-        repo, workspace, dry_run=dry_run, journal=journal, model=model, interval=interval
-    )
-    if quiet_seconds is not None:
-        settings.quiet_seconds = quiet_seconds
+    settings = _settings(repo, workspace, dry_run=dry_run, model=model)
     config = _config(settings)
-
-    if not settings.token and not dry_run:
-        # 先确认语雀这边是通的：否则扫完码才发现缺 token，白扫一次
-        console.print(
-            "[red]缺少语雀 token（设 YQA_TOKEN / YUQUE_TOKEN）——先配好语雀再启动服务。[/red]"
-        )
-        raise typer.Exit(1)
 
     sender, protocol = _client(
         account=account,
@@ -914,12 +881,6 @@ def qq_serve(
     )
     client = sender if isinstance(sender, QQBotClient) else None
 
-    yuque = YuqueClient(
-        host=settings.host, token=settings.token, repo=settings.repo, dry_run=settings.dry_run
-    )
-    llm = LLMClient(base_url=settings.api_base, api_key=settings.api_key, model=settings.model)
-    runner = Runner(settings=settings, client=yuque, llm=llm)
-    watcher = Watcher(runner=runner, settings=settings, log=plain_log)
     bridge = NotifyBridge(
         notify_dir=settings.notify_dir,
         sender=sender,
@@ -929,24 +890,17 @@ def qq_serve(
     )
     service = QQBotService(
         settings=settings,
-        runner=runner,
-        watcher=watcher,
         bridge=bridge,
         config=config,
         qq_client=client,
         log=plain_log,
         notify_interval=notify_interval,
-        progress_options=ProgressOptions(
-            idle_seconds=progress_idle, min_interval_seconds=progress_min_interval
-        ),
-        progress_enabled=not no_progress,
     )
     console.print(
         Panel(
             f"知识库 {settings.repo}\n"
-            f"轮询 {'开' if not no_watch else '关'}（每 {interval}s，静默期 {settings.quiet_seconds}s）\n"
-            f"通知泵 每 {notify_interval}s 扫一次 outbox/notify/pending/\n"
-            f"分段播报 {'关（--no-progress）' if no_progress else f'开（保活 {progress_idle:.0f}s）'}\n"
+            "轮询 由核心进程负责（yuque-agent.service / yqa run）\n"
+            f"通知泵 每 {notify_interval}s 扫一次 outbox/notify/pending/ 并取控制回执\n"
             f"QQ 入站 {'关（--no-inbound）' if no_inbound else ('开' if client else '关（未绑定）')}"
             f" · 个人 {len(config.inbound_users)}/{len(config.inbound_admins)} 人"
             f" · 群 {len(config.inbound_user_groups)}/{len(config.inbound_admin_groups)} 个（用户/管理员）",
@@ -954,13 +908,11 @@ def qq_serve(
         )
     )
     try:
-        service.serve(watch=not no_watch, inbound=not no_inbound)
+        service.serve(inbound=not no_inbound)
     except KeyboardInterrupt:
         console.print("\n[dim]已停止。[/dim]")
     finally:
         service.stop()
-        yuque.close()
-        llm.close()
         if protocol is not None:
             protocol.close()
 

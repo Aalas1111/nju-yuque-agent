@@ -11,7 +11,14 @@
 | 1 | 怎么和参考实现对齐 | `src/yuque_agent/qqbot/protocol.py` |
 | 2 | 扫码登录（完整流程 + 三种出示方式 + 本地 HTTP 接口） | `login.py` / `login_http.py` / `qr.py` / `credentials.py` |
 | 3 | 通知投递（`pending/` → QQ） | `bridge.py` |
-| 4 | 入站命令与常驻服务 | `commands.py` / `events.py` / `gateway.py` / `service.py` |
+| 4 | 入站命令与常驻服务 | `agent.py` / `events.py` / `gateway.py` / `service.py` |
+
+> **⚠️ 2026-09-24 解耦变更**：QQ 服务**不再轮询、不再播报**——轮询与归档归核心的
+> 常驻进程（`yuque-agent.service` / `yqa run`），`/run` `/archive` `/apply` 只是往
+> `control/requests/` 写一条请求（见 [`interface.md`](interface.md) §1.2/§1.4），
+> 跑完的回执走 `control/done/` 或通知队列回来。
+> 本文中**关于轮询/播报/`--interval`/`--no-watch`/`--progress-*` 的段落已过时**，
+> 以 `yqa qq serve --help` 与 `interface.md` 为准。
 
 ---
 
@@ -310,7 +317,7 @@ uv run yqa qq notify --file outbox/notify/pending/000012-….json   # 只投一�
 
 | 名单 | 收什么 id | 给了什么权限 |
 |---|---|---|
-| `inbound.allow` | 个人 `user_openid`（群内是 `member_openid`） | **用户**：只读命令（`/help` `/status` `/pending`） |
+| `inbound.users` | 个人 `user_openid`（群内是 `member_openid`） | **用户**：查帮助/状态、交互式申请（`/apply`） |
 | `inbound.admins` | 个人 openid | **管理员**：再加 `/run` `/archive` |
 | `inbound.user_groups` | 群 `group_openid` | **整群是用户**：群里谁发言都算用户 |
 | `inbound.admin_groups` | 群 `group_openid` | **整群是管理员**：群里谁发言都能 `/run` `/archive` |
@@ -383,85 +390,51 @@ QQ 群/私聊 ──" /run"──▶ 网关(WS) ──▶ events.parse_event ─
 
 ---
 
-### 4.5 运行中的播报：分段发送 + 保活心跳
+### 4.5 运行中的播报：**已随解耦移除**（2026-09-24）
 
-QQ 的开放平台**不是流式接口**：没有 token 级推送，一次 REST 调用就是一条完整消息。
-所以这里不用参考实现里那套 `StreamSession`（C2C 打字机，走另一组 `stream_messages` 接口），
-而是按接口真实形状来：
+曾经 `/run` 会把 run 过程分段发到 QQ（分段发送 + `⏳ 正在进行` 保活，实现在
+`progress.py`，见 git 历史）。解耦后 **run 跑在核心进程里**，QQ 侧看不到它的过程：
 
-| 规则 | 说明 |
-|---|---|
-| **一段助手输出 = 一条消息** | LLM 一次回复的 `content` 本来就是非流式拿到完整的，拿全了整段发出去，再继续下一步 |
-| **工具调用不发消息** | 它只用来回答「现在在干什么」，喂给保活文案 |
-| **空闲超时发保活** | 上一条消息之后 `--progress-idle` 秒（默认 60）没动静，就发 `⏳ 正在进行：<当前工具/步骤>` |
-| **同一条 `msg_id`、`msg_seq` 递增** | 这是 QQ 被动回复窗口内连发多条的正规姿势；窗口过期才需要退回主动消息 |
+* `/run` `/archive` 的回执只有**一条**：跑完的结论（走 `control/done/`）；
+* 想要「运行中播报」只能在桥侧**只读 tail** `runs/<run_id>/session.jsonl`
+  （追加写、天然可流）——那是桥自己的工程，不属于核心。
 
-一次 `/run` 在 QQ 里长这样（离线演示，`msg_id` 全程不变）：
-
-```
-[+0.0s] msg_seq=1  收到，已排队跑一轮轮询；跑完我把结论发给你。
-[+0.0s] msg_seq=2  我先读一下这篇申请文档。
-[+0.6s] msg_seq=3  ⏳ 正在进行：调用 doc_read
-[+1.2s] msg_seq=4  ⏳ 正在进行：调用 emit_application
-[+1.4s] msg_seq=5  要素齐了，我已经产出申请，交给负责提交的同学。
-[+1.4s] msg_seq=6  跑完了：受理了《新生见面会》…
-```
-
-开关（都在 `yqa qq serve` 上）：
-
-```bash
-uv run yqa qq serve                          # 默认：分段播报 + 60s 保活
-uv run yqa qq serve --progress-idle 30       # 30 秒没动静就报一次「正在进行」
-uv run yqa qq serve --progress-idle 0        # 关保活，只分段
-uv run yqa qq serve --no-progress            # 全关：只在跑完回一条结论
-uv run yqa qq serve --progress-min-interval 5   # 两条消息至少隔 5 秒（防刷屏）
-```
-
-> 单条消息超过 1200 字会**按行**切成多条（单行本身超长才会硬切）——这是接口长度硬限制，
-> 不是「流式」；切点永远不落在行中间。
+`progress.py` 与 `--progress-*` 开关已删除。
 
 ---
 
-## 5. 常驻服务
+## 5. 常驻服务（投递 + 命令，**不轮询**）
 
 ```
-┌─ 线程：agent 工作循环（唯一跑 LLM 的地方）──────────────────┐
-│  队列请求（/run /archive）→ runner.*_once                    │
-│  否则 → watcher.tick()（轮询 + 每周六归档）                   │
-│  每轮收尾 → bridge.drain()（把通知投出去）                    │
-└──────────────────────────┬───────────────────────────────────┘
-                           │ outbox/notify/
-┌─ 主线程：asyncio ─────────┴───────────────────────────────────┐
-│  通知泵：每 notify_interval 秒 drain 一次（默认 5s）           │
-│  WS 网关：收 QQ 消息 → CommandRouter → 回一句                  │
-└──────────────────────────────────────────────────────────────┘
+┌─ 主线程：asyncio ─────────────────────────────────────────────┐
+│  通知泵：每 notify_interval 秒 drain 一次（默认 5s）            │
+│         顺带取 control/done/ 里的 /run /archive 回执            │
+│  WS 网关：收 QQ 消息 → RouterAgent → 回一句                     │
+└───────────────┬───────────────────────────────────────────────┘
+                │ outbox/notify/pending/ · control/requests/
+        ┌───────┴────────┐
+        │ 核心常驻进程    │  yqa run（yuque-agent.service）
+        │ 轮询 + 归档 + 消费控制请求（唯一写 state.json）
+        └────────────────┘
 ```
 
 ```bash
-uv run yqa qq serve                          # 全功能（没凭证会先扫码）
-uv run yqa qq serve --no-inbound             # 不收命令（不需要 websockets）
-uv run yqa qq serve --no-watch               # 不轮询，只投通知 + 收命令
+uv run yqa qq serve                          # 投递 + 收命令（没凭证会先扫码）
+uv run yqa qq serve --no-inbound             # 只投递，不收命令（不需要 websockets）
 uv run yqa qq serve --notify-interval 2      # 通知投得更勤
-uv run yqa qq serve --dry-run --journal      # 演练/写日志
-uv run yqa qq serve --no-login               # 没凭证就直接报错，不要弹二维码（给 systemd/cron）
-uv run yqa qq serve --no-progress            # 不播报运行中的分段与保活（只在跑完回一条结论）
+uv run yqa qq serve --dry-run                # 演练：不算真发
+uv run yqa qq serve --no-login               # 没凭证就直接报错，不要弹二维码（给 systemd）
 ```
 
 **启动阶段的顺序**（照这个顺序排查最省事）：
 
-1. 检查语雀 token（`YQA_TOKEN`）——缺了直接报错，**不会**让你白扫一次码；
-2. 解析 QQBot 凭证：`--app-id/--app-secret` → `YQA_QQ_APPID/YQA_QQ_SECRET` → `~/.yuque/qqbot.json`；
-3. 都没有时：stdout 是终端 → 出示二维码 → 扫码 → 落盘 → 继续；不是终端 → 直接报错（`--no-login` 同理）；
-4. 起 agent 工作线程 + 通知泵（+ 网关，除非 `--no-inbound`）。
+1. 解析 QQBot 凭证：`--app-id/--app-secret` → `YQA_QQ_APPID/YQA_QQ_SECRET` → `~/.yuque/qqbot.json`；
+2. 都没有时：stdout 是终端 → 出示二维码 → 扫码 → 落盘 → 继续；不是终端 → 直接报错（`--no-login` 同理）；
+3. 起通知泵（+ 网关，除非 `--no-inbound`）。
 
-两种常驻姿势的区别：
-
-| | `yqa run --qq` | `yqa qq serve` |
-|---|---|---|
-| 轮询语雀 | ✅（原来的行为） | ✅（可 `--no-watch` 关掉） |
-| 投递通知 | ✅（每轮收尾 drain 一次） | ✅（独立通知泵，默认 5 秒一轮） |
-| 收 QQ 命令 | ❌ | ✅（可用 `--no-inbound` 关） |
-| 适合 | 只要「社员收到通知」 | 还要「在 QQ 里问状态 / 手动触发」 |
+**轮询在哪**：在核心的常驻进程（`yuque-agent.service` / `yqa run`）。
+`yqa run --qq` 仍然可以在**同一个进程**里「轮询 + 顺便投递」，
+但那是给单机小部署用的；本机生产是两个单元分开跑（见 `deploy.md` §4/§11）。
 
 ---
 
@@ -487,8 +460,9 @@ uv run yqa qq serve --no-progress            # 不播报运行中的分段与保
   "inbound": {
     "enabled": true,                // false = 完全不开入站（回到只投递）
     // ── 个人名单（私聊用 user_openid；群里用 member_openid，两者不是一回事）──
-    "allow":  ["<user_openid>"],    // 用户：只读命令
-    "admins": ["<user_openid>"],    // 管理员：再加 /run 与 /archive
+    "users":  ["<user_openid>"],    // 用户：/help /status /pending + /apply
+    "admins": ["<user_openid>"],    // 管理员：再加 /run /archive（普通用户也含在内）
+    // 注意：一个 openid 只能在一个层级（users 与 admins 不重叠，doctor 会告警）
     // ── 群名单（收 group_openid；群里谁发言都算这个身份，不用逐个登记）──
     "user_groups":  ["<group_openid>"],   // 整群是用户
     "admin_groups": ["<group_openid>"],   // 整群是管理员（高风险，见 §4.1）
@@ -521,7 +495,7 @@ uv run yqa qq serve --no-progress            # 不播报运行中的分段与保
 上线前逐条过一遍：
 
 - [ ] `~/.yuque/qqbot.json` 权限是 `600`（在 **Linux 上** `ls -l` 确认——Windows 上查不出来，见 §6 的说明），且**没有**被提交进 git（`.gitignore` 已含 `qqbot.json`，而它本来就在 `~/.yuque/` 下、不在仓库里）；
-- [ ] `qqbot.json` 里 `inbound.allow` / `inbound.user_groups` 只有确实该有权限的人和群；
+- [ ] `qqbot.json` 里 `inbound.users` / `inbound.user_groups` 只有确实该有权限的人和群；
 - [ ] 会用 `/archive` 的管理员名单（`admins`）最小化，**`admin_groups` 能不用就不用**（这条命令能删文档、移目录）；
 - [ ] 跑 `yqa qq doctor` 没有黄色告警；
 - [ ] `--http` 只绑回环；绑外网时同时用了 `--http-token`；
