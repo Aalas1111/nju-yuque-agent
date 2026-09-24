@@ -7,7 +7,7 @@
 
 | 文件 | 它是什么 |
 |---|---|
-| [`docs/deploy.md`](docs/deploy.md) | 部署真相：目录布局、三个 systemd 单元、二选一矩阵、验收清单 |
+| [`docs/deploy.md`](docs/deploy.md) | 部署真相：目录布局、两个 systemd 单元、验收清单 |
 | [`docs/handoff.md`](docs/handoff.md) | 对下游（cac / 洋芋）的**冻结契约**：申请 JSON 与通知事件 |
 | [`docs/interface.md`](docs/interface.md) | 与 QQ 桥接方的**接口与边界**：目标态是两个仓库各管各的，桥不 import 核心内部 |
 | `AGENTS.md`（本文件） | 干活规矩：怎么改、怎么部署、什么绝对不许做 |
@@ -47,10 +47,9 @@
 
 ### 2.2 常驻进程必须是仓库里的 systemd 单元
 
-* 只有三个单元，权威副本在 `deploy/`，生效位置是 `/etc/systemd/system/`：
-  * `yuque-agent.service` —— 轮询 + 归档。**唯一写 `state.json` 的进程**
-  * `yuque-agent-qq.service` —— 通知投递 + QQ 命令入口（**不轮询**；
-    `/run` `/archive` `/apply` 走 `control/requests/` 交给上面那个，见 `docs/interface.md`）
+* 只有两个单元，权威副本在 `deploy/`，生效位置是 `/etc/systemd/system/`：
+  * `yuque-agent.service` —— 轮询 + 归档（**唯一写 `state.json` 的进程**），
+    并消费 `control/requests/`（`/run`、`/archive`、`/apply` 从这儿进来）
   * `yuque-agent-plan.service` —— 申请清单下载口（`yqa serve-plan`）。
   **无密钥，打开即下载**（`GET /download`）。密钥是刻意去掉的：服务器没有域名、
   只有明文 HTTP，密钥在 URL / 浏览器历史 / 截图里都会漏——与其维持一个「看着有防护、
@@ -58,19 +57,17 @@
   剩下的是**路径不可越狱**（只放行程序自己算出的那几个文件）。
   它暴露什么、`defaults` 一旦填了会怎样，见 `docs/deploy.md` §10。
   **别往里加路由，尤其别加 `plan.defaults.json`（里面是借用人姓名 + 手机号）。**
-* **轮询只有一个写者**：`yuque-agent.service` 是唯一轮询的单元；QQ 桥自 2026-09-24
-  起不再内嵌轮询（那之前两者靠 `Conflicts=` 二选一，因为都会写 `state.json`）。
-  现在两个单元**可以同时跑**；`state.json` 一旦出现第二个写者就是事故
-  （快照回退 → 重复申请、重复通知）。
+* **轮询只有一个写者**：`yuque-agent.service` 是唯一轮询的单元。QQ 桥已经拆成
+  独立项目（见 `docs/interface.md`），它**不轮询**；任何外部进程都不许自己起轮询 ——
+  两个写者会互相覆盖 `state.json`（快照回退 → 重复申请、重复通知，记过事故的）。
 * **不许** `nohup` / `setsid` / `&` 起常驻进程。实测踩过：有人手工起了轮询，
   和 systemd 里那个抢同一个工作区。
 * 改单元 = 改 `deploy/*.service` → `install` 到 `/etc` → `daemon-reload` →
   **同步 `docs/deploy.md` 里那份**。`tests/test_deploy_doc.py` 会拦住两边漂移。
 * **新服务默认绑 `127.0.0.1`。** 要绑 `0.0.0.0`（对公网开）必须先在 `docs/deploy.md`
   里写清楚：它暴露什么内容、靠什么鉴权、以及为什么接受这个暴露面。
-  目前只有两个例外，都已写清：`yuque-agent-plan.service`（**公开、无鉴权**，
-  内容只有申请清单与活动信息）和 `yuque-agent-qq.service`（**不监听任何端口**，
-  是它自己外连 QQ 网关）。
+  目前唯一例外是 `yuque-agent-plan.service`（**公开、无鉴权**，内容只有申请清单与
+  活动信息）——它在 `docs/deploy.md` §10 里写清了暴露面。
 
 ### 2.3 一次只能有一个写者
 
@@ -82,18 +79,18 @@
 
 ## 3. 凭证（删一次 = 重扫一次码）
 
-凭证有**三处**，都不许手删手改：
+核心的凭证在**两处**，都不许手删手改：
 
 | 位置 | 作用 |
 |---|---|
-| `~/.yuque/qqbot.json` | 扫码登录落点（600，`yuque:yuque`） |
-| `~/.yuque/qqbot.json.bak` | 每次写入同步的备份；主文件丢失/损坏时**自动恢复** |
-| `~/.yuque/agent.env` 的 `YQA_QQ_APPID` / `YQA_QQ_SECRET` | systemd `EnvironmentFile`，**优先级最高**——文件被删也不掉线 |
+| `~/.yuque/auth.json` | 语雀写权限令牌（600，`yuque:yuque`） |
+| `~/.yuque/agent.env` | `DEEPSEEK_API_KEY`、`YQA_PLAN_ADMIN` 等 —— systemd `EnvironmentFile` |
 
-* 换 / 清凭证只走 `yqa qq login` / `yqa qq logout`；`CredentialStore` 会自己维护备份。
+* QQ 桥的凭证（`~/.yuque/qqbot.json`，扫码换来的）归 QQ 桥自己管，它已经拆到
+  自己的仓库（见 `docs/interface.md`）。**「删一次 = 重扫一次码」那条铁律不变**，
+  换 / 清凭证只走它自己的 login/logout 命令。
 * 密钥不落日志、不贴聊天、不进提交。要验证密钥是否可用，用
   `bots.qq.com/app/getAppAccessToken` 打一发，别把密钥打出来。
-* 真丢了先别叫人扫码：先看 `.bak` → `agent.env` → root 的 `/root/.qq-recovered.json`。
 
 ## 4. 提交与身份
 
@@ -106,7 +103,7 @@
 1. `ruff check . && ruff format --check .`
 2. `pytest`（本地；在机器上则必须经由 `scripts/deploy.sh`）
 3. 碰了文档里的 systemd 单元 → `pytest tests/test_deploy_doc.py`
-4. 部署后：三个单元 `systemctl is-active`，日志里有 `READY`、没有 `Traceback`，
+4. 部署后：两个单元 `systemctl is-active`，日志里有 `READY`、没有 `Traceback`，
    并且 `ops.log` 多了一行
 
 ## 6. 出事了怎么办

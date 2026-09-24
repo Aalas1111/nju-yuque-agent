@@ -7,13 +7,12 @@
 #   3. 快进到 origin/main（服务器上禁止 rebase / 手工 merge）
 #   4. 在**临时 HOME** 里跑测试（AGENTS.md §2.1：测试碰过生产凭证）
 #   5. 把 deploy/*.service 与 /etc/systemd/system/ 对齐 + daemon-reload
-#   6. 启用单元：轮询（唯一写 state.json 的那个）+ 投递/命令 + 下载口，重启，验收
+#   6. 启用单元：轮询（唯一写 state.json 的那个）+ 下载口，重启，验收
 #   7. 把「谁 / 什么时候 / 哪个 commit」追加进 /var/lib/yuque-agent/ops.log
 #
 # 用法（注意 `./`：sudo 的 PATH 里通常没有当前目录，写 `sudo scripts/deploy.sh`
 # 会报 command not found —— 实测过）：
-#   sudo ./scripts/deploy.sh            # 轮询 + QQ 投递/命令（本机默认）
-#   sudo WITH_QQ=0 ./scripts/deploy.sh  # 只要轮询（不起 QQ 桥）
+#   sudo ./scripts/deploy.sh            # 核心两个单元（QQ 桥是独立项目，见 docs/interface.md）
 #
 # 首次引导：这个脚本本身要先在机器上（它自己会 fetch，但得先有它）。
 # 见 docs/deploy.md §5②。
@@ -26,12 +25,10 @@ REPO="${REPO:-/opt/yuque-agent}"
 STATE="${STATE:-/var/lib/yuque-agent}"
 LOG="$STATE/ops.log"
 LOCK="$STATE/.deploy.lock"
-WITH_QQ="${WITH_QQ:-1}"
 WHO="${WHO:-$(whoami)@$(hostname -s)}"
 
-UNITS=(yuque-agent.service yuque-agent-qq.service yuque-agent-plan.service)
+UNITS=(yuque-agent.service yuque-agent-plan.service)
 POLLING=yuque-agent.service
-DELIVERY=yuque-agent-qq.service
 PLAN=yuque-agent-plan.service
 
 say() { printf '\n== %s\n' "$*"; }
@@ -78,19 +75,13 @@ say "systemd 单元与仓库对齐"
 install -m 644 "${UNITS[@]/#/deploy/}" /etc/systemd/system/
 if [ -d /etc/systemd/system/yuque-agent.service.d ]; then
   echo "⚠ 还有 drop-in：$(ls /etc/systemd/system/yuque-agent.service.d)"
-  echo "  老做法已废弃（它会覆盖 ExecStart；`qq serve` 不再轮询，会直接停掉轮询）——确认后删掉"
+  echo "  老做法已废弃（它会覆盖 ExecStart，让单元跑别的命令）——确认后删掉"
 fi
 systemctl daemon-reload
 
-say "启用单元（轮询 + 投递/命令 + 下载口）"
+say "启用单元（轮询 + 下载口）"
 systemctl enable "$POLLING" >/dev/null
 systemctl restart "$POLLING"
-if [ "$WITH_QQ" = "1" ]; then
-  systemctl enable "$DELIVERY" >/dev/null
-  systemctl restart "$DELIVERY"
-else
-  systemctl disable --now "$DELIVERY" >/dev/null 2>&1 || true
-fi
 systemctl enable "$PLAN" >/dev/null
 systemctl restart "$PLAN"
 sleep 10
@@ -98,7 +89,6 @@ sleep 10
 say "验收"
 RC=0
 CHECK=("$POLLING" "$PLAN")
-[ "$WITH_QQ" = "1" ] && CHECK+=("$DELIVERY")
 for u in "${CHECK[@]}"; do
   state="$(systemctl is-active "$u")"
   printf '%-28s %s\n' "$u" "$state"

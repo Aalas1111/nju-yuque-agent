@@ -17,14 +17,10 @@ dependencies = [
     #   Linux 上 zoneinfo 用系统 /usr/share/zoneinfo，它用不上；
     #   但 Windows 没有系统 IANA 库，没它就 import 就炸。加上它，两边行为一致。
     "tzdata>=2024.1",
-    # QQBot 接入（yqa qq …）：
-    #   cryptography —— 扫码绑定后用 AES-256-GCM 解密 AppSecret（官方协议要求）
-    #   qrcode[pil]  —— 把二维码画进终端 / 存 PNG / 给本地登录页当 data URL
-    #   websockets   —— 收 QQ 消息的 WebSocket 网关（只投递通知时用不到）
-    "cryptography>=41",
-    "qrcode[pil]>=7.4",
-    "websockets>=12",
 ]
+
+# QQ 桥（原 yqa qq …）已拆到它自己的仓库（见 docs/interface.md）：
+# cryptography / qrcode / websockets 这些依赖随它搬走，核心不再需要。
 
 [dependency-groups]
 dev = [

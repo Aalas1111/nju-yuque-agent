@@ -6,7 +6,7 @@ import json
 from datetime import timedelta
 from pathlib import Path
 
-from tests.qq_fakes import FakeRunner, FakeRunResult
+from tests.fakes import FakeRunner, FakeRunResult
 from yuque_agent import clock, control
 from yuque_agent.config import Settings
 

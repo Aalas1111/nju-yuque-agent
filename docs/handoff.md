@@ -276,11 +276,11 @@ outbox/notify/delivery.jsonl                          投递方的审计流水�
 4. 目录是同机共享的，**qqbot 与 agent 部署在同一台机器上最省事**；
 5. `outbox.jsonl` 用来审计，**不要**既读它又挪文件，否则会重复投递。
 
-> 📌 **本仓库现在自带一个投递方实现**（`yqa qq notify` / `yqa qq serve`，
-> 代码在 `src/yuque_agent/qqbot/`），上面这套约定一个字都没改。
+> 📌 **投递方是独立的项目**（QQ 桥，2026-09-24 从本仓库拆出，
+> 见 [`interface.md`](interface.md) §11/§1.1）。上面的约定一个字都没改。
 > 它额外做的三件事：认不出人 → `unrouted/`、坏文件 → `failed/`、发送失败**停下本轮**
-> 以保住 `seq` 顺序。身份映射（语雀人名 → QQ openid）放在工作区 `qqbot.json`。
-> 详细说明与故障排查见 [`qqbot.md`](qqbot.md)。
+> 以保住 `seq` 顺序。身份映射（语雀人名 → QQ openid）放在工作区 `qqbot.json`，
+> 详细说明与故障排查在它自己的仓库里。
 
 ### 3.2 字段
 

@@ -4,9 +4,9 @@ Documentation=https://github.com/Aalas1111/nju-yuque-agent
 After=network-online.target
 Wants=network-online.target
 
-# 本单元是**唯一**的轮询者（state.json 只能有一个写者，AGENTS.md §2.2）。
-# 和 yuque-agent-qq.service 可以同时跑：那个只投递通知、处理 QQ 命令，
-# 不轮询、不写 state.json（2026-09-24 解耦，见 docs/interface.md）。
+# 本单元是**唯一**的轮询者（state.json 只能有一个写者，AGENTS.md §2.2），
+# 也负责消费 control/requests/（/run、/archive、/apply 从这儿进来）。
+# QQ 桥是独立项目（见 docs/interface.md）：它只投递通知 + 处理命令，不轮询。
 
 [Service]
 Type=simple

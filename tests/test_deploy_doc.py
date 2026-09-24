@@ -26,14 +26,11 @@ DEPLOY_DOC = ROOT / "docs" / "deploy.md"
 UNITS = {
     "yuque-agent.service": "4",
     "yuque-agent-plan.service": "10",
-    "yuque-agent-qq.service": "11",
 }
 
 #: 轮询只有一个写者：`yuque-agent.service` 是**唯一**允许轮询的单元。
-#: （2026-09-24 解耦前 QQ 服务内嵌轮询、两者用 Conflicts= 二选一；
-#: 现在 QQ 单元只投递通知 + 处理命令，两者可以同时跑。）
+#: QQ 桥自 2026-09-24 拆成独立项目（docs/interface.md），本仓库不再有它的单元。
 POLLING_UNIT = "yuque-agent.service"
-DELIVERY_UNIT = "yuque-agent-qq.service"
 
 
 def _unit_block_in_doc(section_no: str) -> str:
@@ -143,7 +140,7 @@ AGENTS = ROOT / "AGENTS.md"
 def test_agents_md_lists_every_unit() -> None:
     """`AGENTS.md` 必须提到 `deploy/` 下的**每个**单元。
 
-     为什么：它是代理/人进仓库前「先读的那三份」之一，里面写着「只有这三个单元」。
+     为什么：它是代理/人进仓库前「先读的那几份」之一，里面写着「只有这两个单元」。
     部署里新增一个单元而忘了改它，下一个人就会按旧清单去理解生产机。
 
      这条守卫是拿一次真漂移换来的：`AGENTS.md` 当时把下载口写成「带密钥的」。
@@ -175,32 +172,26 @@ def test_plan_service_is_not_in_the_agent_unit() -> None:
     assert "serve-plan" in _unit("yuque-agent-plan.service")
 
 
-# -- 轮询只有一个写者（2026-09-24 解耦后）--------------------------------
+# -- 轮询只有一个写者 + QQ 桥不在本仓库 -----------------------------------
 
 
 def test_only_the_agent_unit_polls() -> None:
-    """轮询/归档只能由 ``yuque-agent.service`` 跑。
+    """轮询/归档只能由 `yuque-agent.service` 跑。
 
-    背景：``state.json`` 只能有一个写者——两个轮询进程互相覆盖快照是记过事故的
-    （重复申请、重复通知、快照回退，见 AGENTS.md §2.2）。
-    解耦前 QQ 服务内嵌轮询，两者的共存靠 ``Conflicts=`` 二选一；现在 QQ 单元
-    只投递通知 + 处理命令（``/run`` ``/apply`` 写 control/requests/ 交给核心），
-    所以**两个单元可以同时跑，谁也不该再声明 Conflicts**。
+    `state.json` 只能有一个写者——两个轮询进程互相覆盖快照是记过事故的
+    （重复申请、重复通知、快照回退，见 AGENTS.md §2.2）。QQ 桥已拆成独立项目
+    （它只投递通知 + 处理命令、不轮询），所以本仓库不该再出现它的单元。
     """
     agent = _unit(POLLING_UNIT)
     assert "yqa run" in agent, "轮询单元必须自己跑 `yqa run`"
     assert "--journal" in agent, "写回工作日志在轮询侧（它才知道这一轮改了什么）"
-
-    delivery = _unit(DELIVERY_UNIT)
-    for forbidden in ("--interval", "--quiet-seconds", "--watch", "--journal", "--progress-idle"):
-        assert forbidden not in delivery, f"QQ 单元不该再带 {forbidden}（它不轮询）"
-    assert "qq serve" in delivery
-    assert "/var/lib/yuque-agent/workspace" in delivery
-
-    for name in (POLLING_UNIT, DELIVERY_UNIT):
-        assert "Conflicts=" not in _unit(name), f"{name} 不该再声明 Conflicts（它们可以共存）"
+    assert "Conflicts=" not in agent, "核心只剩一个轮询单元，不该再声明 Conflicts"
 
 
-def test_qq_unit_uses_no_login() -> None:
-    """systemd 里没有终端可以显示二维码，必须 ``--no-login``。"""
-    assert "--no-login" in _unit(DELIVERY_UNIT)
+def test_qq_unit_is_gone_from_this_repo() -> None:
+    """QQ 桥（单元、命令）已经搬走——本仓库再出现这些就是回潮。"""
+    units = sorted(path.name for path in (ROOT / "deploy").glob("*.service"))
+    assert units == ["yuque-agent-plan.service", "yuque-agent.service"], units
+    for name in units:
+        body = _unit(name)
+        assert "qq serve" not in body, f"{name} 里不该再出现 QQ 命令"

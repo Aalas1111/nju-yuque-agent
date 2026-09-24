@@ -194,3 +194,72 @@ class Ctx:
                 docs=kwargs.pop("docs", {}),
             )
         )
+
+
+# ---------------------------------------------------------------- run 假的 runner
+# （从 qq_fakes 搬来：QQ 桥搬走后，控制队列测试还要用它）
+
+
+@dataclass
+class FakeRunResult:
+    kind: str = "polling"
+    verdict: str = "nothing_to_do"
+    summary: str = "无事可做"
+    run_id: str = "20260920-101834-polling-abcd"
+    steps: int = 1
+    tool_calls: int = 0
+    emitted: list[dict[str, Any]] = field(default_factory=list)
+    error: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "kind": self.kind,
+            "verdict": self.verdict,
+            "summary": self.summary,
+            "run_id": self.run_id,
+            "steps": self.steps,
+            "tool_calls": self.tool_calls,
+            "emitted": self.emitted,
+            "error": self.error,
+        }
+
+
+class FakeRunner:
+    """按脚本返回 run 结果；``poll_results`` 里的 ``None`` 表示「没变化」。"""
+
+    def __init__(
+        self,
+        *,
+        poll_results: list[Any] | None = None,
+        archive_result: Any = None,
+    ) -> None:
+        self.poll_results = list(poll_results or [])
+        self.archive_result = archive_result
+        self.polls = 0
+        self.archives = 0
+        self.force_flags: list[bool] = []
+        self.debounce_flags: list[bool] = []
+
+    def poll_once(
+        self,
+        *,
+        force: bool = False,
+        rescan: bool = False,
+        now: Any = None,
+        debounce: bool = True,
+        observer: Any = None,
+    ):
+        self.polls += 1
+        self.force_flags.append(force)
+        self.debounce_flags.append(debounce)
+        if self.poll_results:
+            return self.poll_results.pop(0)
+        return None
+
+    def archive_once(self, *, now: Any = None, observer: Any = None):
+        self.archives += 1
+        return (
+            self.archive_result
+            if self.archive_result is not None
+            else FakeRunResult(kind="archive")
+        )

@@ -1,60 +1,30 @@
 """守卫：测试套件够不着真实家目录。
 
 **这是拿生产事故换来的一组断言。** 有人在生产服务器上跑 `pytest`，
-`tests/test_qq_cli.py::test_logout_without_credentials` 里的 `yqa qq logout --yes`
-真的执行了，把 `/home/yuque/.yuque/qqbot.json` 连同备份一起删掉——
-那是扫码换来的凭证，删了就要重新扫。
+某个测试里的 `yqa qq logout --yes` 真的执行了，把 `/home/yuque/.yuque/qqbot.json`
+连同备份一起删掉——那是扫码换来的凭证，删了就要重新扫（事件与根因见 AGENTS.md §2.1）。
 
-两个前提都得钉住，少一个洞就还在：
-
-1. `$HOME` 在测试期间是**沙箱**（tests/conftest.py 那个 session 级 fixture）；
-2. 默认凭证路径**惰性求值**（否则 `Path.home()` 在导入时就固化了，
-   重定向 `HOME` 根本拦不住它）—— 这条当初就是漏的。
+QQ 桥已拆到它自己的仓库（`docs/interface.md`），但那节课对**核心**一样成立：
+核心的凭证（`~/.yuque/auth.json`、`agent.env`）也在家目录下。
+所以「`$HOME` 在测试期间必须是沙箱」这条继续钉在这里。
 """
 
 from __future__ import annotations
 
 import ast
 import os
-import subprocess
-import sys
 from pathlib import Path
 
-from yuque_agent.qqbot import credentials
-from yuque_agent.qqbot.config import default_config_path
-from yuque_agent.qqbot.credentials import credentials_path
+CORE_CREDENTIAL_FILES = ("auth.json", "agent.env")
 
 
 def test_home_is_a_sandbox(isolated_home: Path) -> None:
     """整套测试跑在临时家目录里，而不是开发者/服务器的真实家目录。"""
     assert Path.home() == isolated_home
     assert os.environ["HOME"] == str(isolated_home)
-    # 沙箱里不该有任何真东西
-    assert not (isolated_home / ".yuque" / "qqbot.json").exists()
-
-
-def test_default_credentials_path_is_inside_the_sandbox(isolated_home: Path) -> None:
-    """默认凭证路径必须落在沙箱内 —— 这正是当初漏掉的那条。"""
-    path = credentials_path()
-    assert isolated_home in path.parents, (
-        f"默认凭证路径跑到沙箱外了：{path}\n这意味着某个测试能碰到真实的 ~/.yuque/qqbot.json。"
-    )
-    assert path.name == "qqbot.json"
-
-
-def test_default_credentials_path_is_lazy_and_follows_home(tmp_path: Path, monkeypatch) -> None:
-    """惰性求值：改 `HOME` 之后立刻反映出来。
-
-    （当初是模块级常量 `DEFAULT_CREDENTIALS_PATH = Path.home() / ...`，
-    导入时就固化了，所以测试里重定向 `HOME` 完全无效。）
-    """
-    assert "DEFAULT_CREDENTIALS_PATH" not in dir(credentials), (
-        "又回到模块级常量了——那样 Path.home() 在导入时求值，测试重定向 HOME 会失效"
-    )
-    elsewhere = tmp_path / "another-home"
-    monkeypatch.setenv("HOME", str(elsewhere))
-    monkeypatch.setenv("USERPROFILE", str(elsewhere))
-    assert credentials_path().parent.parent == elsewhere
+    # 沙箱里不该有任何真东西（核心的两份凭证都不在）
+    for name in CORE_CREDENTIAL_FILES:
+        assert not (isolated_home / ".yuque" / name).exists(), f"沙箱里出现了 {name}"
 
 
 def _real_home_literals(text: str) -> list[tuple[int, str]]:
@@ -100,31 +70,3 @@ def test_no_test_file_hardcodes_the_real_home() -> None:
         for line_no, value in _real_home_literals(path.read_text(encoding="utf-8")):
             offenders.append(f"{path.name}:{line_no}  {value}")
     assert not offenders, "测试里写死了家目录路径：\n  " + "\n  ".join(offenders)
-
-
-def test_credentials_store_in_a_subprocess_also_lands_in_the_sandbox(
-    isolated_home: Path, tmp_path: Path
-) -> None:
-    """子进程也必须在沙箱里 —— `runner.invoke` 之外的路径同样不能漏。
-
-    这条比断言常量更硬：真起一个 python 子进程问它「你的凭证文件在哪」，
-    因为 `$HOME` 是**进程环境**，只有真的传下去才算数。
-    """
-    script = (
-        "import sys; sys.path.insert(0, r'%s');"
-        "from yuque_agent.qqbot.credentials import credentials_path;"
-        "print(credentials_path())" % (Path(__file__).resolve().parent.parent / "src")
-    )
-    out = subprocess.run(
-        [sys.executable, "-c", script], capture_output=True, text=True, check=True
-    ).stdout.strip()
-    assert str(isolated_home) in out, f"子进程看到的是 {out}，不在沙箱里"
-
-
-def test_config_default_path_does_not_use_home(tmp_path: Path) -> None:
-    """工作区配置（notify/inbound 那张表）走工作区，不走家目录 —— 顺便钉住。"""
-
-    class _S:
-        root = tmp_path / "ws" / "g_kb"
-
-    assert default_config_path(_S()) == _S.root / "qqbot.json"

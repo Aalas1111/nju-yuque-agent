@@ -15,7 +15,7 @@
 | 内存 / CPU | 1 核 1G 起，2 核 2G 舒服 | 这不是算力活，是「等消息」的活 |
 | 磁盘 | 10G 起，`workspace/` **必须持久化** | 它存「处理到哪了」，丢了会重复发通知。别放 tmpfs |
 | **时区** | **不需要配** | 程序把时区**钉死**成 `Asia/Shanghai`（见 `docs/design.md` §2.2），服务器是 UTC 也没关系 |
-| 出网 | `api.yuque.com`、`api.deepseek.com`（要 QQ 再加 `bots.qq.com`、`api.sgroup.qq.com`） | 还要能拉代码（见 §5 的注意） |
+| 出网 | `api.yuque.com`、`api.deepseek.com`（QQ 桥还要 `bots.qq.com`、`api.sgroup.qq.com`，那是它自己的事） | 还要能拉代码（见 §5 的注意） |
 | 入网端口 | **不需要开公网端口**（QQ 扫码登录页会临时开本地端口，登完即关） | |
 | 常驻能力 | 要能**长期挂进程**（systemd / supervisor）。**不能用 serverless / 函数计算** | 归档是时钟驱动的，进程不能被回收 |
 | 时钟 | NTP 正常 | 「每周六 00:00 归档」靠它 |
@@ -28,7 +28,7 @@
 
 ```
 /opt/yuque-agent/                    代码：git clone（root 所有，服务只读）
-├── src/yuque_agent/                 17 个模块 + qqbot/ 子包
+├── src/yuque_agent/                 核心模块（QQ 桥已拆成独立项目，见 docs/interface.md）
 │   ├── prompts/                     提示词：polling.md · archive.md
 │   └── kb/                          投放到语雀的：guide.md · template.md
 ├── tests/  docs/  scripts/  examples/
@@ -102,9 +102,8 @@ cd /opt/yuque-agent && sudo -u yuque env HOME=/home/yuque uv run --no-sync pytes
 
 ## 4. systemd 单元（轮询 + 归档：唯一写 state.json 的那个）
 
-> **轮询只有一个写者**：`state.json` 由本单元独占写。带 QQ 的那个（§11）
-> 只投递通知 + 处理命令、不轮询，所以两者**可以同时跑**（2026-09-24 解耦前
-> QQ 服务内嵌轮询，两者才需要 `Conflicts=` 二选一；见 `docs/interface.md`）。
+> **轮询只有一个写者**：`state.json` 由本单元独占写。QQ 桥（独立项目，见 §11）
+> 只投递通知 + 处理命令、不轮询；任何外部进程都不许自己起轮询。
 
 **权威副本在仓库里：`deploy/yuque-agent.service`。** 直接装它，别手工粘贴——
 当初这份文档就是手工维护的，结果和真机漂了（少了 `Documentation=` 和
@@ -128,9 +127,9 @@ Documentation=https://github.com/Aalas1111/nju-yuque-agent
 After=network-online.target
 Wants=network-online.target
 
-# 本单元是**唯一**的轮询者（state.json 只能有一个写者，AGENTS.md §2.2）。
-# 和 yuque-agent-qq.service 可以同时跑：那个只投递通知、处理 QQ 命令，
-# 不轮询、不写 state.json（2026-09-24 解耦，见 docs/interface.md）。
+# 本单元是**唯一**的轮询者（state.json 只能有一个写者，AGENTS.md §2.2），
+# 也负责消费 control/requests/（/run、/archive、/apply 从这儿进来）。
+# QQ 桥是独立项目（见 docs/interface.md）：它只投递通知 + 处理命令，不轮询。
 
 [Service]
 Type=simple
@@ -263,7 +262,7 @@ print(config.resolve_llm_key()[:8])      # 前 8 位对不对
 ```
 
 **⑤ 凭证权限**：`~/.yuque/*` 是 600。**注意 600 只在 POSIX 上真生效**——
-Windows 上 `chmod` 改不动 ACL，会「静默成功但什么都没改」（详见 `docs/qqbot.md` §6）。
+Windows 上 `chmod` 改不动 ACL，会「静默成功但什么都没改」（QQ 桥仓库的文档里也记了这一条）。
 
 ## 6. 手动调试
 
@@ -314,8 +313,8 @@ yqa-as-service render <run_id>              # 把某次 run 渲染成人话
 
 ## 8. 已知需要下游配合的点
 
-* **通知投递**：`outbox/notify/pending/` 需要有人来搬（`yqa qq notify`，或投递方自己实现）。
-  没人搬就会一直堆着。协议见 `docs/handoff.md` §3。
+* **通知投递**：`outbox/notify/pending/` 需要有人来搬（QQ 桥是官方投递方，
+  已拆成独立项目——见 §11）。没人搬就会一直堆着。协议见 `docs/handoff.md` §3。
 * **申请消费**：`outbox/applications/` 里的 JSON 要交给负责提交教室的同学
   （`yqa export-plan` 能汇总成下游可直接吃的 `plan.json`）。协议见 `docs/handoff.md` §2。
 * **借不到怎么办**：目前**没有任何通道**把「借失败了」回传。这个闭环要不要做、谁做，
@@ -358,13 +357,10 @@ outbox/
 而 `outbox/` 看上去一切正常，社员却什么都收不到。
 
 ```bash
-# 工作区里的 qqbot.json（不是 ~/.yuque/ 那个凭证文件）
-#   notify.members: { "语雀里写的申请人名": "c2c:<他的 user_openid>" }
-#   （也可以是 "group:<群 openid>" —— 那会发到群里）
-# 让本人先在 QQ 里给机器人发 /whoami，拿到自己的 openid，再填进去。
+# 工作区里的 qqbot.json（不是 ~/.yuque/ 那个凭证文件）—— 这是 **QQ 桥**的配置，
+# 它拆到自己的仓库后由它的文档维护（原 docs/qqbot.md）。核心只认一个事实：
+# 通知记录里的 target（见 docs/handoff.md §3）能直投；否则桥按人名映射。
 ```
-
-`inbound.admin_groups`（哪些群能用命令）**和通知投递无关** —— 两套东西不共享。
 
 另外 `plan_updated`（提醒 cac 去下载）发给 `YQA_PLAN_ADMIN` 指定的那个名字，
 所以要把它也加进 `notify.members`：
@@ -372,7 +368,7 @@ outbox/
 ```bash
 printf 'YQA_PLAN_ADMIN=%s
 ' "<管理员的语雀人名>" >> /home/yuque/.yuque/agent.env
-chmod 600 /home/yuque/.yuque/agent.env && systemctl restart yuque-agent-qq
+chmod 600 /home/yuque/.yuque/agent.env && systemctl restart <QQ 桥的单元>
 ```
 
 `yqa doctor` 的「配置体检」那一行会告警「通知无法投递」——**上线验收时看它**。
@@ -501,97 +497,20 @@ GET /healthz                   给监控用，不泄任何内容
 > 反过来：**别**把 `plan.defaults.json` 加进下载口的路由。它比申请清单敏感得多，
 > 而且 cac 不需要它——`defaults` 已经内联在 `plan.json` 里了。
 
-## 11. 带 QQ 的部署（投递 + 命令入口，与 §4 同时跑）
+## 11. QQ 桥（独立项目）
 
-`deploy/yuque-agent-qq.service`：
+QQ 桥（通知投递 + QQ 命令入口）自 2026-09-24 起是**独立项目**：
+代码、systemd 单元、部署脚本、维护文档都在它自己的仓库里。
+拆分材料与交接说明见交接分支 `qqbot/handover-20260924` 的 `HANDOVER.md`。
 
-```ini
-[Unit]
-Description=yuque-agent QQ 桥：通知投递 + 入站命令（不轮询）
-Documentation=https://github.com/Aalas1111/nju-yuque-agent
-After=network-online.target
-Wants=network-online.target
+它按 `docs/interface.md` 与核心交互，**不 import 核心内部、不轮询**：
 
-# 和 yuque-agent.service **可以同时跑**：本单元不轮询、不写 state.json，
-# 只搬 outbox/notify/ 里的通知、处理 QQ 命令（/run、/apply 走 control/requests/，
-# 由 yuque-agent.service 消费）。历史上这两个单元互斥，是因为 QQ 服务曾经内嵌
-# 轮询循环；2026-09-24 解耦后不再如此（见 docs/interface.md）。
+| 方向 | 接口 |
+|---|---|
+| 核心 → 桥 | `outbox/notify/pending/*.json`（含可选的 `target` 直投字段） |
+| 桥 → 核心 | `control/requests/*.json`（`once` / `archive` / `apply`），回执在 `control/done/` |
+| 桥只读 | `state.json`、`runs/*/result.json`、`outbox/applications/index.json`、`plan.json` |
 
-[Service]
-Type=simple
-User=yuque
-Group=yuque
-WorkingDirectory=/opt/yuque-agent
-EnvironmentFile=/home/yuque/.yuque/agent.env
-Environment=HOME=/home/yuque
-Environment=PYTHONUNBUFFERED=1
-Environment=UV_CACHE_DIR=/var/lib/yuque-agent/.uv-cache
-SyslogIdentifier=yuque-agent-qq
-
-# --no-login：systemd 里没有终端可以显示二维码，没有缓存凭证时**不要**试着扫码登录，
-#             直接以「只投递通知」的方式起来（日志里会说清楚）。
-ExecStart=/usr/local/bin/uv run --no-sync yqa qq serve --workspace /var/lib/yuque-agent/workspace --no-login
-
-Restart=always
-RestartSec=15
-
-# systemctl stop 时 Python 以 143（SIGTERM）退出，那是正常停止，不是故障。
-SuccessExitStatus=143
-
-# 加固：这个进程不需要新特权、不需要改系统。
-NoNewPrivileges=true
-PrivateTmp=true
-ProtectSystem=full
-ProtectKernelTunables=true
-ProtectControlGroups=true
-RestrictSUIDSGID=true
-
-[Install]
-WantedBy=multi-user.target
-```
-
-```bash
-install -m 644 /opt/yuque-agent/deploy/yuque-agent-qq.service     /etc/systemd/system/yuque-agent-qq.service
-systemctl daemon-reload
-systemctl enable --now yuque-agent        # ← 轮询侧（唯一写 state.json 的那个）
-systemctl enable --now yuque-agent-qq     # ← 投递 + 命令侧（不轮询）
-```
-
-### 为什么轮询只能有一个写者（不是「最好别」，是「跑不出来」）
-
-`state.json` 是「上一轮快照」，每个轮询进程都在**自己内存里**留一份、每轮整份
-覆盖回去。两个写者并存时：
-
-* 后写的那个会把对方的进度盖掉 → **快照回退**；
-* 快照一回退，下一轮就会把已经处理过的文档当成「新增」再跑一遍 →
-  **重复申请、重复通知、重复写工作日志**。
-
-解耦前 QQ 服务内嵌轮询，靠 `Conflicts=` 二选一兜住这件事（实测踩到过「手工起了
-`yqa qq serve`，而 `yuque-agent.service` 还在跑」）。2026-09-24 起 QQ 服务**不再
-轮询**：`/run`、`/archive` 只是往 `control/requests/` 写一条请求，由
-`yuque-agent.service` 消费（见 `docs/interface.md` §1.2）——机制上只有一个写者，
-所以两个单元可以同时跑，`Conflicts=` 也就不需要了。
-
-### `--no-login` 是必须的
-
-systemd 里没有终端，显示不了二维码。没有缓存凭证时加 `--no-login` 会以
-「只投递通知」的方式起来（日志会说明）；不加的话它会试图扫码、
-然后失败退出，systemd 就来一轮 `Restart=always` 的崩溃循环。
-
-### 网关挂了会不会连累投递？不会
-
-`run_gateway` 自带重连（`max_attempts` 次、退避 + 抖动），放弃时是 **return**
-而不是抛异常；而通知泵的循环永不退出 —— `asyncio.gather` 会一直等，
-所以进程不会退，`outbox/` 照常投递。最坏情况只是「命令入口没了」。
-
-### 验收
-
-```bash
-systemctl is-active yuque-agent             # active（轮询 + 归档）
-systemctl is-active yuque-agent-qq          # active（投递 + 命令）
-journalctl -u yuque-agent -n 30             # 应能看到「开始常驻：每 60s 轮询 …」
-journalctl -u yuque-agent-qq -n 30          # 应能看到「通知泵」与网关 READY 的日志
-```
-
-然后让管理员在 QQ 里发 `/status`、`/whoami`、`/pending` 各验一次；
-`/run` 会真花 token（并且最多等一轮轮询间隔才开始），确认没问题再试。
+本仓库**不再提供** `yqa qq …` 命令，`deploy.sh` 也不管它的单元。
+生产机上它是与核心并排的另一个检出（例如 `/opt/qq-bridge`），
+两个进程**永远不许**同时做同一件事（两个轮询者 / 两个投递者）。
