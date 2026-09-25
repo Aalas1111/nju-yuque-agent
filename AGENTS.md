@@ -24,7 +24,9 @@
 * **也不许在服务器上写代码、直接 `git commit`。** 实测踩过：有人在生产机上改了
   5 个提交、`main` 就此和上游分叉，那批改动**没推 GitHub**（没备份、没法 review），
   而且下次 `git pull` 直接被 git 拒掉（divergent branches）。
-  正确做法：本地/自己 fork 上改 → 走 PR → 合并 → `scripts/deploy.sh` 更新生产机。
+  正确做法：本地/自己 fork 上改 → 走 PR → 合并 → `scripts/deploy.sh` 更新生产机
+  （生产机取不到 GitHub 时用 `scripts/sync-server.sh`，它把 commit 送过去再调 `deploy.sh`；
+  见 `docs/deploy.md` §5①）。
   这条现在有机制兜着（`deploy.sh` 遇到不干净的工作区会硬失败、
   非快进也会失败），但**别依赖机制去猜意图**。
 * 收工前**跟踪的文件**必须干净（`git status --porcelain --untracked-files=no` 为空）：

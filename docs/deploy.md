@@ -137,27 +137,46 @@ journalctl -u yuque-agent -f          # 看日志
 
 ## 5. 运维注意
 
-**① 更新代码时 GitHub 可能连不上 —— 这是常态，不是偶发。**
+**① 更新代码时 GitHub 时通时断 —— 这是常态，不是偶发。**
 实测：到 github.com 的 RTT 265ms、HTTPS 时好时坏，有过**连续 8 次重试全失败**
-（`GnuTLS recv error (-110)`）过一阵又自己好。所以 `git pull` 失败是**预期之内**的。
-`scripts/deploy.sh` 对此是**降级而不是假装**：取不到就打印警告、按当前 HEAD 继续。
+（`GnuTLS recv error (-110)`）过一阵又自己好；2026-09-25 实测同一台机上「45s 超时」与「1s 成功」
+交替出现。`scripts/deploy.sh` 对此是**降级而不是假装**：取不到就打印警告、按当前 HEAD 继续
+——⚠️ 那意味着它可能**部署的是旧 commit**，所以下面这条路才是日常正解。
 
-实在要更新而又不通时，走**不经过 GitHub 的路**——从一台能连 GitHub 的机器直接 push 到生产机的检出：
+**生产机的 `origin` 走 SSH:443**：`ssh://git@ssh.github.com:443/Aalas1111/nju-yuque-agent.git`，
+配一把**只读**部署密钥（`/root/.ssh/yqa_deploy_ed25519`，仓库里 `core.sshCommand` 已固定它；
+host key 与 `api.github.com/meta` 逐条核对过后写进 `/root/.ssh/known_hosts`）。
+**只读是有意的**：服务器在物理上 push 不了，给「服务器上不许提交」（`AGENTS.md` §1）再加一道纵深防御。
+迁移到新机器时要重建这把钥匙，并在 GitHub 仓库 → Settings → Deploy keys 登记（**别勾** write access）。
+
+**日常更新在开发机上跑 `scripts/sync-server.sh`**（地址不进仓库，从参数或 `YQA_SERVER` 传）：
+
+```bash
+scripts/sync-server.sh --server root@<地址> --dry-run    # 只看它打算做什么
+scripts/sync-server.sh --server root@<地址>              # 同步 + 部署
+```
+
+它做的事：① 要求本地工作区干净、且这个 commit 已在上游可见；② 先请生产机自己 `fetch`
+（通了就让 `deploy.sh` 快进）；③ 不通就**从本机 push 到生产检出**，再调 `deploy.sh`
+——测试、对齐单元、重启、验收、记 `ops.log` 一条不少。
+
+手工做时照这两条命令来（脚本底下就是它们）：
 
 ```bash
 # 生产机一次性设置：允许 push 到当前检出的分支并同步工作区
 # （工作区不干净时 git 会拒绝，不会覆盖别人的改动）
 ssh root@<地址> 'cd /opt/yuque-agent && git config receive.denyCurrentBranch updateInstead'
 
-git push ssh://root@<地址>/opt/yuque-agent main       # 从开发机
+git push ssh://root@<地址>/opt/yuque-agent main       # 从开发机（main = 要部署的 commit）
 
 # 再在生产机跑一次 deploy.sh（测试、对齐单元、重启、验收、记 ops.log 都照跑）
 ssh root@<地址> 'sudo /opt/yuque-agent/scripts/deploy.sh'
 ```
 
 这没绕过「部署只走上游 commit」：搬的还是 `main` 上同一条历史，只是换个搬运方式（`AGENTS.md` §1）。
-**首次引导**：`deploy.sh` 自己也是靠一次 `git pull` 才到机器上的——全新部署先手工
-`git pull --ff-only` 一次，之后都应走它。
+
+**首次引导**：`deploy.sh` 自己也是靠一次 `git pull`（或从开发机 push）才到机器上的——
+全新部署先手工把它搬过去一次，之后都应走它。
 
 **② 冷启动会跑一次归档会话（约 2 万 token）。** 全新部署时 `last_archive_title` 是空的，
 `archive_due()` 立刻为真 → 第一次 tick 就跑一轮归档。不是 bug（顺带把知识库结构体检一遍），
