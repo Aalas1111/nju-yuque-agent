@@ -5,8 +5,8 @@
 * **JSONL，一行一事件**——追加写、天然可流式、坏了一行不影响其余；
 * **每一行都立刻 flush**——进程被杀也留得下已经发生的部分（agent 崩溃时的现场最值钱）；
 * **存原始 reasoning_content**——「它当时为什么这么判」是调试工作流的核心证据；
-* 事件类型刻意少（``run_start / system / user / assistant / tool / run_end``），
-  渲染成人话是 :mod:`.render` 的事，记录层不参与展示。
+* 事件类型刻意少（``run_start / system / user / assistant / tool / error / run_end``），
+  渲染成人话是 :mod:`.journal` 的事，记录层不参与展示。
 """
 
 from __future__ import annotations

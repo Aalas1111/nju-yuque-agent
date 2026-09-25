@@ -329,7 +329,7 @@ def build_plan_updated_notice(plan: dict[str, Any], *, member: str = "") -> dict
         "message": (
             f"【申请清单已更新】周期 {cycle}，共 {len(activities)} 条，活动日期 {span}。\n"
             "请尽快下载 outbox/plan.json 并提交，逾期不补。\n"
-            "（下载方式：网页用密钥取，或从服务器 scp。）"
+            "（下载方式：打开下载口即得，无密钥；或从服务器 scp。）"
         ),
         "member": {"name": member},
         "extra": {
@@ -446,66 +446,32 @@ def write_notice(settings: Settings, *, kind: str, payload: dict[str, Any]) -> d
 
 
 def _next_seq(settings: Settings) -> int:
-    """原子地获取下一个 seq（文件锁保护，避免并发写入产生重复序号）。"""
-    import contextlib
+    """下一个 seq。
 
+    **没有文件锁，也不需要**：通知只有一个写者（`yuque-agent.service`，
+    见 AGENTS.md §2.2）——请求方只写 ``control/requests/``，从不写产物。
+    「常驻进程在跑时另起一个 yqa once」是被规矩禁止的（`docs/interface.md` §0 规则 3），
+    而且那种情况下真正的损失是 `state.json` 被两个写者互相覆盖，锁在这里救不了它。
+
+    兜底是真需要的：``.seq`` 被删 / 被清空 / 被改成更小的值时，
+    从 ``pending/`` 与 ``done/`` 里已有的文件名重新取最大值——序号倒退会让
+    投递方的「按 seq 顺序发」失效。
+    """
     counter = settings.notify_dir / ".seq"
-    lock_path = settings.notify_dir / ".seq.lock"
-
-    @contextlib.contextmanager
-    def _locked():
-        lock_path.parent.mkdir(parents=True, exist_ok=True)
-        lock_fd = lock_path.open("w")
-        locked = False
-        try:
-            # 跨平台文件锁：Windows 用 msvcrt，Unix 用 fcntl
-            # 如果锁失败（比如在某些环境下），就跳过锁保护继续执行
-            try:
-                import msvcrt
-
-                msvcrt.locking(lock_fd.fileno(), msvcrt.LK_NBLCK, 1)
-                locked = True
-            except (ImportError, OSError):
-                try:
-                    import fcntl
-
-                    fcntl.flock(lock_fd.fileno(), fcntl.LOCK_EX)
-                    locked = True
-                except (ImportError, OSError):
-                    pass  # 锁失败，继续执行（降级为非原子操作）
-            yield
-        finally:
-            if locked:
-                try:
-                    import msvcrt
-
-                    msvcrt.locking(lock_fd.fileno(), msvcrt.LK_UNLCK, 1)
-                except (ImportError, OSError):
-                    try:
-                        import fcntl
-
-                        fcntl.flock(lock_fd.fileno(), fcntl.LOCK_UN)
-                    except (ImportError, OSError):
-                        pass
-            lock_fd.close()
-
-    with _locked():
+    try:
+        current = int(counter.read_text(encoding="utf-8").strip() or "0")
+    except (OSError, ValueError):
         current = 0
-        try:
-            current = int(counter.read_text(encoding="utf-8").strip() or "0")
-        except (OSError, ValueError):
-            current = 0
-        # 兜底：目录里已经有更大的 seq（比如 counter 被删了）就别倒退
-        for folder in ("pending", "done"):
-            for path in (settings.notify_dir / folder).glob("*.json"):
-                head = path.name.split("-", 1)[0]
-                if head.isdigit():
-                    current = max(current, int(head))
-        nxt = current + 1
-        if not settings.dry_run:
-            counter.parent.mkdir(parents=True, exist_ok=True)
-            counter.write_text(str(nxt), encoding="utf-8")
-        return nxt
+    for folder in ("pending", "done"):
+        for path in (settings.notify_dir / folder).glob("*.json"):
+            head = path.name.split("-", 1)[0]
+            if head.isdigit():
+                current = max(current, int(head))
+    nxt = current + 1
+    if not settings.dry_run:
+        counter.parent.mkdir(parents=True, exist_ok=True)
+        counter.write_text(str(nxt), encoding="utf-8")
+    return nxt
 
 
 def _append_outbox(settings: Settings, record: dict[str, Any]) -> None:
@@ -524,5 +490,5 @@ def _atomic_write(path: Path, text: str) -> None:
     tmp.replace(path)
 
 
-def _short_hash(text: str, length: int = 8) -> str:
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:length]
+def _short_hash(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:8]

@@ -192,10 +192,6 @@ def test_rotate_always_leaves_a_valid_plan_behind(settings: Settings) -> None:
 # -- 4. 周期翻转由程序做 ---------------------------------------------------
 
 
-def _moment_in(cycle_start: datetime) -> datetime:
-    return cycle_start
-
-
 def test_runner_rotates_when_the_cycle_flips(settings: Settings) -> None:
     """核心：翻转是**程序**的事，不看 LLM 的归档会话成没成。"""
     runner = _runner(settings)

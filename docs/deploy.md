@@ -16,7 +16,7 @@
 | 磁盘 | 10G 起，`workspace/` **必须持久化** | 它存「处理到哪了」，丢了会重复发通知。别放 tmpfs |
 | **时区** | **不需要配** | 程序把时区**钉死**成 `Asia/Shanghai`（见 `docs/design.md` §2.2），服务器是 UTC 也没关系 |
 | 出网 | `api.yuque.com`、`api.deepseek.com`（QQ 桥还要 `bots.qq.com`、`api.sgroup.qq.com`，那是它自己的事） | 还要能拉代码（见 §5 的注意） |
-| 入网端口 | **不需要开公网端口**（QQ 扫码登录页会临时开本地端口，登完即关） | |
+| 入网端口 | **只开一个：8787**（申请清单下载口，**公开、无鉴权、打开即下载**，见 §10） | 别绑域名（见下面那段备案的话） |
 | 常驻能力 | 要能**长期挂进程**（systemd / supervisor）。**不能用 serverless / 函数计算** | 归档是时钟驱动的，进程不能被回收 |
 | 时钟 | NTP 正常 | 「每周六 00:00 归档」靠它 |
 | GPU | 不需要 | LLM 走 DeepSeek 的 API |
@@ -117,53 +117,11 @@ install -m 644 /opt/yuque-agent/deploy/yuque-agent.service \
 systemctl daemon-reload && systemctl enable --now yuque-agent
 ```
 
-下面是它的内容（给人读的，**改动请改仓库里那个文件**——
-`tests/test_deploy_doc.py` 会断言这两边逐行一致，不一致就测试失败）：
-
-```ini
-[Unit]
-Description=yuque-agent — 让 LLM 接管语雀知识库（程序只做感知与留痕）
-Documentation=https://github.com/Aalas1111/nju-yuque-agent
-After=network-online.target
-Wants=network-online.target
-
-# 本单元是**唯一**的轮询者（state.json 只能有一个写者，AGENTS.md §2.2），
-# 也负责消费 control/requests/（/run、/archive、/apply 从这儿进来）。
-# QQ 桥是独立项目（见 docs/interface.md）：它只投递通知 + 处理命令，不轮询。
-
-[Service]
-Type=simple
-User=yuque
-Group=yuque
-WorkingDirectory=/opt/yuque-agent
-EnvironmentFile=/home/yuque/.yuque/agent.env
-Environment=HOME=/home/yuque
-Environment=PYTHONUNBUFFERED=1
-Environment=UV_CACHE_DIR=/var/lib/yuque-agent/.uv-cache
-SyslogIdentifier=yuque-agent
-
-ExecStart=/usr/local/bin/uv run --no-sync yqa run --workspace /var/lib/yuque-agent/workspace --interval 60 --quiet-seconds 45 --journal
-
-Restart=always
-RestartSec=15
-
-# `systemctl stop` 时 Python 以 143（128+SIGTERM）退出，systemd 默认把它记成
-# 「Failed with result 'exit-code'」。那是**正常停止**，不是故障——不声明的话，
-# 每次重启 / 自动更新都会在日志里留一串假 "Failed"，把真故障淹掉。
-# （这个项目的整个立场就是「日志得能信」，所以不能有这种噪音。）
-SuccessExitStatus=143
-
-# 加固：这个进程不需要新特权、不需要改系统
-NoNewPrivileges=true
-PrivateTmp=true
-ProtectSystem=full
-ProtectKernelTunables=true
-ProtectControlGroups=true
-RestrictSUIDSGID=true
-
-[Install]
-WantedBy=multi-user.target
-```
+单元内容以仓库里那份为**唯一权威**（`deploy/yuque-agent.service`）。
+`tests/test_deploy_doc.py` 不再把内容抄进本文档，只钉住几条真出过事的关键指令
+（`SuccessExitStatus=143`、`EnvironmentFile=`、`User=yuque`、加固开关…）——
+文档抄一份的下场是**它自己先漂**（实测过：少 `Documentation=` 与 `SyslogIdentifier=`，
+`ExecStart` 也不是同一个文件）。
 
 ```bash
 systemctl daemon-reload
@@ -179,77 +137,51 @@ journalctl -u yuque-agent -f          # 看日志
 
 ## 5. 运维注意
 
-**① 更新代码时 GitHub 可能连不上 —— 而且这是常态，不是偶发。**
+**① 更新代码时 GitHub 可能连不上 —— 这是常态，不是偶发。**
+实测：到 github.com 的 RTT 265ms、HTTPS 时好时坏，有过**连续 8 次重试全失败**
+（`GnuTLS recv error (-110)`）过一阵又自己好。所以 `git pull` 失败是**预期之内**的。
+`scripts/deploy.sh` 对此是**降级而不是假装**：取不到就打印警告、按当前 HEAD 继续。
 
-实测：到 github.com 的 RTT **265ms**，HTTPS 连接**时好时坏**。有过一次
-**连续 8 次重试全部失败**（`GnuTLS recv error (-110)`），过一阵又自己好了。
-所以 `git pull` 在这台机器上失败是**预期之内**的事。
-
-`scripts/deploy.sh` 对此是**降级而不是假装**：取不到就打印一行警告、
-按当前 HEAD 继续（脚本里那句注释指的就是本节）。
-
-实在要更新而又不通时，走**不经过 GitHub 的路**——从一台能连 GitHub 的机器
-直接 push 到生产机的检出：
+实在要更新而又不通时，走**不经过 GitHub 的路**——从一台能连 GitHub 的机器直接 push 到生产机的检出：
 
 ```bash
 # 生产机一次性设置：允许 push 到当前检出的分支并同步工作区
 # （工作区不干净时 git 会拒绝，不会覆盖别人的改动）
 ssh root@<地址> 'cd /opt/yuque-agent && git config receive.denyCurrentBranch updateInstead'
 
-# 之后从开发机
-git push ssh://root@<地址>/opt/yuque-agent main
+git push ssh://root@<地址>/opt/yuque-agent main       # 从开发机
 
 # 再在生产机跑一次 deploy.sh（测试、对齐单元、重启、验收、记 ops.log 都照跑）
 ssh root@<地址> 'sudo /opt/yuque-agent/scripts/deploy.sh'
 ```
 
-**首次引导**：`scripts/deploy.sh` 自己是靠一次 `git pull` 才到机器上的——
-全新部署时先手工 `git pull --ff-only` 一次，之后都应走它。
+这没绕过「部署只走上游 commit」：搬的还是 `main` 上同一条历史，只是换个搬运方式（`AGENTS.md` §1）。
+**首次引导**：`deploy.sh` 自己也是靠一次 `git pull` 才到机器上的——全新部署先手工
+`git pull --ff-only` 一次，之后都应走它。
 
-> 这条路绕过了「部署只走上游 commit」的约束吗？没有：搬的还是 `main` 上同一条
-> 历史，只是换了个搬运方式。所以它仍然满足 `AGENTS.md` §1。
+**② 冷启动会跑一次归档会话（约 2 万 token）。** 全新部署时 `last_archive_title` 是空的，
+`archive_due()` 立刻为真 → 第一次 tick 就跑一轮归档。不是 bug（顺带把知识库结构体检一遍），
+但**别为了调试反复删 `state.json`**——每删一次就再烧一次。
 
-**② 冷启动会跑一次归档会话（约 2 万 token）。**
-全新部署时 `last_archive_title` 是空的，于是 `archive_due()` 立刻为真 →
-第一次 tick 就跑一轮归档。这不是 bug（它顺带把知识库结构体检一遍），
-但**要知道冷启动那一下是有成本的**。跑完水位线就落上了。
-（所以别为了调试反复删 `state.json`。）
+**③ 日志走 journald（已设持久化）。** 否则默认只在内存里、重启就没——而这个项目的立场就是「留痕」。
 
-**③ 日志走 journald，已设持久化。**
-否则默认只存在内存里、重启就没了——而这个项目的整个立场就是「留痕」。
+**③.5 这台机器会自动做安全更新，会重启你的服务。** 实测 `unattended-upgrades` + `needrestart`
+在凌晨升级库时顺手重启了 `yuque-agent` 与 `ssh`（反复几次）。`status=143` = 正常 SIGTERM，
+不是崩溃；单元里必须写 `SuccessExitStatus=143`，否则日志里一串假故障，真出事时反而看不出来。
+这类升级偶尔会**短暂断网**，日志里会出现一次 `YuqueError: 网络请求失败（ConnectError）`——
+watcher 按设计吞掉并继续，下一轮就恢复。**看一次就行，不用管。**
 
-**③.5 这台机器会自动做安全更新，会重启你的服务。**
-实测：`unattended-upgrades` + `needrestart` 在凌晨升级了库，顺手把
-`yuque-agent` 和 `ssh` 都重启了（06:47~06:59 之间反复几次，因为同时升级了多个包）。
-`status=143` = 正常 SIGTERM，不是崩溃。所以单元里要写：
+**④ 真正的证据在 `runs/*/session.jsonl`**，不在 stdout：每次 run 的完整输入 / 输出 / 思考 /
+工具参数都在那里，那是唯一事实来源。
 
-```ini
-SuccessExitStatus=143
-```
+**④.5 用一个「专属」的 LLM key，别复用你个人的。** `resolve_llm_key()` 的优先级是
+`YQA_LLM_KEY` > `DEEPSEEK_API_KEY` > `~/.pi/agent/auth.json`——**最后那个 fallback 是个坑**：
+服务器上若装了 pi（或把它的 `auth.json` 拷过去），而 `agent.env` 里变量名写错了，
+程序会**静默**改用你的个人 key，两边用量混在一起算不清。所以 `agent.env` 里放**只给这台机器用的**
+key，并且别在服务器上放 `~/.pi/agent/auth.json`。
 
-不写的话每次正常停止都会被记成 `Failed with result 'exit-code'`，
-日志里一串假故障——真出事的时候反而看不出来。
-
-另外这类升级偶尔会**短暂断网**（systemd-resolved 被重启），
-实测在日志里看到过一次 `YuqueError: 网络请求失败（ConnectError）`——
-watcher 按设计吞掉并继续了，下一轮就恢复。**这类错误看一次就行，不用管。**
-
-**④ 真正的证据在 `runs/*/session.jsonl`**，不在 stdout。每次 run 的完整
-LLM 输入/输出/思考/工具参数都在那里，那是唯一事实来源。
-
-**④.5 用一个「专属」的 LLM key，别复用你个人的。**
-
-`config.resolve_llm_key()` 的优先级是
-`YQA_LLM_KEY` > `DEEPSEEK_API_KEY` > `~/.pi/agent/auth.json`。
-
-**最后那个 fallback 是个坑**：如果你在服务器上装了 pi（或把它的 `auth.json` 拷过去），
-而 `agent.env` 里的变量名写错了，程序会**静默**改用 pi 的个人 key——
-于是你自己的用量和这台服务器的用量混在一起，两边都算不清。
-所以：`agent.env` 里放**只给这台机器用的** key，并且别在服务器上放
-`~/.pi/agent/auth.json`。
-
-`yqa doctor` 的「LLM key OK」**只表示那个变量存在**——key 过期、打错、
-额度用尽，它都照样显示 OK。想真验一次就这样（约 40 tokens）：
+`yqa doctor` 的「LLM key OK」**只表示变量存在**（过期 / 打错 / 额度用尽都显示 OK）；
+`LLM 可用性`那一行才是真打了一发 API。要单独验 key 时（约 40 tokens）：
 
 ```bash
 sudo -u yuque env -i HOME=/home/yuque PATH=/usr/local/bin:/usr/bin:/bin bash -c '
@@ -261,8 +193,8 @@ print(config.resolve_llm_key()[:8])      # 前 8 位对不对
 "'
 ```
 
-**⑤ 凭证权限**：`~/.yuque/*` 是 600。**注意 600 只在 POSIX 上真生效**——
-Windows 上 `chmod` 改不动 ACL，会「静默成功但什么都没改」（QQ 桥仓库的文档里也记了这一条）。
+**⑤ 凭证权限**：`~/.yuque/*` 是 600。**600 只在 POSIX 上真生效**——Windows 上 `chmod`
+改不动 ACL（「静默成功但什么都没改」）。
 
 ## 6. 手动调试
 
@@ -305,11 +237,11 @@ yqa-as-service reset-test-data --workspace /var/lib/yuque-agent/workspace --scop
 
 ## 7. 上线后的验收清单
 
-- [ ] `yqa-as-service doctor` 的「配置体检」没有告警（**尤其「通知无法投递」**）
 - [ ] `yqa-as-service doctor` 全绿（尤其 **语雀 token / LLM key / 知识库 / 写权限 / 时区**）
-  - 注意 `LLM key` 那行**只说明变量存在**；末尾的 `LLM 可用性` 才是真打了一发 API。
+  - `LLM key` 那行**只说明变量存在**；末尾的 `LLM 可用性` 才是真打了一发 API。
     它显示失败时，直接看它写的原因（`key 无效` / `余额不足` / `网络不通` …）——
     那是**真的打了**，不是猜的。
+  - 「申请清单」那行看得到当前周期与条数；「⚠ 清单隐私」出现时说明 `defaults` 非空（见 §10）。
 - [ ] `systemctl is-enabled yuque-agent` 是 `enabled`（开机自启）
 - [ ] `journalctl -u yuque-agent` 能看到「开始常驻：每 60s 轮询 …」
 - [ ] 让一个真社员写一篇申请，**等 1~2 分钟**，确认：
@@ -359,27 +291,21 @@ outbox/
 注意 `defaults`（借用人姓名/电话）会被落盘保存到 `plan.defaults.json`，
 否则那次重发就把它们丢了。
 
-### ⚠️ 上线前必须做：填 `notify.members`
+### ⚠️ 上线前必须做：把「人名 → QQ」的映射配上（在**桥**那边）
 
-**不填的话，任何通知都发不出去**——全都会堆进 `outbox/notify/unrouted/`，
-而 `outbox/` 看上去一切正常，社员却什么都收不到。
+通知发给谁，靠的是**桥的映射表**（工作区 `qqbot.json` 的 `notify.members`；
+这个文件归桥自己的仓库维护）。**不配的话任何通知都发不出去**——全都会堆进
+`outbox/notify/unrouted/`，而 `outbox/` 看上去一切正常，社员却什么都收不到。
 
-```bash
-# 工作区里的 qqbot.json（不是 ~/.yuque/ 那个凭证文件）—— 这是 **QQ 桥**的配置，
-# 它拆到自己的仓库后由它的文档维护（原 docs/qqbot.md）。核心只认一个事实：
-# 通知记录里的 target（见 docs/handoff.md §3）能直投；否则桥按人名映射。
-```
+核心这边只认一个事实：通知记录里的 `target` 能直投（见 `docs/handoff.md` §3）；
+没有 `target` 的由桥按 `member.name` 查表。**验收时去桥那边确认 `unrouted/` 没在涨。**
 
-另外 `plan_updated`（提醒 cac 去下载）发给 `YQA_PLAN_ADMIN` 指定的那个名字，
-所以要把它也加进 `notify.members`：
+`plan_updated`（提醒 cac 去下载）发给人名 `YQA_PLAN_ADMIN`，它必须在同一张映射表里能查到：
 
 ```bash
-printf 'YQA_PLAN_ADMIN=%s
-' "<管理员的语雀人名>" >> /home/yuque/.yuque/agent.env
-chmod 600 /home/yuque/.yuque/agent.env && systemctl restart <QQ 桥的单元>
+printf 'YQA_PLAN_ADMIN=%s\n' "<管理员的语雀人名>" >> /home/yuque/.yuque/agent.env
+chmod 600 /home/yuque/.yuque/agent.env && systemctl restart yuque-agent
 ```
-
-`yqa doctor` 的「配置体检」那一行会告警「通知无法投递」——**上线验收时看它**。
 
 ### 取件通道（cac 用）
 
@@ -391,7 +317,7 @@ scp lihe@<服务器地址>:/var/lib/yuque-agent/workspace/lqogh0_jsjysq/outbox/p
 # 往期的：
 scp "lihe@<服务器地址>:/var/lib/yuque-agent/workspace/lqogh0_jsjysq/outbox/archive/0919-0925/plan.json" .
 
-# ② 网页（见 §10；输密钥下载）
+# ② 网页（见 §10；**无密钥**，打开即下载）
 #    http://<服务器地址>:8787/
 ```
 
@@ -404,50 +330,11 @@ scp "lihe@<服务器地址>:/var/lib/yuque-agent/workspace/lqogh0_jsjysq/outbox/
 
 **没有密钥，打开即下载。** cac 的要求：访问 download 立刻拿到 `plan.json`。
 
-`deploy/yuque-agent-plan.service`：
-
-```ini
-[Unit]
-Description=yuque-agent 申请清单下载口（公开 HTTP，打开即下载，给 cac 取件）
-Documentation=https://github.com/Aalas1111/nju-yuque-agent
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-User=yuque
-Group=yuque
-WorkingDirectory=/opt/yuque-agent
-EnvironmentFile=/home/yuque/.yuque/agent.env
-Environment=HOME=/home/yuque
-Environment=PYTHONUNBUFFERED=1
-Environment=UV_CACHE_DIR=/var/lib/yuque-agent/.uv-cache
-SyslogIdentifier=yuque-agent-plan
-
-ExecStart=/usr/local/bin/uv run --no-sync yqa serve-plan --workspace /var/lib/yuque-agent/workspace --port 8787
-
-Restart=always
-RestartSec=15
-
-# systemctl stop 时 Python 以 143（SIGTERM）退出，那是正常停止，不是故障。
-SuccessExitStatus=143
-
-# 加固：这个进程只需要读产物 + 对外监听，不需要新特权、不需要改系统。
-NoNewPrivileges=true
-PrivateTmp=true
-ProtectSystem=full
-ProtectKernelTunables=true
-ProtectControlGroups=true
-RestrictSUIDSGID=true
-
-[Install]
-WantedBy=multi-user.target
-```
-
-### 装它
+`deploy/yuque-agent-plan.service`（内容以仓库里那份为准）：
 
 ```bash
-install -m 644 /opt/yuque-agent/deploy/yuque-agent-plan.service     /etc/systemd/system/yuque-agent-plan.service
+install -m 644 /opt/yuque-agent/deploy/yuque-agent-plan.service \
+    /etc/systemd/system/yuque-agent-plan.service
 systemctl daemon-reload && systemctl enable --now yuque-agent-plan
 curl -s http://127.0.0.1:8787/healthz      # 应回 ok
 ```

@@ -15,7 +15,7 @@ from datetime import datetime, timedelta
 from tests.fakes import FakeLLM, FakeYuque, call, make_meta, make_toc
 from yuque_agent import clock
 from yuque_agent.config import Settings
-from yuque_agent.llm import LLMResponse, ToolCall, Usage
+from yuque_agent.llm import LLMResponse
 from yuque_agent.runner import Runner
 
 
@@ -288,9 +288,3 @@ def test_llm_error_does_not_wedge_the_loop(tmp_path) -> None:
     assert result is not None
     assert runner.state.pending_since == ""
     assert result.stop_reason  # 有明确的停止原因
-
-
-def test_unused_usage_import_guard() -> None:
-    """占位：保证 Usage 被引用（避免 lint 误删导入时静默改变语义）。"""
-    assert Usage().to_dict()["total"] == 0
-    assert ToolCall(id="x", name="done", arguments_raw="{}").arguments() == {}

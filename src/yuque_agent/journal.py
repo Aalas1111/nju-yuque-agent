@@ -70,7 +70,7 @@ def split_journal(body: str) -> tuple[str, str]:
 # ---------------------------------------------------------------- 渲染
 
 
-def render_session(path: Path, *, result: dict[str, Any] | None = None) -> str:
+def render_session(path: Path) -> str:
     events = list(read_events(path))
     if not events:
         return "_（session 为空）_"
@@ -224,11 +224,9 @@ def journal_or_warn(
     client: YuqueClient,
     settings: Settings,
     session_path: Path,
-    *,
-    result: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     try:
-        section = render_session(session_path, result=result)
+        section = render_session(session_path)
         return {"ok": True, **append_to_journal(client, settings, section)}
     except (YuqueError, OSError) as exc:
         # 留痕失败不能影响主流程，但必须让人看见

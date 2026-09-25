@@ -17,7 +17,6 @@ import hashlib
 import json
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime
-from pathlib import Path
 from typing import Any
 
 from . import clock
@@ -115,22 +114,6 @@ class Changes:
         交给每周六的归档会话去管就好。
         """
         return self.n_docs == 0
-
-    def describe(self) -> str:
-        if self.first_run:
-            return "首次运行（建立基线快照）"
-        if self.empty:
-            return "无变化"
-        parts = []
-        if self.added:
-            parts.append(f"新增 {len(self.added)}")
-        if self.updated:
-            parts.append(f"修改 {len(self.updated)}")
-        if self.removed:
-            parts.append(f"删除 {len(self.removed)}")
-        if self.toc_changed:
-            parts.append("目录结构变化")
-        return "、".join(parts)
 
 
 # ---------------------------------------------------------------- 采集
@@ -467,23 +450,3 @@ def _preview(body: str, limit: int = PREVIEW_CHARS) -> str:
 
 def _sha(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
-
-
-# ---------------------------------------------------------------- 持久化
-
-
-def load_snapshot(path: Path) -> Snapshot | None:
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
-    if not isinstance(payload, dict):
-        return None
-    return Snapshot.from_json(payload)
-
-
-def save_snapshot(snapshot: Snapshot, path: Path) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(snapshot.to_json(), ensure_ascii=False, indent=2), encoding="utf-8")
-    tmp.replace(path)

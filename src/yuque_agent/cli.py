@@ -28,14 +28,14 @@ from rich.table import Table
 
 from . import __version__, clock, outputs
 from . import journal as journal_mod
-from .config import DEFAULT_API_BASE, DEFAULT_HOST, DEFAULT_MODEL, DEFAULT_REPO, Settings
+from .config import DEFAULT_MODEL, DEFAULT_REPO, Settings
 from .llm import LLMClient, LLMError, describe_llm_error
 from .outputs import publish_plan, write_plan_defaults
 from .planserve import pii_warning
 from .planserve import read_plan as read_plan_file
 from .planserve import serve as serve_plan_http
 from .prompts import PromptLoader
-from .runner import Runner, load_state, new_run_id, save_state
+from .runner import Runner, load_state, save_state
 from .watcher import Watcher
 from .week import cycle_targets
 from .yuque import YuqueClient, YuqueError, doc_dir_map
@@ -72,18 +72,16 @@ def _settings(
     journal: bool,
     model: str,
     interval: int,
-    verbose: bool,
 ) -> Settings:
-    settings = Settings.from_env(
+    """CLI 参数 > 环境变量 > 凭证文件（见 `config.Settings.from_env`）。"""
+    return Settings.from_env(
         repo=repo,
         workspace=workspace,
         model=model,
         interval=interval,
         dry_run=dry_run,
         journal=journal,
-        verbose=verbose,
     )
-    return settings
 
 
 RepoOpt = Annotated[str, typer.Option("--repo", "-r", help="知识库 namespace")]
@@ -102,7 +100,7 @@ def doctor(
     model: Annotated[str, typer.Option("--model")] = DEFAULT_MODEL,
 ) -> None:
     """自检：凭证、权限、知识库连通、提示词、工作区。"""
-    settings = _settings(repo, workspace, False, False, model, 60, False)
+    settings = _settings(repo, workspace, False, False, model, 60)
     table = Table(title="yuque-agent 自检", show_lines=False)
     table.add_column("项", style="bold")
     table.add_column("结果")
@@ -251,7 +249,7 @@ def once(
       由 ``tests/test_debounce.py::test_force_bypasses_nothing_but_still_needs_quiet`` 锁住。
       如果你绕开 CLI 直接调 ``poll_once(force=True)``，静默期内仍然不会跑。
     """
-    settings = _settings(repo, workspace, dry_run, journal, model, 60, False)
+    settings = _settings(repo, workspace, dry_run, journal, model, 60)
     client, llm = _clients(settings)
     try:
         runner = Runner(settings=settings, client=client, llm=llm)
@@ -278,7 +276,7 @@ def archive(
     model: Annotated[str, typer.Option("--model")] = DEFAULT_MODEL,
 ) -> None:
     """手动跑一次归档会话（带结构写工具的那个）。"""
-    settings = _settings(repo, workspace, dry_run, journal, model, 60, False)
+    settings = _settings(repo, workspace, dry_run, journal, model, 60)
     client, llm = _clients(settings)
     try:
         runner = Runner(settings=settings, client=client, llm=llm)
@@ -316,7 +314,7 @@ def run(
     外部（QQ 桥等）要触发一轮/归档/申请，写 `control/requests/`，不要自己起轮询——
     见 `docs/interface.md` §1.2（两个写者会互相覆盖快照，那是记过事故的）。
     """
-    settings = _settings(repo, workspace, dry_run, journal, model, interval, False)
+    settings = _settings(repo, workspace, dry_run, journal, model, interval)
     if quiet_seconds is not None:
         settings.quiet_seconds = quiet_seconds
     client, llm = _clients(settings)
@@ -336,7 +334,7 @@ def sessions(
     repo: RepoOpt = DEFAULT_REPO,
 ) -> None:
     """列出本地留档的所有 run。"""
-    settings = _settings(repo, workspace, False, False, DEFAULT_MODEL, 60, False)
+    settings = _settings(repo, workspace, False, False, DEFAULT_MODEL, 60)
     runs = sorted(settings.runs_dir.glob("*/session.jsonl")) if settings.runs_dir.exists() else []
     if not runs:
         console.print("[dim]还没有任何 run。[/dim]")
@@ -358,7 +356,7 @@ def render(
     out: Annotated[Path | None, typer.Option("--out", "-o", help="写入文件而不是打印")] = None,
 ) -> None:
     """把某次 run 的 session 渲染成人话。"""
-    settings = _settings(repo, workspace, False, False, DEFAULT_MODEL, 60, False)
+    settings = _settings(repo, workspace, False, False, DEFAULT_MODEL, 60)
     path = Path(run_id)
     if not path.is_file():
         path = settings.runs_dir / run_id / "session.jsonl"
@@ -381,7 +379,7 @@ def journal(
     dry_run: Annotated[bool, typer.Option("--dry-run")] = False,
 ) -> None:
     """把某次 run 的 session 写回语雀《工作日志》。"""
-    settings = _settings(repo, workspace, dry_run, True, DEFAULT_MODEL, 60, False)
+    settings = _settings(repo, workspace, dry_run, True, DEFAULT_MODEL, 60)
     path = settings.runs_dir / run_id / "session.jsonl"
     if not path.is_file():
         console.print(f"[red]找不到 session：{path}[/red]")
@@ -417,7 +415,7 @@ def export_plan(
     `--defaults` 会被**落盘保存**（`outbox/plan.defaults.json`）：因为 agent 每次
     写申请都会自动重发 plan.json，不存下来那次重发就把借用人信息丢了。
     """
-    settings = _settings(repo, workspace, False, False, DEFAULT_MODEL, 60, False)
+    settings = _settings(repo, workspace, False, False, DEFAULT_MODEL, 60)
     parsed: dict = {}
     if defaults:
         try:
@@ -461,7 +459,7 @@ def serve_plan(
     特别是 ``plan.defaults.json``（**借用人姓名与手机号**）永远取不到。
     但它仍是**公开**端点 —— 见 `docs/deploy.md` §10。
     """
-    settings = _settings(repo, workspace, False, False, DEFAULT_MODEL, 60, False)
+    settings = _settings(repo, workspace, False, False, DEFAULT_MODEL, 60)
     if port is not None:
         settings.plan_port = port
     try:
@@ -477,7 +475,7 @@ def sync_guide(
     dry_run: Annotated[bool, typer.Option("--dry-run")] = False,
 ) -> None:
     """把 `kb/guide.md` 上传/更新为知识库里的《指导文档（必读）》。"""
-    settings = _settings(repo, Path("workspace"), dry_run, False, DEFAULT_MODEL, 60, False)
+    settings = _settings(repo, Path("workspace"), dry_run, False, DEFAULT_MODEL, 60)
     body = (Path(__file__).parent / "kb" / "guide.md").read_text(encoding="utf-8")
     title = "指导文档（必读）"
     with YuqueClient(
@@ -520,15 +518,6 @@ def _inside_checkout(path: Path) -> bool:
 
 #: 永远不碰的系统性文档（跟 `Settings.ignore_doc_titles` 一起用）。
 _SYSTEM_DOC_TITLES = ("指导文档（必读）", "指导文档")
-
-
-def _doc_dir_map(client: YuqueClient) -> dict[int, str]:
-    """``doc_id -> 所在目录路径``（根目录是空串）。
-
-    直接用 :func:`yuque.doc_dir_map`（它看 ``parent_uuid``，不切路径字符串——
-    文档标题里可以带 ``/``）。
-    """
-    return doc_dir_map(client.toc())
 
 
 def _wipe_dir(path: Path, *, pattern: str = "*.json") -> list[str]:
@@ -592,7 +581,7 @@ def reset_test_data(
         console.print(f"[red]--scope 只能是 cycle 或 all，收到 {scope!r}[/red]")
         raise typer.Exit(2)
 
-    settings = _settings(repo, workspace, False, False, DEFAULT_MODEL, 60, False)
+    settings = _settings(repo, workspace, False, False, DEFAULT_MODEL, 60)
     if _inside_checkout(settings.root) and not force:
         console.print(
             f"[red]工作区落在代码检出里：{settings.root}[/red]\n"
@@ -606,7 +595,7 @@ def reset_test_data(
     protected = set(_SYSTEM_DOC_TITLES) | set(settings.ignore_doc_titles) | {settings.journal_title}
 
     with YuqueClient(host=settings.host, token=settings.token, repo=settings.repo) as client:
-        dir_of = _doc_dir_map(client)
+        dir_of = doc_dir_map(client.toc())
         doomed: list[tuple[int, str, str]] = []
         for meta in client.docs():
             if meta.title in protected:
@@ -775,6 +764,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
-
-__all__ = ["app", "main", "new_run_id", "DEFAULT_HOST", "DEFAULT_API_BASE"]

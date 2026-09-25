@@ -135,22 +135,23 @@ def test_render_survives_corrupt_lines(tmp_path) -> None:
 # ---------------------------------------------------------------- 写回语雀
 
 
-def journal_client(body: str = "") -> FakeYuque:
+def test_append_creates_doc_and_hangs_it_in_the_toc(settings: Settings) -> None:
+    """新建《工作日志》时要**挂进目录**（社员在侧边栏看得见），并带上表头。
+
+    反向锁：旧版故意不挂目录，需求方在语雀侧边栏看不到它——
+    见 `docs/design.md` D3 与 `docs/test-report.md` 的 Bug 5。
+    """
     client = FakeYuque()
     client.docs = lambda: []  # type: ignore[method-assign]
-    return client
-
-
-def test_append_creates_doc_when_missing(settings: Settings) -> None:
-    client = FakeYuque()
-    client.docs = lambda: []  # type: ignore[method-assign]
+    created = client.create_doc
+    # 真语雀建完文档会回一个 id；假件默认不回，于是「挂进目录」那一步在测试里从不发生
+    client.create_doc = lambda **kw: {**created(**kw), "id": 777}  # type: ignore[method-assign]
     result = append_to_journal(client, settings, "## 一节\n\n内容")  # type: ignore[arg-type]
     assert result["created"] is True
-    op, kwargs = client.calls[0]
-    assert op == "create_doc"
+    assert [op for op, _ in client.calls] == ["create_doc", "toc_add"]
+    _, kwargs = client.calls[0]
     assert HEADER.splitlines()[0] in kwargs["body"] and "## 一节" in kwargs["body"]
-    # 关键：不要把这个审计文档挂进知识库目录
-    assert all(op != "toc_add" for op, _ in client.calls)
+    assert client.calls[1][1]["doc_ids"] == [777]
 
 
 def _log_meta():

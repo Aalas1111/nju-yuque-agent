@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 import json
-import sys
 
 import pytest
 
@@ -190,34 +189,14 @@ def test_notice_keeps_member_and_doc_context(settings: Settings) -> None:
     assert record["repo"] == "g/kb"
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="文件锁在 Windows 上行为不同，生产环境是 Linux")
-def test_seq_counter_is_atomic(settings: Settings) -> None:
-    """回归：_next_seq() 必须用文件锁保护，避免并发写入产生重复序号。"""
-    import threading
+def test_seq_counter_survives_tampering(settings: Settings) -> None:
+    """计数器被改小 / 被删，都不能把序号退回已经用过的号上。
 
-    from yuque_agent.outputs import _next_seq
-
-    results: list[int] = []
-    errors: list[Exception] = []
-
-    def worker():
-        try:
-            for _ in range(10):
-                seq = _next_seq(settings)
-                results.append(seq)
-        except Exception as e:
-            errors.append(e)
-
-    # 启动多个线程并发写入
-    threads = [threading.Thread(target=worker) for _ in range(5)]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join()
-
-    assert not errors, f"并发写入出错：{errors}"
-    # 50 次写入必须产生 50 个不同的序号
-    assert len(results) == 50
-    assert len(set(results)) == 50, f"有重复序号：{sorted(results)}"
-    # 序号必须是 1~50
-    assert set(results) == set(range(1, 51))
+    这是单写者架构下真正会发生的故障（「多线程并发写」由
+    `docs/interface.md` §0 规则 3 明令禁止，见 `outputs._next_seq` 的 docstring）。
+    """
+    assert [emit(settings)["seq"] for _ in range(3)] == [1, 2, 3]
+    (settings.notify_dir / ".seq").write_text("0", encoding="utf-8")
+    assert emit(settings)["seq"] == 4, "计数器被改小后不能倒退"
+    (settings.notify_dir / ".seq").unlink()
+    assert emit(settings)["seq"] == 5, "计数器被删后从已有文件名取最大值"

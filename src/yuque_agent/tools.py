@@ -12,6 +12,9 @@
 
 * 所有文件写操作走 :func:`config.safe_join`，越界直接报错返回给 LLM 自己纠正；
 * 工具**返回错误而不是抛异常**——让 LLM 看得见失败并自己想办法，这本身就是研究素材。
+
+**本层只做「能力边界」（粗粒度：有 / 没有这个工具），不做对 LLM 输出的逐字审查**——
+文案 / 语义类规矩只写进提示词（理由见 ``docs/principles.md`` §4）。
 """
 
 from __future__ import annotations
@@ -27,7 +30,7 @@ from .config import Settings, safe_join
 from .outputs import ContractError
 from .session import Stopwatch
 from .snapshot import DocSnapshot
-from .yuque import YuqueClient, YuqueError
+from .yuque import YuqueClient, YuqueError, dir_map_from_payload
 
 MAX_DOC_CHARS = 8000
 MAX_LISTING = 200
@@ -191,25 +194,14 @@ def _dir_list(ctx: RunContext, args: dict[str, Any]) -> Any:
 def _doc_dirs(ctx: RunContext) -> dict[int, str]:
     """``doc_id -> 所在目录路径``（根目录是空串）。
 
-    实现上和 :func:`yuque.doc_dir_map` 是同一套算法：**看节点的 ``parent_uuid``**，
-    而不是去切 ``path`` 字符串。
+    算法只有一份，在 :func:`yuque.dir_map_from_payload`：**看节点的 ``parent_uuid``**，
+    不去切 ``path`` 字符串——文档标题里可以带 ``/``（实测踩到过，见
+    ``tests/test_dir_list.py`` 的回归测试）。
 
-    为什么不切 ``path``：文档的 ``path`` 是「父目录/文档标题」拼出来的，
-    而**标题里可以带 ``/``**。实测踩到过：有人的文档叫
-    「测试1（我不申请了/(ㄒoㄒ)/~~）」，按 ``path.split("/")[:-1]`` 切出来的目录
-    是 ``0919-0925/测试1（我不申请了/(ㄒoㄒ)`` —— 于是这篇文档既不在周期目录里、
-    也不在任何地方，谁问都查不到它。
+    「算文档在哪个目录」这件事曾经有三份实现、两份是错的（`docs/test-report.md`），
+    所以这里只允许有一条路。
     """
-    by_uuid = {str(item.get("uuid") or ""): item for item in ctx.toc}
-    out: dict[int, str] = {}
-    for item in ctx.toc:
-        doc_id = int(item.get("doc_id") or 0)
-        if not doc_id:
-            continue
-        parent = by_uuid.get(str(item.get("parent_uuid") or ""))
-        parent_is_dir = bool(parent) and parent.get("type") == "TITLE"
-        out[doc_id] = str(parent.get("path") or "") if parent_is_dir else ""
-    return out
+    return dir_map_from_payload(ctx.toc)
 
 
 def _doc_read(ctx: RunContext, args: dict[str, Any]) -> Any:
@@ -304,7 +296,7 @@ def _emit_application(ctx: RunContext, args: dict[str, Any]) -> Any:
     （校区名→代码、教学楼名→`JXLDM`、`HH:MM`→节次）。
     产出里的 ``activity`` 就是 `crb` 的 ``Activity`` 原样，下游可直接吃。
     """
-    doc_id = _need(args, "doc_id", INT)
+    doc_id = _need(args, "doc_id")
     title = str(args.get("activity_name") or args.get("doc_title") or "").strip()
     if not title:
         raise ToolError("activity_name 必填（活动名称）")
@@ -487,7 +479,7 @@ def _toc_create(ctx: RunContext, args: dict[str, Any]) -> Any:
 
 def _toc_move(ctx: RunContext, args: dict[str, Any]) -> Any:
     """把一个目录节点移动到另一个目录下（例如把上一周期的目录移进归档区）。"""
-    node_uuid = _need(args, "node_uuid", STR)
+    node_uuid = _need(args, "node_uuid")
     target_uuid = str(args.get("target_uuid") or "")
     if ctx.settings.dry_run:
         ctx.note_kb_write("toc_move", {"node_uuid": node_uuid, "target_uuid": target_uuid})
@@ -500,7 +492,7 @@ def _toc_move(ctx: RunContext, args: dict[str, Any]) -> Any:
 
 def _toc_remove(ctx: RunContext, args: dict[str, Any]) -> Any:
     """把一个节点从目录里摘掉（**不删文档**）。"""
-    node_uuid = _need(args, "node_uuid", STR)
+    node_uuid = _need(args, "node_uuid")
     with_children = bool(args.get("with_children"))
     if ctx.settings.dry_run:
         ctx.note_kb_write("toc_remove", {"node_uuid": node_uuid, "with_children": with_children})
@@ -513,7 +505,7 @@ def _toc_remove(ctx: RunContext, args: dict[str, Any]) -> Any:
 
 def _doc_create(ctx: RunContext, args: dict[str, Any]) -> Any:
     """在知识库里新建一篇文档（例如重建被人删掉的《指导文档》）。"""
-    title = _need(args, "title", STR)
+    title = _need(args, "title")
     body = str(args.get("body") or "")
     if ctx.settings.dry_run:
         ctx.note_kb_write("doc_create", {"title": title})
@@ -530,7 +522,7 @@ def _doc_create(ctx: RunContext, args: dict[str, Any]) -> Any:
 
 def _doc_delete(ctx: RunContext, args: dict[str, Any]) -> Any:
     """删除一篇文档。**只在归档会话里可用**，且必须写明理由。"""
-    doc_id = _need(args, "doc_id", INT)
+    doc_id = _need(args, "doc_id")
     reason = str(args.get("reason") or "").strip()
     if not reason:
         raise ToolError("reason 必填——删文档必须说明理由，理由会写进 session 与工作日志")
@@ -750,7 +742,7 @@ def execute(ctx: RunContext, name: str, args: dict[str, Any]) -> dict[str, Any]:
 # ---------------------------------------------------------------- 小工具
 
 
-def _need(args: dict[str, Any], key: str, _schema: dict[str, Any]) -> Any:
+def _need(args: dict[str, Any], key: str) -> Any:
     value = args.get(key)
     if value in (None, "", 0):
         raise ToolError(f"{key} 必填")

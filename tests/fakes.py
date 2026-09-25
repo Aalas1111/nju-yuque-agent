@@ -24,7 +24,6 @@ class FakeYuque:
     bodies: dict[int, str] = field(default_factory=dict)
     dry_run: bool = False
     scopes: str = "repo,doc"
-    write_log: list[dict[str, Any]] = field(default_factory=list)
     error_on_doc: set[int] = field(default_factory=set)
     calls: list[tuple[str, dict[str, Any]]] = field(default_factory=list)
 
@@ -59,7 +58,6 @@ class FakeYuque:
     # -- 写 ---------------------------------------------------------------
     def _record(self, op: str, **kwargs: Any) -> dict[str, Any]:
         self.calls.append((op, kwargs))
-        self.write_log.append({"op": op, **kwargs})
         return {"__dry_run__": True, "op": op}
 
     def create_doc(self, *, title: str, body: str, slug: str = "", public: int | None = None):
@@ -247,7 +245,6 @@ class FakeRunner:
         rescan: bool = False,
         now: Any = None,
         debounce: bool = True,
-        observer: Any = None,
     ):
         self.polls += 1
         self.force_flags.append(force)
@@ -256,7 +253,7 @@ class FakeRunner:
             return self.poll_results.pop(0)
         return None
 
-    def archive_once(self, *, now: Any = None, observer: Any = None):
+    def archive_once(self, *, now: Any = None):
         self.archives += 1
         return (
             self.archive_result

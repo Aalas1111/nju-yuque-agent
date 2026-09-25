@@ -165,8 +165,3 @@ def period_label(ksjc: int, jsjc: int) -> str:
 def bookable_range(today: date) -> tuple[date, date]:
     """校方允许的借用日期范围（闭区间）。"""
     return today + timedelta(days=MIN_DAYS_AHEAD), today + timedelta(days=MAX_DAYS_AHEAD)
-
-
-def describe_day_range(today: date) -> str:
-    lo, hi = bookable_range(today)
-    return f"{lo.isoformat()} ~ {hi.isoformat()}（今天 {today.isoformat()} 起 +{MIN_DAYS_AHEAD} ~ +{MAX_DAYS_AHEAD} 天）"

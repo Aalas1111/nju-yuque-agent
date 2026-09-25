@@ -23,8 +23,6 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from datetime import time as dtime
 
-from . import clock
-
 DEFAULT_START_WEEKDAY = 5
 """周期起始日：0=周一 … 5=周六 … 6=周日。"""
 
@@ -110,29 +108,3 @@ def cycle_targets(
 
 def is_cycle_title(title: str) -> bool:
     return bool(_TITLE_RE.match((title or "").strip()))
-
-
-def parse_cycle_title(title: str, *, today: date | None = None) -> Week | None:
-    """把 ``0919-0925`` 解析成具体日期。跨年时按「离今天最近的那个」猜年份。"""
-    match = _TITLE_RE.match((title or "").strip())
-    if not match:
-        return None
-    anchor = today or clock.today()
-    month, day = int(match.group(1)), int(match.group(2))
-    end_month, end_day = int(match.group(3)), int(match.group(4))
-    wraps = (end_month, end_day) < (month, day)
-    try:
-        start = date(anchor.year, month, day)
-    except ValueError:
-        return None
-    if abs((start - anchor).days) > 200:
-        shift = 1 if start < anchor else -1
-        try:
-            start = date(anchor.year + shift, month, day)
-        except ValueError:
-            return None
-    try:
-        end = date(start.year + (1 if wraps else 0), end_month, end_day)
-    except ValueError:
-        return None
-    return Week(start=start, end=end)

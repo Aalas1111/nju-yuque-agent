@@ -54,6 +54,7 @@ class State:
     pending_polls: int = 0
     """这批变更已经攒了多少轮（用于在报告里展示「合并掉了多少次唤醒」）。"""
     journal_doc_id: int = 0
+    """《工作日志》的 doc_id。程序自己写的文档，永远不当变更信号（见 Settings.ignore_doc_titles）。"""
     placeholder_dropped: int = 0
     """上一轮被剔除的「占位标题 + 空正文」文档数（仅用于自检/调试）。"""
 
@@ -71,7 +72,6 @@ class State:
     作用是不重发：一轮里写了 3 份申请，管理员只该收到 **1** 条「请下单」；
     周期翻转后清单变空，也不该发通知（不打扰人）。
     """
-    """《工作日志》的 doc_id。程序自己写的文档，永远不当变更信号（见 Settings.ignore_doc_titles）。"""
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -269,7 +269,6 @@ class Runner:
         rescan: bool = False,
         now: datetime | None = None,
         debounce: bool = True,
-        observer: Any = None,
     ) -> RunResult | None:
         """跑一轮轮询。没有变化、或还在静默期内，就返回 ``None``（静默，0 token）。
 
@@ -412,14 +411,14 @@ class Runner:
                 "这件事是程序做的，不需要你再处理；提一句是为了让你知道 "
                 "`outbox/applications/` 为什么变空了。"
             )
-        result = self._execute(run_id=run_id, kind="polling", payload=report, observer=observer)
+        result = self._execute(run_id=run_id, kind="polling", payload=report)
         # 跑完再看一眼清单：这一轮若改了申请，管理员该收到一条「请下载提交」。
         # 放在 _execute 之后，所以一轮里写多少份申请都只提醒一次。
         self.notify_plan_updated_if_changed()
         return result
 
     # -- 归档入口 ---------------------------------------------------------
-    def archive_once(self, *, now: datetime | None = None, observer: Any = None) -> RunResult:
+    def archive_once(self, *, now: datetime | None = None) -> RunResult:
         """时钟驱动：与轮询无关，**即使知识库一个字都没变也会跑**。
 
         ``now`` 可由调用方注入（常驻循环与测试都传固定时刻，路径才可复现）。
@@ -427,7 +426,6 @@ class Runner:
         moment = now or clock.now()
         current = self.snapshot_now()
         payload = build_archive_instruction(
-            run_id_prefix="",
             settings=self.settings,
             snapshot=current,
             now=moment,
@@ -435,7 +433,7 @@ class Runner:
         )
         run_id = new_run_id("archive", at=moment)
         payload["run_id"] = run_id
-        result = self._execute(run_id=run_id, kind="archive", payload=payload, observer=observer)
+        result = self._execute(run_id=run_id, kind="archive", payload=payload)
 
         self.state.last_archive_at = moment.isoformat(timespec="seconds")
         self.state.last_archive_title = str(payload.get("cycle_title") or "")
@@ -443,9 +441,7 @@ class Runner:
         return result
 
     # -- 执行 -------------------------------------------------------------
-    def _execute(
-        self, *, run_id: str, kind: str, payload: dict[str, Any], observer: Any = None
-    ) -> RunResult:
+    def _execute(self, *, run_id: str, kind: str, payload: dict[str, Any]) -> RunResult:
         self.settings.ensure_dirs()
         if self.settings.dry_run:
             # dry-run 下写操作不会真的生效，而 agent 会去读回来确认 ——
@@ -483,7 +479,6 @@ class Runner:
                 session=session,
                 max_steps=self.settings.max_steps,
                 max_tool_calls=self.settings.max_tool_calls,
-                observer=observer,
             )
 
         (run_dir / "result.json").write_text(
@@ -492,9 +487,7 @@ class Runner:
 
         # 留痕 → 语雀《工作日志》
         if self.settings.journal:
-            outcome = journal_mod.journal_or_warn(
-                self.client, self.settings, session_path, result=result.to_dict()
-            )
+            outcome = journal_mod.journal_or_warn(self.client, self.settings, session_path)
             result.journal = outcome
             (run_dir / "journal.json").write_text(
                 json.dumps(outcome, ensure_ascii=False, indent=2), encoding="utf-8"
@@ -512,7 +505,6 @@ class Runner:
 
 def build_archive_instruction(
     *,
-    run_id_prefix: str,
     settings: Settings,
     snapshot: Snapshot,
     now: datetime,
@@ -533,7 +525,6 @@ def build_archive_instruction(
     root_titles = [n for n in snapshot.toc if n.get("depth") == 1 and n.get("type") == "TITLE"]
     archive_node = next((n for n in root_titles if str(n.get("title") or "") == "归档区"), None)
     return {
-        "run_id": run_id_prefix,
         "kind": "archive",
         "at": snapshot.taken_at,
         "repo": {"namespace": settings.repo, "toc_sha": snapshot.toc_sha},
@@ -562,13 +553,3 @@ def _guide_body() -> str:
         return path.read_text(encoding="utf-8")
     except OSError:
         return ""
-
-
-# ---------------------------------------------------------------- 便捷函数
-
-
-def current_cycle_title(today: datetime | None = None) -> str:
-    """当前周期的目录名（仅用于日志/自检展示）。"""
-    anchor = today or clock.now()
-    current, _ = cycle_targets(anchor)
-    return current.title

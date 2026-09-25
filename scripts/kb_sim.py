@@ -5,10 +5,12 @@
 
 ```bash
 # 写一篇（默认写进当前申请目录）
-uv run python scripts/kb_sim.py write --title "新生见面会" --body-file scenarios/t1.md
+uv run python scripts/kb_sim.py write --title "新生见面会" \
+  --body-file tests/scenarios/t1_standard.md
 
 # 写一篇草稿（正文首行保留【草稿】）
-uv run python scripts/kb_sim.py write --title "读书会" --body-file scenarios/t2.md
+uv run python scripts/kb_sim.py write --title "读书会" \
+  --body-file tests/scenarios/t2_draft.md
 
 # 看当前目录里有哪些文档
 uv run python scripts/kb_sim.py ls
@@ -23,11 +25,11 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from datetime import date
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+from yuque_agent import clock  # noqa: E402
 from yuque_agent.config import DEFAULT_REPO, Settings  # noqa: E402
 from yuque_agent.week import cycle_of  # noqa: E402
 from yuque_agent.yuque import YuqueClient, YuqueError  # noqa: E402
@@ -64,7 +66,7 @@ def cmd_write(args: argparse.Namespace) -> None:
     if not body:
         raise SystemExit("需要 --body 或 --body-file")
 
-    target_dir = args.dir or cycle_of(date.today()).title
+    target_dir = args.dir or cycle_of(clock.today()).title
     with _client(settings) as client:
         node_uuid = _dir_node(client, target_dir)
         created = client.create_doc(title=args.title, body=body)
@@ -136,7 +138,6 @@ def main() -> None:
     e.set_defaults(func=cmd_edit)
 
     ls = sub.add_parser("ls", help="列出知识库里的文档")
-    ls.add_argument("--dir", default="")
     ls.set_defaults(func=cmd_ls)
 
     c = sub.add_parser("clean", help="删掉本次模拟写入的全部文档")

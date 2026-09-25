@@ -3,10 +3,11 @@
 > 这不是风格偏好：**每一条都对应一次真实事故**，时间、现象、证据都写在里面。
 > 任何代理（或人）在动这个仓库 / 这台机器之前，先读完本文件，再读 [`docs/deploy.md`](docs/deploy.md)。
 
-## 0. 先读这三份
+## 0. 先读这几份
 
 | 文件 | 它是什么 |
 |---|---|
+| [`docs/principles.md`](docs/principles.md) | **改代码前必读**：判断归 LLM、程序不越界——禁止在程序层对 LLM 的输出做语义闸门 |
 | [`docs/deploy.md`](docs/deploy.md) | 部署真相：目录布局、两个 systemd 单元、验收清单 |
 | [`docs/handoff.md`](docs/handoff.md) | 对下游（cac / 洋芋）的**冻结契约**：申请 JSON 与通知事件 |
 | [`docs/interface.md`](docs/interface.md) | 与 QQ 桥接方的**接口与边界**：目标态是两个仓库各管各的，桥不 import 核心内部 |
@@ -102,7 +103,7 @@
 
 1. `ruff check . && ruff format --check .`
 2. `pytest`（本地；在机器上则必须经由 `scripts/deploy.sh`）
-3. 碰了文档里的 systemd 单元 → `pytest tests/test_deploy_doc.py`
+3. 碰了 `deploy/*.service` → `pytest tests/test_deploy_doc.py`（它钉住几条关键指令）
 4. 部署后：两个单元 `systemctl is-active`，日志里有 `READY`、没有 `Traceback`，
    并且 `ops.log` 多了一行
 

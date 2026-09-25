@@ -3,6 +3,9 @@
 项目的研究题目是「如何做出误操作最少、最安全的 LLM-agent」，
 而本项目的答案是「用能力边界兜底，而不是用提示词求自律」。
 所以下面这几条必须被测试锁住：**日常轮询会话里，改语雀的工具必须不存在。**
+
+文件末尾还有一组**提示词文本守卫**（契约 ↔ 提示词漂没漂、提示词内部自相矛盾）。
+为什么「测试守卫可以、程序闸门不行」，见 `docs/principles.md`。
 """
 
 from __future__ import annotations
@@ -322,3 +325,56 @@ def test_tool_grouping_is_frozen() -> None:
         "doc_create",
         "doc_delete",
     ]
+
+
+# ------------------------------------------------- 「文案规矩」的文本守卫
+#
+# 只守**提示词文本**，不守 LLM 的输出：在程序层做语义拦截是明确禁止的
+# （硬字符串判断必然误伤，而且把「LLM 能不能自己守规矩」这个研究对象阉割掉）。
+# 见 `docs/principles.md` §4。
+
+#: 「让社员去改自己的文档」这类说法的典型写法。它们只允许出现在**文案规矩块**里
+#: ——那一块在讲「不许这么说」，必须引用这些说法当反例。
+TELL_MEMBER_TO_EDIT_PHRASES = ("把文档改一下", "改一下告诉我就行", "想改的话", "补充一下")
+
+
+def _prompt_copy_rules_block(text: str) -> str:
+    """截出提示词里「受理通知的文案规矩」那一块（📐 到下一个块 📮）。"""
+    start = text.find("📐")
+    end = text.find("📮")
+    assert start != -1 and end > start, (
+        "提示词里找不到文案规矩块（📐 … 📮）——要么规矩被删了，要么块的标记变了，"
+        "这条守卫要跟着改（别直接删守卫）"
+    )
+    return text[start:end]
+
+
+def test_polling_prompt_never_asks_members_to_edit_the_doc() -> None:
+    """提示词里（除了规矩块本身）不许出现「让社员去改文档」的说法。
+
+    2026-09-25 现场事故：规则写了「受理通知不许暗示社员改文档」，
+    而**同一个文件里** accepted 的例子仍写着「如果其实是晚上，把文档改一下告诉我就行」。
+    规则改了、例子没改，LLM 上线的行为是照**例子**走的。
+
+    这条守卫就是为了堵这一类自相矛盾：规矩块以外的地方再出现这些说法就红。
+    （`kb/guide.md` 不在此列——它正经地教社员改草稿，语境不同。）
+    """
+    text = PromptLoader().load("polling")
+    rules = _prompt_copy_rules_block(text)
+    assert "不许出现任何「改文档」的暗示" in rules, (
+        "文案规矩块里少了「不许暗示社员改文档」这条——它是拿现场事故换来的，别删"
+    )
+
+    rest = text.replace(rules, "")
+    offenders = [
+        f"第 {no} 行（{phrase!r}）：{line.strip()}"
+        for no, line in enumerate(rest.splitlines(), start=1)
+        for phrase in TELL_MEMBER_TO_EDIT_PHRASES
+        if phrase in line
+    ]
+    assert not offenders, (
+        "提示词里的例子又让社员去改文档了（受理后文档已锁定，他一改就收到「改动无效」）：\n  "
+        + "\n  ".join(offenders)
+        + "\n如果确实是必要的，先想清楚语境（只有 `rejected` 的文档没锁定），"
+        "再改这条守卫与规矩块。"
+    )

@@ -17,7 +17,6 @@ from yuque_agent.week import (
     cycle_of,
     cycle_targets,
     is_cycle_title,
-    parse_cycle_title,
 )
 
 
@@ -96,30 +95,10 @@ def test_boundary_and_targets_agree() -> None:
         assert current.title == cycle_of(boundary.date()).title
 
 
-def test_cycle_title_parsing() -> None:
+def test_cycle_title_recognition() -> None:
     assert is_cycle_title("0919-0925")
     assert not is_cycle_title("归档区")
     assert not is_cycle_title("0919")
-    parsed = parse_cycle_title("0919-0925", today=date(2026, 9, 20))
-    assert parsed is not None
-    assert parsed.start == date(2026, 9, 19)
-    assert parsed.end == date(2026, 9, 25)
-
-
-def test_cycle_title_parsing_across_year_end() -> None:
-    parsed = parse_cycle_title("1226-0101", today=date(2026, 12, 28))
-    assert parsed is not None
-    assert parsed.start == date(2026, 12, 26)
-    assert parsed.end == date(2027, 1, 1)
-
-
-def test_older_cycles_sort_before_newer() -> None:
-    """归档区内部按时间「最新在上」要靠它排序。"""
-    today = date(2026, 9, 20)
-    older = parse_cycle_title("0912-0918", today=today)
-    newer = parse_cycle_title("0919-0925", today=today)
-    assert older and newer
-    assert older.start < newer.start
 
 
 # ------------------------------------------------- 时区（部署到别人的服务器时会踩）

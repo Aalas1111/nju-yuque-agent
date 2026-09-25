@@ -163,8 +163,3 @@ def test_bookable_range() -> None:
     lo, hi = school.bookable_range(date(2026, 9, 20))
     assert lo == date(2026, 9, 22)
     assert hi == date(2026, 9, 29)
-
-
-def test_describe_day_range_is_human_readable() -> None:
-    text = school.describe_day_range(date(2026, 9, 20))
-    assert "2026-09-22" in text and "2026-09-29" in text

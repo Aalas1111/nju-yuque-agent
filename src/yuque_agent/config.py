@@ -149,15 +149,14 @@ class Settings:
     正文一有内容也不算中间态（防止「没改标题直接粘正文」的真实申请被静默丢掉）。
     """
 
-    verbose: bool = False
-
     plan_admin: str = ""
     """「申请清单已更新」这条通知发给谁（**语雀侧人名**）。
 
-    它必须是人名而不是 QQ 号：本层不认识 QQ 身份，映射在 ``qqbot.json`` 的
-    ``notify.members`` 里（这是当初分层时定的——agent 只知道语雀侧的人）。
+    它必须是人名而不是 QQ 号：本层不认识 QQ 身份，映射在**投递方**的配置里
+    （见 ``docs/interface.md`` §1.1：通知记录里的 ``target`` 可直投；
+    没有 ``target`` 时由桥按人名映射）。
 
-    留空 = 走 ``notify.default_target`` 兜底；连兜底也没配就进 ``unrouted/``
+    留空 = 走投递方的兜底目标；连兜底也没配就进 ``unrouted/``
     等人处理（**不会默默丢掉**）。
     """
 
@@ -239,11 +238,6 @@ class Settings:
         return self.root / "notes"
 
     @property
-    def conversations_dir(self) -> Path:
-        """QQ bot 交互式申请的会话存储目录。"""
-        return self.root / "conversations"
-
-    @property
     def control_dir(self) -> Path:
         """控制请求队列：外部进程（QQ 桥）→ 核心常驻进程的**唯一**触发通道。
 
@@ -269,7 +263,6 @@ class Settings:
             self.notify_dir / "pending",
             self.notify_dir / "done",
             self.notes_dir,
-            self.conversations_dir,
             self.control_requests_dir,
             self.control_done_dir,
         ):

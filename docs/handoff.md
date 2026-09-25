@@ -5,8 +5,7 @@
 > **申请 JSON**（→ 发起借用）与 **通知事件**（→ QQ 投递）。
 >
 > 本文是这三个模块之间的**冻结合同**。改字段要升 `schema_version` 并通知另外两方。
-
----
+> 完整样例见 [`examples/`](../examples/)（脱敏）。
 
 ## 0. 一张图
 
@@ -26,14 +25,16 @@ applications/   notify/pending/
         ▼         ▼
   「发起借用」     「QQ 投递」
   谷和平           王恩成
-  （教室借用插件）  （qqbot）
+  （教室借用插件）  （qqbot，独立仓库）
 ```
 
-产出目录（默认 `<workspace>/<lqogh0_jsjysq>/outbox/`）：
+产出目录（`<workspace>/<repo slug>/outbox/`）：
 
 ```
 outbox/applications/<application_id>.json    一份受理的申请一个文件
 outbox/applications/index.json               索引（扫目录重建）
+outbox/plan.json                             当前周期的交付件（下游取这个，见 §2.3）
+outbox/archive/<周期>/                        往期，与活跃期同形（冻结）
 outbox/notify/pending/<seq>-<kind>-<id>.json 待投递的通知事件
 outbox/notify/done/*.json                    投递方挪进来即视为已投递
 outbox/notify/outbox.jsonl                   只追加的审计流水（投递方**不要**读它）
@@ -48,9 +49,7 @@ outbox/notify/outbox.jsonl                   只追加的审计流水（投递�
 ### 1.1 不与学校系统做任何对接
 
 `yuque-agent` **只读语雀**，它**没有**登录南大办事大厅的能力，也**不查**任何教室占用情况。
-它不会调用空闲教室接口，也不会提交任何申请。
-
-**因此它无法判断**：
+它不会调用空闲教室接口，也不会提交任何申请。**因此它无法判断**：
 
 * 社员想要的那间教室在那个时段**是否空闲**；
 * 社员想要的那个教学楼在那个时段**有没有任何空教室**；
@@ -60,8 +59,6 @@ outbox/notify/outbox.jsonl                   只追加的审计流水（投递�
 
 一句话：**agent 只负责把社员填的信息收集、整理、结构化，原样交出去。**
 
-具体后果：
-
 | 情况 | agent 的行为 |
 |---|---|
 | 社员填了教室，但那间教室被占了 | **照样受理并交出**。下游退回「**同一时段、同一教学楼**」的随机空闲教室 |
@@ -69,18 +66,18 @@ outbox/notify/outbox.jsonl                   只追加的审计流水（投递�
 | 社员没填教学楼/教室 | 两个字段留空 = **不限 / 随机**，下游在**同一校区**内按容量挑 |
 
 > **代价要写清楚**：agent 交给下游的申请，**不保证能借到**。
-> 「这间教室现在到底空不空」这件事，只有下游（有学校登录态的一方）在**提交那一刻**才能知道。
+> 「这间教室现在到底空不空」只有下游（有学校登录态的一方）在**提交那一刻**才能知道。
 
-### 1.3 与旧设计文档的差异（我重新核对《分析1~4》后必须指出的地方）
+### 1.3 与早期设计讨论（《分析1~4》）的差异
 
-| 旧文档的说法 | 现状 | 说明 |
-|---|---|---|
-| 《分析1》建议「把教室借用和 Agent 对接」，理由是 agent 至少要能查空闲教室才能判断该不该退回 | **本版不采用** | CAC 与本轮需求已明确：agent 不做对接。**因此《分析1》里那条「目标教学楼在目标时间段无任何空闲教室 → REJECTED」无法实现**，该判定**下移到下游**（下游查不到教室就按 `no_room` 处理） |
-| 《分析1》「不把随机条目的处理放在 agent 阶段」 | **保留** | 原因不变：申请时点与 agent 判定时点脱节，随机结果必须在**提交那一刻**定 |
-| 《分析1》「两个活动共用一间教室 → 写在同一篇文档里，处理成一次申请」 | **保留** | 提示词里已写明 |
-| 《分析3/4》「agent 全权维护知识库（建库/建文档/移目录/删文档/自愈）」 | **部分采用** | 只有**每周六 00:00 的归档会话**才挂结构写工具；日常轮询**一个语雀写工具都没有**（`tests/test_safety.py` 锁死）。详见 `docs/design.md` §5 |
-| 旧版「必须提前 48 小时」 | **修正** | 校方真实规则是**可借日期 = 今天 +2 ~ 今天 +9 天**（来自 谷和平 对借用页面的实测）。`>9 天` 由「受理+提醒」改成了**硬性退回** |
-| 旧版「活动日期距今 >14 天 → 受理+提醒」 | **删除** | 被上面的 9 天上限取代 |
+只有两条仍然有效：
+
+* 《分析1》「不把随机条目的处理放在 agent 阶段」——**保留**：申请时点与判定时点脱节，
+  随机结果必须在**提交那一刻**定。
+* 《分析1》「两个活动共用一间教室 → 写在同一篇文档里，处理成一次申请」——**保留**（提示词里已写明）。
+
+不采用的那条：《分析1》建议的「目标教学楼无空闲教室 → 退回」——**agent 没有学校登录态，做不到**，
+该判定**下移到下游**（下游查不到教室就按 `no_room` 处理）。
 
 ---
 
@@ -88,8 +85,8 @@ outbox/notify/outbox.jsonl                   只追加的审计流水（投递�
 
 ### 2.1 核心约定：`activity` 就是 `crb` 的 `Activity`
 
-下游是**纯程序**，它不会替你猜「仙林」是 `"3"`、「仙II区」是 `"11"`。
-所以 `activity` 对象的字段名与语义**完全对齐 `NJU_Classroom_Booking`（crb）的 `Activity`**：
+下游是**纯程序**，它不会替你猜「仙林」是 `"3"`、「仙II区」是 `"12"`。
+所以 `activity` 的字段名与语义**完全对齐 `NJU_Classroom_Booking`（crb）的 `Activity`**：
 
 | 字段 | 类型 | 说明 | 空值含义 |
 |---|---|---|---|
@@ -102,152 +99,46 @@ outbox/notify/outbox.jsonl                   只追加的审计流水（投递�
 | `room_type` | str \| null | 教室类型代码 `JASLXDM` | `null` = 不限 |
 | `preferred_room` | str \| null | **意向教室名**，社员原话 | `null` = 随机 |
 
-> **多出来的键会被忽略**（crb 用 pydantic，默认 `extra="ignore"`），所以本文件里的
-> `raw` / `derived` / `agent` / `source` 都不会影响消费。
+**多出来的键会被忽略**（crb 用 pydantic，默认 `extra="ignore"`），所以
+`raw` / `derived` / `agent` / `source` / `normalizations` / `warnings` 都不会影响消费
+——它们是我们自己的审计轨迹，供人工复核。
 
-### 2.2 完整示例
+完整示例（含全部字段与 `derived` 推导过程）见
+[`examples/application.example.json`](../examples/application.example.json)。
 
-```json
-{
-  "schema_version": "2.0",
-  "application_id": "2026-09-23-285808038",
-  "created_at": "2026-09-20T10:18:40+08:00",
+### 2.2 怎么用（推荐流程）
 
-  "source": {
-    "repo": "lqogh0/jsjysq",
-    "doc_id": 285808038,
-    "title": "新生见面会",
-    "author": "张三",
-    "dir": "0919-0925",
-    "content_sha256": "25dce296…"
-  },
+**取件的是 `outbox/plan.json`（当前周期，自动刷新）——不要自己去拼，也不要读 `applications/` 目录：**
 
-  "activity": {
-    "title": "新生见面会",
-    "date": "2026-09-23",
-    "period": "7-8",
-    "people": 25,
-    "campus": "3",
-    "building": "12",
-    "room_type": null,
-    "preferred_room": "仙I-201"
-  },
-
-  "raw": {
-    "activity_name": "新生见面会",
-    "date": "2026-09-23",
-    "start": "16:10", "end": "18:00",
-    "campus": "仙林", "building": "仙II区", "room": "仙I-201",
-    "people": 25
-  },
-
-  "derived": {
-    "campus_name": "仙林", "campus_code": "3",
-    "ksjc": 7, "jsjc": 8,
-    "building_code": "12",
-    "building_note": "教学楼「仙II区」→ JXLDM=12",
-    "people_source": "document"
-  },
-
-  "agent": {
-    "run_id": "20260920-101834-polling-7d44",
-    "verdict": "accepted",
-    "confidence": "high",
-    "notes": ["教室未填写，按随机分配处理"]
-  },
-
-  "normalizations": ["「下午4点到6点」→ 16:00-18:00"],
-  "warnings": []
-}
-```
-
-### 2.3 怎么用（推荐流程）
-
-#### 取件的是 `outbox/plan.json`（**当前周期**，自动刷新）
-
-**不要自己去拼 `plan.json`，也不要读 `applications/` 目录**：
-
-* `outbox/plan.json` 是**当前申请周期**的交付件；它**每次有申请变动就自动重发**，
-  你拿到的总是最新的；
-* 周期翻转（周六 00:00）时，程序会把整批产物搬进 `outbox/archive/<周期>/`，
-  当前那份 `plan.json` 随之清空。**所以旧申请不会漏进本周的清单**；
-* 往期的可以从 `outbox/archive/<周期>/plan.json` 取（那个版本是**冻结**的，
-  等于「那周到底交付了什么」的凭证）。
+* 它是**当前申请周期**的交付件；**每次有申请变动就自动重发**，你拿到的总是最新的；
+* 周期翻转（周六 00:00）时，程序把整批产物搬进 `outbox/archive/<周期>/`，当前那份随之清空
+  ——**所以旧申请不会漏进本周的清单**；
+* 往期从 `outbox/archive/<周期>/plan.json` 取（那个版本**冻结**，等于「那周到底交付了什么」的凭证）。
 
 ```bash
-# 下游先出方案（不写系统）
-crb plan --file plan.json
-
-# 确认后落库
-crb plan --file plan.json --save
+crb plan --file plan.json            # 先出方案（不写系统）
+crb plan --file plan.json --save     # 确认后落库
 ```
 
-> **每次取完请对一眼 `cycle` 字段**（如 `"0919-0925"`），它必须是本周的周期号。
-> 这是唯一能一眼看出「我拿到的是不是上周那份」的标记——**服务器不会替你验证**。
+**取件方式**（油猴脚本没法直连服务器，只能人工）：① 打开下载口
+`http://<服务器地址>:8787/`（**公开、无密钥、打开即下载**，见 `docs/deploy.md` §10）；
+② 或 `scp lihe@<服务器地址>:/var/lib/yuque-agent/workspace/lqogh0_jsjysq/outbox/plan.json .`。
+服务器地址由项目负责人单独交接，**不在仓库里**。
 
-#### 取件（油猴脚本没法直连服务器，只能人工取）
+> **每次取完请对一眼 `cycle` 字段**（如 `"0919-0925"`）：它必须是本周的周期号。
+> 这是唯一能一眼看出「我拿到的是不是上周那份」的标记——**服务器不会替你验证这一点**。
 
-**推荐：开网页，点下载。不要密钥，打开就是当前那一份。**
-
-```text
-http://<服务器地址>:8787/            ← 一页：当前周期 / 条数 / 下载按钮
-http://<服务器地址>:8787/download    ← 直接下 plan.json
-http://<服务器地址>:8787/plan.json   同上（方便 curl / 脚本）
-往期：http://<服务器地址>:8787/archive/0919-0925/plan.json
-```
-
-从服务器上取（不加 ssh 也行）：
-
-```bash
-scp lihe@<服务器地址>:/var/lib/yuque-agent/workspace/lqogh0_jsjysq/outbox/plan.json .
-```
-
-（服务器地址由项目负责人单独交接，**不在仓库里**。）
-
-> **每次取完请对一眼 `cycle` 字段**（如 `"0919-0925"`），它必须是本周的周期号。
-> 这是唯一能一眼看出「我拿到的是不是上周那份」的标记——**服务器不会替你验证**。
-> 下载页面顶部也写着它。
->
-> 下载口是**公开**的（无密钥），里面只有申请清单（活动名称/日期/节次/校区）。
-> 借用人姓名与手机号（`defaults`）目前是空的；一旦填上，它们也会跟着公开。
-
-#### 借用人信息（`defaults`）
-
-`JYRXM` / `JYRDH` 这些只需**设一次**：
+**借用人信息（`defaults`）**：`JYRXM` / `JYRDH` 这些只需**设一次**：
 
 ```bash
 uv run yqa export-plan --defaults '{"JYDWDM":"400760","JYRXM":"张三","JYRDH":"13800000000","JSJYLXDM":"02"}'
 ```
 
-它会落盘到 `outbox/plan.defaults.json`，之后每次自动重发都会带上。
-（不落盘不行——自动重发会把当时传的 defaults 丢掉。）
-
-#### 结构
-
-```json
-{
-  "cycle": "0919-0925",
-  "generated_at": "2026-09-20T10:18:40+08:00",
-  "defaults": { "JYDWDM": "…", "JYRXM": "…", "JYRDH": "…", "JSJYLXDM": "02" },
-  "activities": [
-    { "title": "新生见面会", "date": "2026-09-23", "period": "7-8", "people": 25,
-      "campus": "3", "building": "12", "room_type": null, "preferred_room": "仙I-201",
-      "_application_id": "2026-09-23-285808038", "_doc_id": 285808038 }
-  ]
-}
-```
-
+它会落盘到 `outbox/plan.defaults.json`，之后每次自动重发都会带上（不落盘不行——自动重发会把
+当时传的 defaults 丢掉）。`plan.json` 的结构见 [`examples/plan.example.json`](../examples/plan.example.json)；
 `activities` 就是 2.1 的 `activity` 原样（加两个 `_` 开头的溯源键）。
-`cycle` / `generated_at` 是**新增的元数据**，crb 会忽略（它用 pydantic，
-默认 `extra="ignore"`）；留它们是为了让人一眼看出拿到的是哪一周。
 
-#### 想知道当前清单长什么样（在服务器上）
-
-```bash
-yqa-as-service export-plan          # 刷新并打印（同时会重写 outbox/plan.json）
-```
-
-### 2.4 幂等与去重
+### 2.3 幂等与去重
 
 * `application_id = <活动日期>-<语雀 doc_id>`：**稳定、可排序、可读**，同一篇文档重复受理只会覆盖同一个文件。
 * 一份申请**只写一次**：受理时落盘，之后文档怎么改都不会重写（改了只发 `tampered` 通知）。
@@ -256,6 +147,9 @@ yqa-as-service export-plan          # 刷新并打印（同时会重写 outbox/p
 ---
 
 ## 3. 契约 B：通知事件（→ 王恩成：QQ 投递）
+
+> **投递方是独立项目**（QQ 桥，2026-09-24 从本仓库拆出，见 [`interface.md`](interface.md)）。
+> 它自己的代码 / 单元 / 配置 / 凭证在它自己的仓库与目录里。
 
 ### 3.1 目录协议
 
@@ -276,41 +170,16 @@ outbox/notify/delivery.jsonl                          投递方的审计流水�
 4. 目录是同机共享的，**qqbot 与 agent 部署在同一台机器上最省事**；
 5. `outbox.jsonl` 用来审计，**不要**既读它又挪文件，否则会重复投递。
 
-> 📌 **投递方是独立的项目**（QQ 桥，2026-09-24 从本仓库拆出，
-> 见 [`interface.md`](interface.md) §11/§1.1）。上面的约定一个字都没改。
-> 它额外做的三件事：认不出人 → `unrouted/`、坏文件 → `failed/`、发送失败**停下本轮**
-> 以保住 `seq` 顺序。身份映射（语雀人名 → QQ openid）放在工作区 `qqbot.json`，
-> 详细说明与故障排查在它自己的仓库里。
-
 ### 3.2 字段
 
-```json
-{
-  "schema_version": "1.0",
-  "seq": 12,
-  "notice_id": "9f2c1a0b",
-  "created_at": "2026-09-20T10:19:24+08:00",
-  "kind": "rejected",
-  "repo": "lqogh0/jsjysq",
-  "doc":    { "doc_id": 285808143, "title": "社团例会", "url": "https://nova.yuque.com/…" },
-  "member": { "name": "孙七" },
-  "summary": "「社团例会」活动时间起止写反了",
-  "message": "「社团例会」这份申请我没法提交：活动时间写的是 17:00-16:00，结束时间比开始时间还早，应该是写反了……",
-  "reasons": ["活动时间 17:00-16:00，结束早于开始"],
-  "warnings": [],
-  "extra": {},
-  "target": { "scope": "c2c", "target_id": "<openid>" }
-}
-```
+字段与语义见 [`examples/notice.example.json`](../examples/notice.example.json)（含注释）。要点：
 
 * **`message` 已经是渲染好的中文正文，QQ 里直接发这一条就行**，不需要下游再拼。
-* `summary` 是一句话标题（适合做消息前缀）。
-* `reasons` / `warnings` 是结构化版本，想自己排版就用它。
-* `target`（**可选**）：直投目标，**不经过** `notify.members` 的人名映射。
+* `summary` 是一句话标题（适合做消息前缀）；`reasons` / `warnings` 是结构化版本，想自己排版就用它。
+* `target`（**可选**）：直投目标，**不经过** `notify.members` 的人名映射，
   用于「在 QQ 里自助申请、回复就该给他本人」这类场景（`scope` = `c2c`/`group`）。
-  投递方读到它就直接发，读不到就按 §3.1 的人名映射走。
-  （2026-09-24 由 program 侧正式产出，见 `docs/interface.md` §1.1；
-  兼容期仍可读旧名 `direct_target`。）
+  投递方读到它就直接发，读不到就按 §3.3 的人名映射走。核心正式产出该字段
+  （契约见 `docs/interface.md` §1.1）。
 
 ### 3.3 `kind` 取值
 
@@ -324,20 +193,9 @@ outbox/notify/delivery.jsonl                          投递方的审计流水�
 | `info` | 其它需要告知社员的 | —— |
 | `plan_updated` | **清单变了**（程序发，见下） | 给 **cac** 的：「请尽快下载并提交」 |
 
-#### `plan_updated`（新增，**只能由程序发**）
+#### `plan_updated`（**只能由程序发**）
 
-每次 `outbox/plan.json` 的内容真变了，程序就发一条这个，提醒 cac 去取件：
-
-```json
-{
-  "kind": "plan_updated",
-  "member": { "name": "<管理员的语雀人名，取自 YQA_PLAN_ADMIN>" },
-  "summary": "申请清单已更新（0919-0925）",
-  "message": "【申请清单已更新】周期 0919-0925，共 3 条，活动日期 2026-09-23 ~ 2026-09-25。\n请尽快下载 outbox/plan.json 并提交，逾期不补。",
-  "extra": { "cycle": "0919-0925", "count": 3, "dates": [...], "plan_fingerprint": "a1b2c3d4" }
-}
-```
-
+每次 `outbox/plan.json` 的内容真变了，程序就发一条这个，提醒 cac 去取件。
 三个刻意的设计：
 
 * **LLM 发不出这一类**。它是程序专属的（`outputs.PROGRAM_NOTICE_KINDS`），
@@ -347,28 +205,25 @@ outbox/notify/delivery.jsonl                          投递方的审计流水�
 * **按内容指纹去重**：一轮里写 3 份申请只发 **1** 条；周期翻转后清单变空**不**发
   （不打扰人）。指纹进了 `state.json`，重启不会重发。
 * **文案只说「请下载」，绝不出现「已处理 / 已办结 / 已提交」**。
-  我们无从知道 cac 到底下没下、交没交。声称已办结会把「至少一次」
-  变成「至多一次」（他一次没下，系统就以为这一批处理过了）。
+  我们无从知道 cac 到底下没下、交没交。声称已办结会把「至少一次」变成「至多一次」。
 
-**投递方需要做的**：在 `notify.members` 里给管理员人名配一个目标，
-或者配 `notify.default_target` 兜底。没配也不会丢——会进 `unrouted/` 等人处理。
-管理员人名由 `YQA_PLAN_ADMIN` 指定（见 `docs/deploy.md` §10）。
+`member.name` 取自 `YQA_PLAN_ADMIN`（见 `docs/deploy.md` §9）。**投递方需要在它自己的人名映射里
+能查到这个名字**，否则会进 `unrouted/`（不会丢，但也没人收到）。
 
 ### 3.4 身份映射是投递方的责任
 
-agent 给的是语雀侧身份（`member.name` = 文档里手填的申请人），
-**语雀身份 → QQ 号的映射由 qqbot 负责**，agent 不做这个映射。
+agent 给的是语雀侧身份（`member.name` = 文档里手填的申请人，**没写就留空**），
+**语雀身份 → QQ 号的映射由桥负责**，核心不做这个映射。
+桥把这张表放在工作区 `qqbot.json` 的 `notify.members` 里（人名 → `c2c:<openid>` / `group:<群openid>`），
+并提供「兜底目标」与「认不出就挪进 `unrouted/` 等人处理」两种策略——细节在它自己的仓库里。
 
-自带的投递方（`yqa qq notify` / `yqa qq serve`）把这张表放在工作区 `qqbot.json` 的
-`notify.members` 里（人名 → `c2c:<user_openid>` / `group:<group_openid>`），
-并提供「兜底目标」与「认不出就挪进 `unrouted/` 等人处理」两种策略，
-见 [`qqbot.md`](qqbot.md) §3.3。
+> `member.name` 留空是**正常情况**：文档里没写「申请人」时程序不会编一个，
+> 桥按兜底目标发（通常是社团群）。**别把它当成缺陷去叫社员补写**——
+> 受理后文档已锁定，他一改就会被判「改动无效」。
 
 ---
 
 ## 4. 需要下游配合 / 待确认的事项
-
-（§4.1 是给 QQ 侧的待办，其余是给交付侧 / crb 的。）
 
 | # | 事项 | 说明 |
 |---|---|---|
@@ -377,50 +232,7 @@ agent 给的是语雀侧身份（`member.name` = 文档里手填的申请人）�
 | H3 | **节假日 / 寒暑假 / 校历** | 「今天+2 ~ +9 天」是**自然日**近似。真正的可借窗口受校历与假期影响，agent 不查校历（无学校登录态）。**下游必须在提交前用自己的 `cxxtcs.do` 再校验一次**。 |
 | H4 | **一个申请覆盖跨周期日期** | 可借窗口是 9 天，会跨到下一个申请周期（例：9/20 能借到 9/29，而周期目录 `0919-0925` 只到 9/25）。目前**不做特殊处理**——申请按活动日期归档，不按目录归属。 |
 | H5 | **提交时机** | 建议下游按**活动日期**而不是「收到申请的时间」排队提交；越接近可借窗口开启越早提交越稳。 |
-| H6 | **通知事件的 `kind` 词汇表** | 目前 6 种（见 §3.3）。如果投递方需要新的种类（例如「已通过」「已撤回」），需要在我们的提示词里加例子——`kind` 是 LLM 选的，不是程序枚举的。 |
-
-### 4.1 给 QQ 侧（王恩成）的待办与建议
-
-> 这一节是**需求/建议**，具体怎么做由 QQ 侧定。前两条是「不做就用不起来」的，
-> 后面几条是负责人对产品形态的想法。
-
-**① 现在通知一条都发不出去（数据缺，不是代码缺）。**
-
-`outbox/notify/` 的机器是对的，但工作区 `qqbot.json` 里 `notify.members` 是空的、
-`default_target` 也没配，于是**每一条通知都会进 `unrouted/`**：
-
-| 通知 | 收件人从哪来 |
-|---|---|
-| `accepted` / `rejected` / …（给社员） | LLM 把文档里「申请人：」搬进 `emit_notice(member_name=…)`，程序拿它查 `notify.members` |
-| `plan_updated`（提醒 cac 去下载提交） | `YQA_PLAN_ADMIN` 指定的那个名字，同样要能在 `notify.members` 里查到 |
-
-所以上线前必须做两件事：让每个人给机器人发 `/whoami` 拿自己的 openid、
-填进 `notify.members`；设 `YQA_PLAN_ADMIN` 并把它也加进映射。
-`yqa doctor` 的「配置体检」那行会告警「通知无法投递」—— 验收时看它。
-
-**② 通知/命令的形态（负责人的想法，QQ 侧实现）**
-
-* **管理员群里能发调试命令** —— 现在已经能做到（`inbound.admin_groups` 配了 1 个群）。
-* **发给 cac 的通知也发到管理员群**，并且**最好能 @ 指导老师**：
-  也就是说需要一个**可配置的 @ 目标**（配一个 QQ 号/openid，发送时 @ 他）。
-  管理群适合这件事，因为「该去提交了」是给管理员的提醒，不是给社员的。
-* **另外还要一个通知群**（与管理员群分开）。
-
-  > QQ 侧的 `notify.members` 值本来就支持 `group:<群openid>`，所以「发到群」是现成能力；
-  > 需要新增的是**群内 @ 某个人**（目前没有这个概念）。
-  > 顺带提醒：`@` 的目标必须是 QQ 的 openid / user_id，**不能是 QQ 号数字**
-  > ——QQ 官方机器人接口不接受裸 QQ 号，得先有对方的 openid。
-
-**③ 验收脚本可以多查一步。** `scripts/deploy.sh` 现在只看 `systemctl is-active`。
-建议再加两条：`curl -s localhost:8787/healthz`（下载口）与日志里出现
-`[qqbot:gateway] READY`（网关真连上了）。「进程活着」和「功能可用」是两件事。
-
-**④ 别在服务器上改代码。** 见 `AGENTS.md` §1 —— 服务器上只允许快进。
-`deploy.sh` 会硬失败（跟踪的文件不干净就停），但规矩先写在那儿比较好：
-**在服务器上直接编辑 + 提交会让 `git merge --ff-only` 失败，也把「谁改了什么」从
-版本历史里挪到了运维记录里，下游就看不到改动了。**
-
----
+| H6 | **通知事件的 `kind` 词汇表** | 目前 7 种（见 §3.3）。如果投递方需要新的种类（例如「已通过」「已撤回」），需要在我们的提示词里加例子——`kind` 是 LLM 选的，不是程序枚举的。 |
 
 ---
 
@@ -431,16 +243,11 @@ uv sync
 export YQA_TOKEN=<语雀写权限令牌>
 uv run yqa doctor
 
-# 造一篇测试申请
+# 造一篇测试申请（场景原文在 tests/scenarios/，共 9 个：标准 / 草稿 / 草稿标记删一半 /
+# 模糊写法 / 时间填反 / 不足 2 天 / 看不出是申请 / 纯自然语言 / 已受理后被伪装改动）
 uv run python scripts/kb_sim.py write --title "新生见面会" \
   --body-file tests/scenarios/t1_standard.md --dir 0919-0925
 
-# 跑一轮，产出 applications/*.json
-uv run yqa once
-
-# 汇总成下游格式
-uv run yqa export-plan --defaults '{"JSJYLXDM":"02"}'
+uv run yqa once                            # 跑一轮，产出 applications/*.json
+uv run yqa export-plan --defaults '{"JSJYLXDM":"02"}'   # 汇总成下游格式
 ```
-
-`tests/scenarios/` 下有 8 个场景（标准 / 草稿 / 草稿标记删一半 / 模糊写法 / 时间填反 /
-不足 2 天 / 看不出是申请 / 纯自然语言），可以直接拿来跑回归。

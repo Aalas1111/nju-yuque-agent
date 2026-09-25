@@ -1,8 +1,9 @@
 """语雀 OpenAPI 薄封装（``/api/v2/*``，``X-Auth-Token``）。
 
 自己写一份而不是复用旧项目，是为了让这一层的**能力边界**本身可见：
-读取方法随便调，写入方法只有 5 个，且全部经过 :meth:`YuqueClient._write`，
-所以「agent 到底能不能改语雀」在代码里是**一眼可数**的。
+读取方法随便调，写入方法全部经过 :meth:`YuqueClient._write`（dry-run 与审计的唯一入口），
+所以「agent 到底能不能改语雀」在代码里是**一眼可数**的：写方法共 7 个，
+其中 ``toc_rename`` **没有注册给任何工具集**（见 `docs/design.md` D9）。
 
 实测要点（踩过的坑）：
 
@@ -22,7 +23,8 @@
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass, field, replace
+from collections.abc import Iterable
+from dataclasses import dataclass, replace
 from typing import Any
 
 import httpx
@@ -57,10 +59,6 @@ class TocNode:
     order: int
     """在目录里的先后次序（0 起）。"""
 
-    @property
-    def is_dir(self) -> bool:
-        return self.type == "TITLE"
-
 
 @dataclass(frozen=True)
 class DocMeta:
@@ -74,11 +72,6 @@ class DocMeta:
     word_count: int
     doc_type: str = "Doc"
 
-    @property
-    def fingerprint(self) -> str:
-        """用于 diff 的轻量指纹：标题 + 更新时间。"""
-        return f"{self.title}\x00{self.updated_at}"
-
 
 @dataclass(frozen=True)
 class DocDetail(DocMeta):
@@ -87,16 +80,6 @@ class DocDetail(DocMeta):
 
 
 # ---------------------------------------------------------------- 客户端
-
-
-@dataclass
-class WriteLog:
-    """dry-run 时记录「本来要做什么」。"""
-
-    ops: list[dict[str, Any]] = field(default_factory=list)
-
-    def add(self, op: str, **kwargs: Any) -> None:
-        self.ops.append({"op": op, **kwargs})
 
 
 class YuqueClient:
@@ -116,7 +99,6 @@ class YuqueClient:
         self.host = host.rstrip("/")
         self.repo = repo
         self.dry_run = dry_run
-        self.write_log = WriteLog()
         self.scopes = ""
         self._slug_cache: dict[int, str] = {}
         self._client = httpx.Client(
@@ -180,17 +162,16 @@ class YuqueClient:
         return self._unwrap(self._request("GET", path, params=params))
 
     def _write(self, method: str, path: str, *, op: str, json_body: Any) -> Any:
-        """所有写操作的唯一入口——dry-run 与审计都收在这里。"""
+        """所有写操作的唯一入口——dry-run 与审计都收在这里。
+
+        dry-run 的留痕在 `RunContext.note_kb_write()`（会进 session 与 result.json），
+        这里只负责「不真的发请求」。
+        """
         if self.dry_run:
-            self.write_log.add(op, method=method, path=path, body=json_body)
             return {"__dry_run__": True, "op": op, "path": path}
         return self._unwrap(self._request(method, path, json_body=json_body))
 
     # -- 读 ---------------------------------------------------------------
-    def whoami(self) -> dict[str, Any]:
-        data = self._get("/api/v2/user")
-        return data if isinstance(data, dict) else {}
-
     def repo_info(self) -> dict[str, Any]:
         data = self._get(f"/api/v2/repos/{self.repo}")
         return data if isinstance(data, dict) else {}
@@ -373,17 +354,34 @@ class YuqueClient:
 def doc_dir_map(nodes: list[TocNode]) -> dict[int, str]:
     """``doc_id -> 它所在的目录路径``（根目录下的文档算 ``""``）。
 
-    注意不能直接用节点自身的 ``path``——对 DOC 节点而言那是「父目录/文档名」，
-    而我们要的是**容纳它的目录**。
+    不能直接用节点自身的 ``path``——对 DOC 节点而言那是「父目录/文档名」，
+    而我们要的是**容纳它的目录**；也不能去切 ``path`` 字符串
+    （文档标题里可以带 ``/``，实测踩到过）。
+
+    算法只有 :func:`_dir_map_by_parent` 这一份，``tools`` 走
+    :func:`dir_map_from_payload`（同一份实现的载荷版）。
     """
-    by_uuid = {node.uuid: node for node in nodes}
-    out: dict[int, str] = {}
-    for node in nodes:
-        if not node.doc_id:
-            continue
-        parent = by_uuid.get(node.parent_uuid)
-        out[node.doc_id] = parent.path if parent else ""
-    return out
+    return _dir_map_by_parent((n.uuid, n.doc_id, n.parent_uuid, n.path) for n in nodes)
+
+
+def dir_map_from_payload(toc: list[dict[str, Any]]) -> dict[int, str]:
+    """:func:`doc_dir_map` 的载荷版：``toc`` 是变更报告里那份 list[dict]。"""
+    return _dir_map_by_parent(
+        (
+            str(item.get("uuid") or ""),
+            _to_int(item.get("doc_id")),
+            str(item.get("parent_uuid") or ""),
+            str(item.get("path") or ""),
+        )
+        for item in toc
+    )
+
+
+def _dir_map_by_parent(rows: Iterable[tuple[str, int, str, str]]) -> dict[int, str]:
+    """``(uuid, doc_id, parent_uuid, path)`` 四元组 → ``doc_id -> 父目录 path``。"""
+    rows = list(rows)
+    path_of = {uuid: path for uuid, _, _, path in rows}
+    return {doc_id: path_of.get(parent_uuid, "") for _, doc_id, parent_uuid, _ in rows if doc_id}
 
 
 def _to_int(value: Any) -> int:

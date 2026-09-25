@@ -1,53 +1,24 @@
-"""守卫：`docs/deploy.md` 里的 systemd 单元必须和 `deploy/*.service` 一致。
+"""守卫：`deploy/*.service` 里那几件「一出事就难查」的指令必须还在。
 
-为什么要有这条：单元**曾经漂过**——文档里少了 `Documentation=` 和
-`SyslogIdentifier=` 两个真机上真有的指令，`ExecStart` 还是折成三行的写法。
-照文档敲出来的单元和正在跑的不是同一个文件，而这种事**没人会去对账**。
+**为什么不再对照 `docs/deploy.md`**：文档里抄一份单元内容，下场是**文档自己先漂**
+（实测：少了 `Documentation=` 与 `SyslogIdentifier=`，`ExecStart` 也不是同一个文件，
+而这种事没人会去对账）。现在权威副本只有 `deploy/*.service` 这一份，文档只指向它。
 
-现在仓库里有权威副本（`deploy/*.service`，直接从真机取的），文档里那份是给人读的。
-两边只要不一致，这个测试就失败。
-
-而且光有「一致性」还不够：**两边一起改错也还是一致**。
-所以另加一层，把几件真出过事、一出事就难查的指令单独钉死。
+但「文件在那儿」不等于「内容对」：把 `SuccessExitStatus=143` 删掉，文件照样是合法单元。
+所以这里把真出过事、一出事就难查的指令单独钉死。
 """
 
 from __future__ import annotations
 
-import difflib
-import re
 from pathlib import Path
 
-import pytest
-
 ROOT = Path(__file__).resolve().parent.parent
-DEPLOY_DOC = ROOT / "docs" / "deploy.md"
 
-#: 仓库里的权威副本 → 它在 docs/deploy.md 里对应的章节号。
-UNITS = {
-    "yuque-agent.service": "4",
-    "yuque-agent-plan.service": "10",
-}
+#: 仓库里允许存在的单元。多一个都要先说清楚——见 test_qq_unit_is_gone_from_this_repo。
+UNITS = ("yuque-agent.service", "yuque-agent-plan.service")
 
 #: 轮询只有一个写者：`yuque-agent.service` 是**唯一**允许轮询的单元。
-#: QQ 桥自 2026-09-24 拆成独立项目（docs/interface.md），本仓库不再有它的单元。
 POLLING_UNIT = "yuque-agent.service"
-
-
-def _unit_block_in_doc(section_no: str) -> str:
-    """把 `docs/deploy.md` 某个章节里的 ```ini 代码块抠出来。"""
-    text = DEPLOY_DOC.read_text(encoding="utf-8")
-    nxt = str(int(section_no) + 1)
-    pattern = re.compile(rf"^## {re.escape(section_no)}\..*?(?=^## {nxt}\.|\Z)", re.S | re.M)
-    section = pattern.search(text)
-    assert section, f"docs/deploy.md 里没找到 §{section_no}"
-    block = re.search(r"```ini\n(.*?)```", section.group(0), re.S)
-    assert block, f"docs/deploy.md §{section_no} 里没找到 ```ini 代码块"
-    return block.group(1)
-
-
-def _norm(text: str) -> str:
-    """去掉行尾空白和首尾空行——那些不影响 systemd，也不该让测试红。"""
-    return "\n".join(line.rstrip() for line in text.strip().splitlines())
 
 
 def _unit(name: str) -> str:
@@ -66,39 +37,11 @@ def test_every_unit_file_exists_and_has_the_three_sections() -> None:
             assert section in body, f"{name} 里少了 {section}"
 
 
-# -- 一致性 ---------------------------------------------------------------
-
-
-@pytest.mark.parametrize("name", sorted(UNITS))
-def test_doc_unit_matches_the_file(name: str) -> None:
-    """核心断言：文档里那份和仓库里那份**逐行一致**。"""
-    real = _norm(_unit(name))
-    doc = _norm(_unit_block_in_doc(UNITS[name]))
-    if doc != real:
-        diff = "\n".join(
-            difflib.unified_diff(
-                real.splitlines(),
-                doc.splitlines(),
-                fromfile=f"deploy/{name}",
-                tofile=f"docs/deploy.md §{UNITS[name]}",
-                lineterm="",
-            )
-        )
-        raise AssertionError(
-            f"docs/deploy.md §{UNITS[name]} 的 systemd 单元和 deploy/{name} 不一致。\n"
-            "照文档敲出来的单元会和正在跑的不是同一个文件——这正是当初漂过的地方。\n\n" + diff
-        )
-
-
-# -- 关键指令（挡住「两边一起改错」）-------------------------------------
+# -- 关键指令（挡住「顺手改坏了」）-----------------------------------------
 
 
 def test_agent_unit_pins_the_things_that_actually_matter() -> None:
-    """把关键指令单独钉一遍。
-
-    纯一致性断言有个漏洞：**两边一起改错也还是一致**。
-    实测验证过：把 SuccessExitStatus=143 从两边同时删掉，一致性断言是绿的。
-    """
+    """把关键指令单独钉一遍。"""
     body = _unit("yuque-agent.service")
     must_have = {
         # 时区靠程序自己钉死，但 HOME 得对，否则 uv / 凭证找不到
@@ -134,17 +77,19 @@ def test_unit_never_runs_as_root() -> None:
         assert "User=root" not in _unit(name), f"{name} 不该用 root 跑"
 
 
+# -- AGENTS.md 跟着走 -----------------------------------------------------
+
 AGENTS = ROOT / "AGENTS.md"
 
 
 def test_agents_md_lists_every_unit() -> None:
     """`AGENTS.md` 必须提到 `deploy/` 下的**每个**单元。
 
-     为什么：它是代理/人进仓库前「先读的那几份」之一，里面写着「只有这两个单元」。
+    为什么：它是代理/人进仓库前「先读的那几份」之一，里面写着「只有这两个单元」。
     部署里新增一个单元而忘了改它，下一个人就会按旧清单去理解生产机。
 
-     这条守卫是拿一次真漂移换来的：`AGENTS.md` 当时把下载口写成「带密钥的」。
-     而密钥在那之前就去掉了 —— 一个专门用来防漂移的文件自己漂了。
+    这条守卫是拿一次真漂移换来的：`AGENTS.md` 当时把下载口写成「带密钥的」，
+    而密钥在那之前就去掉了 —— 一个专门用来防漂移的文件自己漂了。
     """
     body = AGENTS.read_text(encoding="utf-8")
     missing = [name for name in UNITS if name not in body]
@@ -191,7 +136,7 @@ def test_only_the_agent_unit_polls() -> None:
 def test_qq_unit_is_gone_from_this_repo() -> None:
     """QQ 桥（单元、命令）已经搬走——本仓库再出现这些就是回潮。"""
     units = sorted(path.name for path in (ROOT / "deploy").glob("*.service"))
-    assert units == ["yuque-agent-plan.service", "yuque-agent.service"], units
-    for name in units:
+    assert units == sorted(UNITS), units
+    for name in UNITS:
         body = _unit(name)
         assert "qq serve" not in body, f"{name} 里不该再出现 QQ 命令"
