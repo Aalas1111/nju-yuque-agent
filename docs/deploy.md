@@ -149,6 +149,16 @@ host key 与 `api.github.com/meta` 逐条核对过后写进 `/root/.ssh/known_ho
 **只读是有意的**：服务器在物理上 push 不了，给「服务器上不许提交」（`AGENTS.md` §1）再加一道纵深防御。
 迁移到新机器时要重建这把钥匙，并在 GitHub 仓库 → Settings → Deploy keys 登记（**别勾** write access）。
 
+实测（2026-09-25，登记之后）：
+
+| 检查 | 结果 |
+|---|---|
+| `ssh -T -p 443 git@ssh.github.com` | `Hi Aalas1111/nju-yuque-agent!`（钥匙认到了这个仓库） |
+| `git fetch origin` × 4 | **4/4 成功，稳定 ~3.8s**（同一天 HTTPS 是「45s 超时」与「1s 成功」交替） |
+| `git push --dry-run origin main` | 被拒：`ERROR: The key you are authenticating with has been marked as read only.` |
+
+钥匙指纹（迁移时用来核对）：`SHA256:UfIYy62qoNyklgj4D6iNYRoA2aZwq/biN0fKVLkYaPA`。
+
 **日常更新在开发机上跑 `scripts/sync-server.sh`**（地址不进仓库，从参数或 `YQA_SERVER` 传）：
 
 ```bash
