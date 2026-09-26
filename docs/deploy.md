@@ -3,7 +3,7 @@
 > 本文件只讲**怎么在一台新机器上把它跑起来**，不含任何服务器地址与凭证。
 > 具体那台机器的信息（IP / 账号 / 凭证位置）由项目负责人单独交接，**不要写进公开仓库**。
 
-这套东西的负载极轻：**一个常驻 Python 进程，每 60 秒拉一次语雀、偶尔调一次 LLM**。
+这套东西的负载极轻：**一个常驻 Python 进程，每 20 秒拉一次语雀、偶尔调一次 LLM**。
 实测内存占用约 **32 MB**，CPU 基本空转。所以机器不需要多好，但要满足下面几条。
 
 ## 1. 机器要求
@@ -278,7 +278,7 @@ yqa-as-service reset-test-data --workspace /var/lib/yuque-agent/workspace --scop
     那是**真的打了**，不是猜的。
   - 「申请清单」那行看得到当前周期与条数；「⚠ 清单隐私」出现时说明 `defaults` 非空（见 §10）。
 - [ ] `systemctl is-enabled yuque-agent` 是 `enabled`（开机自启）
-- [ ] `journalctl -u yuque-agent` 能看到「开始常驻：每 60s 轮询 …」
+- [ ] `journalctl -u yuque-agent` 能看到「开始常驻：每 20s 轮询 …」
 - [ ] 让一个真社员写一篇申请，**等 1~2 分钟**，确认：
   - `outbox/applications/` 出现申请 JSON
   - `outbox/notify/pending/` 出现对应的通知（受理必有 `accepted`）

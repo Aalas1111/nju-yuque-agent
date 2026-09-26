@@ -99,7 +99,7 @@ uv run yqa once --force           # 无视 diff，强制唤醒一次
 uv run yqa once --rescan          # 无视快照，把现有全部文档重新评估一遍（会重发通知）
 uv run yqa once --dry-run         # 所有写操作只记录不执行
 uv run yqa archive                # 手动跑一次归档会话（有结构写工具）
-uv run yqa run --interval 60 --quiet-seconds 45
+uv run yqa run --interval 20 --quiet-seconds 45
                                   # 常驻：轮询 + 静默期合并 + 每周六 00:00 自动归档
                                   # ★ 唯一写 state.json 的进程；也消费 control/requests/
 uv run yqa sessions               # 看本地留了哪些 run
@@ -142,7 +142,7 @@ uv run yqa doctor                 # 先看自检表，尤其「时区」与「�
 export YQA_REPO=<group>/<repo>         # 知识库 namespace（必填，没有默认库）
 export YQA_TOKEN=<语雀写权限令牌>      # 或放 ~/.yuque/auth.json
 export DEEPSEEK_API_KEY=<key>
-uv run yqa run --interval 60 --quiet-seconds 45
+uv run yqa run --interval 20 --quiet-seconds 45
 ```
 
 | 项 | 要求 |

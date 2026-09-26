@@ -19,7 +19,9 @@ Environment=PYTHONUNBUFFERED=1
 Environment=UV_CACHE_DIR=/var/lib/yuque-agent/.uv-cache
 SyslogIdentifier=yuque-agent
 
-ExecStart=/usr/local/bin/uv run --no-sync yqa run --workspace /var/lib/yuque-agent/workspace --interval 60 --quiet-seconds 45
+# 轮询 20s（2026-09-27 负责人拍板从 60s 调快）：社员保存后 ~1 分钟内就被处理
+# （20s 一轮 + 45s 静默期）。成本很低——没变化的一轮只花 2 次 API 调用、0 token。
+ExecStart=/usr/local/bin/uv run --no-sync yqa run --workspace /var/lib/yuque-agent/workspace --interval 20 --quiet-seconds 45
 
 Restart=always
 RestartSec=15

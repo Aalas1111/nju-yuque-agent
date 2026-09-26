@@ -102,8 +102,9 @@ class Settings:
     token: str = ""
 
     workspace: Path = field(default_factory=lambda: Path("workspace"))
-    interval: int = 60
-    """轮询间隔（秒）。"""
+    interval: int = 20
+    """轮询间隔（秒）。没变化的一轮只花 2 次 API 调用、**0 token**，所以可以调得很勤
+    （2026-09-27 起生产用 20s，见 `deploy/yuque-agent.service`）。"""
 
     quiet_seconds: int = 45
     """**静默期**：发现变化后先不叫醒 LLM，等知识库安静这么久再一次性处理。
@@ -209,7 +210,7 @@ class Settings:
             repo=os.environ.get("YQA_REPO", ""),
             host=os.environ.get("YQA_HOST", DEFAULT_HOST),
             workspace=Path(os.environ.get("YQA_WORKSPACE", "workspace")),
-            interval=int(os.environ.get("YQA_INTERVAL", "60")),
+            interval=int(os.environ.get("YQA_INTERVAL", "20")),
             model=os.environ.get("YQA_MODEL", DEFAULT_MODEL),
             api_base=os.environ.get("YQA_API_BASE", DEFAULT_API_BASE),
             plan_admin=os.environ.get("YQA_PLAN_ADMIN", ""),
