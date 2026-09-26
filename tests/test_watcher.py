@@ -173,7 +173,12 @@ def test_archive_can_be_disabled(settings: Settings) -> None:
 
 
 def test_run_forever_survives_a_failing_round(settings: Settings) -> None:
-    """常驻进程不能因为一轮异常就死掉。"""
+    """常驻进程不能因为一轮异常就死掉。
+
+    关掉归档：``run_forever`` 用的是**真实时钟**，而这里是周六（周期翻转日）——
+    不关的话它会走归档分支，而这条测试要的是「轮询那一轮炸了」。
+    """
+    settings.archive_enabled = False
 
     class Boom(FakeRunner):
         def poll_once(self, *, force: bool = False, rescan: bool = False, now=None, debounce=True):

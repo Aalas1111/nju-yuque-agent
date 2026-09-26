@@ -170,7 +170,7 @@ def _dir_list(ctx: RunContext, args: dict[str, Any]) -> Any:
             continue
         # 注意：不能把 ``path == ""``（根目录下的文档）当成「匹配任意目录」。
         # 实测踩到过：之前写成 ``path == wanted or path.endswith("/"+wanted) or path == ""``，
-        # 结果 ``dir_list("归档区/0912-0918")`` 会把根目录的《指导文档》《工作日志》
+        # 结果 ``dir_list("归档区/0912-0918")`` 会把根目录的《指导文档》《Agent 通知》
         # 一并返回——归档会话要是信了这个结果，就可能把系统性文档从根目录搬走。
         if root_wanted:
             matched = path == ""
@@ -447,7 +447,7 @@ def _emit_notice(ctx: RunContext, args: dict[str, Any]) -> Any:
 
 
 def _done(ctx: RunContext, args: dict[str, Any]) -> Any:
-    """本轮结束。给出一个判定标签与一句话摘要（会写进 session 与工作日志）。"""
+    """本轮结束。给出一个判定标签与一句话摘要（会写进 session，并在 8787 的 /log 里显示）。"""
     ctx.verdict = str(args.get("verdict") or "unspecified")
     ctx.summary = str(args.get("summary") or "")
     ctx.finished = True
@@ -481,13 +481,16 @@ def _toc_move(ctx: RunContext, args: dict[str, Any]) -> Any:
     """把一个目录节点移动到另一个目录下（例如把上一周期的目录移进归档区）。"""
     node_uuid = _need(args, "node_uuid")
     target_uuid = str(args.get("target_uuid") or "")
+    prepend = bool(args.get("prepend"))
+    detail = {"node_uuid": node_uuid, "target_uuid": target_uuid, "prepend": prepend}
     if ctx.settings.dry_run:
-        ctx.note_kb_write("toc_move", {"node_uuid": node_uuid, "target_uuid": target_uuid})
-        return {"dry_run": True, "would_move": node_uuid}
-    ctx.client.toc_move(node_uuid=node_uuid, target_uuid=target_uuid)
+        ctx.note_kb_write("toc_move", detail)
+        return {"dry_run": True, "would_move": node_uuid, **detail}
+    ctx.client.toc_move(node_uuid=node_uuid, target_uuid=target_uuid, prepend=prepend)
     ctx.client.wait_toc_settled()
-    ctx.note_kb_write("toc_move", {"node_uuid": node_uuid, "target_uuid": target_uuid})
-    return {"moved": node_uuid, "target_uuid": target_uuid or "(根目录末尾)"}
+    ctx.note_kb_write("toc_move", detail)
+    where = "最前" if prepend else "末尾"
+    return {"moved": node_uuid, "target": target_uuid or "(根目录)", "position": where}
 
 
 def _toc_remove(ctx: RunContext, args: dict[str, Any]) -> Any:
@@ -525,7 +528,7 @@ def _doc_delete(ctx: RunContext, args: dict[str, Any]) -> Any:
     doc_id = _need(args, "doc_id")
     reason = str(args.get("reason") or "").strip()
     if not reason:
-        raise ToolError("reason 必填——删文档必须说明理由，理由会写进 session 与工作日志")
+        raise ToolError("reason 必填——删文档必须说明理由，理由会写进 session 留痕")
     if ctx.settings.dry_run:
         ctx.note_kb_write("doc_delete", {"doc_id": doc_id, "reason": reason})
         return {"dry_run": True, "would_delete": doc_id, "reason": reason}
@@ -670,11 +673,14 @@ ARCHIVE_TOOLS: tuple[Tool, ...] = (
     ),
     Tool(
         "toc_move",
-        "把一个目录节点移到另一个目录下（例如把上一周的目录移进归档区）。",
+        "把一个目录节点移到另一个目录下（例如把上一周期的目录移进归档区）。"
+        "默认落在目标**末尾**；要放进**最前**就传 prepend=true。"
+        "移动后位置不会自动核对——需要的话自己 kb_tree() 再看一遍。",
         _params(
             {
                 "node_uuid": STR,
-                "target_uuid": {**STR, "description": "目标父节点 uuid，留空=移到根目录末尾"},
+                "target_uuid": {**STR, "description": "目标父节点 uuid，留空=根目录"},
+                "prepend": {**BOOL, "description": "true=放到目标最前，默认 false=放到最末"},
             },
             ["node_uuid"],
         ),

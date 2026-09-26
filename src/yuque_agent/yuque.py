@@ -307,10 +307,15 @@ class YuqueClient:
             payload["target_uuid"] = target_uuid
         return self._write("PUT", f"/api/v2/repos/{self.repo}/toc", op="toc_add", json_body=payload)
 
-    def toc_move(self, *, node_uuid: str, target_uuid: str = "") -> Any:
-        """把节点移到 ``target_uuid`` 的子节点末尾；不带 target 就是移到根目录末尾。"""
+    def toc_move(self, *, node_uuid: str, target_uuid: str = "", prepend: bool = False) -> Any:
+        """把节点移到 ``target_uuid`` 下：默认落在**末尾**，``prepend=True`` 落在**最前**；
+        不带 ``target_uuid`` 就是根目录。
+
+        ``prepend`` 是 2026-09-26 实测过的（``action=prependNode`` + ``node_uuid`` 真的会把节点
+        挪到最前面）。没有它，「归档区内部最新在最上」就只能把整列节点倒着重排一遍。
+        """
         payload: dict[str, Any] = {
-            "action": "appendNode",
+            "action": "prependNode" if prepend else "appendNode",
             "action_mode": "child",
             "node_uuid": node_uuid,
         }

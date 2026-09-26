@@ -96,7 +96,6 @@ class Watcher:
             f"周期翻转/归档时刻 = 每周{'一二三四五六日'[self.settings.archive_weekday]} "
             f"{self.settings.archive_hour:02d}:00"
             + ("（dry-run）" if self.settings.dry_run else "")
-            + ("（写工作日志）" if self.settings.journal else "")
         )
         while True:
             # 人工请求优先于定时轮询：QQ 桥（或别的下游）写进 control/requests/

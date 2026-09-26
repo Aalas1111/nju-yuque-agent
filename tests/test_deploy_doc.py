@@ -129,7 +129,7 @@ def test_only_the_agent_unit_polls() -> None:
     """
     agent = _unit(POLLING_UNIT)
     assert "yqa run" in agent, "轮询单元必须自己跑 `yqa run`"
-    assert "--journal" in agent, "写回工作日志在轮询侧（它才知道这一轮改了什么）"
+    assert "--quiet-seconds" in agent, "静默期合并必须在生产里开着（它才知道这一轮改了什么）"
     assert "Conflicts=" not in agent, "核心只剩一个轮询单元，不该再声明 Conflicts"
 
 

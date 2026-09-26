@@ -14,10 +14,9 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
-from . import clock, outputs
-from . import journal as journal_mod
+from . import clock, noticedoc, outputs
 from .agent import RunResult, run_agent, session_path_for
-from .config import Settings
+from .config import ARCHIVE_ZONE_TITLE, GUIDE_TITLE, Settings
 from .llm import LLMClient
 from .prompts import PromptLoader
 from .session import SessionRecorder
@@ -53,8 +52,12 @@ class State:
     """首次检测到变化的时间（ISO）。非空 = 有一批变更正在等静默期结束。"""
     pending_polls: int = 0
     """这批变更已经攒了多少轮（用于在报告里展示「合并掉了多少次唤醒」）。"""
-    journal_doc_id: int = 0
-    """《工作日志》的 doc_id。程序自己写的文档，永远不当变更信号（见 Settings.ignore_doc_titles）。"""
+    notice_doc_id: int = 0
+    """《Agent 通知》的 doc_id。程序自己维护的文档，永远不当变更信号（见 Settings.ignore_doc_titles）。
+
+    读旧的 state.json 时兼容 ``journal_doc_id``（《工作日志》2026-09-26 换成了《Agent 通知》，
+    语义没变：仍是「程序自己写的那篇文档」）。
+    """
     placeholder_dropped: int = 0
     """上一轮被剔除的「占位标题 + 空正文」文档数（仅用于自检/调试）。"""
 
@@ -82,7 +85,7 @@ class State:
             "last_archive_at": self.last_archive_at,
             "pending_since": self.pending_since,
             "pending_polls": self.pending_polls,
-            "journal_doc_id": self.journal_doc_id,
+            "notice_doc_id": self.notice_doc_id,
             "placeholder_dropped": self.placeholder_dropped,
             "active_cycle": self.active_cycle,
             "plan_notified": self.plan_notified,
@@ -100,7 +103,7 @@ class State:
             last_archive_at=str(payload.get("last_archive_at") or ""),
             pending_since=str(payload.get("pending_since") or ""),
             pending_polls=int(payload.get("pending_polls") or 0),
-            journal_doc_id=int(payload.get("journal_doc_id") or 0),
+            notice_doc_id=int(payload.get("notice_doc_id") or payload.get("journal_doc_id") or 0),
             placeholder_dropped=int(payload.get("placeholder_dropped") or 0),
             active_cycle=str(payload.get("active_cycle") or ""),
             plan_notified=str(payload.get("plan_notified") or ""),
@@ -178,8 +181,8 @@ class Runner:
     def snapshot_now(self) -> Snapshot:
         """拿一次快照，并**把程序自己写的文档剔除掉**。
 
-        为什么必须剔除：《工作日志》就在被监控的知识库里。不剔的话：
-        程序写日志 → 日志变了 → 唤醒 LLM → 又写日志 → …（自激循环，实测踩到过）。
+        为什么必须剔除：《Agent 通知》就在被监控的知识库里。不剔的话：
+        程序写通知 → 通知变了 → 唤醒 LLM → 又写通知 → …（自激循环，实测踩到过）。
         """
         snapshot = take_snapshot(self.client)
         ignored = self._ignored_doc_ids(snapshot)
@@ -220,7 +223,24 @@ class Runner:
         )
         self.state.active_cycle = cycle
         self.save_state()
+        # 周期一翻，《Agent 通知》就该只剩新周期的东西（重建出来自然就是空的）——
+        # 顺手做掉，免得等下一轮跑完才清。
+        self.refresh_notice_doc(cycle=cycle)
         return self.last_rotation
+
+    # -- 《Agent 通知》：本周期通知的对外窗口 -----------------------------
+    def refresh_notice_doc(self, *, cycle: str = "") -> dict[str, Any]:
+        """重建语雀《Agent 通知》文档（**幂等、零 token**）。
+
+        它是**程序**维护的：内容 = 本周期内 agent 发出去的处理通知（重建，见
+        :mod:`.noticedoc`），所以「周期翻转时清空」不需要额外动作。
+        写它自己也算一次知识库变更，所以它的 doc_id 会被记下来排除在变更信号之外。
+        """
+        outcome = noticedoc.refresh(self.settings, self.client, cycle=cycle)
+        if outcome.get("doc_id"):
+            self.state.notice_doc_id = int(outcome["doc_id"])
+            self.save_state()
+        return outcome
 
     # -- 交付件变了就提醒管理员 -----------------------------------------
     def notify_plan_updated_if_changed(self) -> dict[str, Any] | None:
@@ -249,8 +269,8 @@ class Runner:
 
     def _ignored_doc_ids(self, snapshot: Snapshot) -> set[int]:
         ignored: set[int] = set()
-        if self.state.journal_doc_id:
-            ignored.add(self.state.journal_doc_id)
+        if self.state.notice_doc_id:
+            ignored.add(self.state.notice_doc_id)
         titles = set(self.settings.ignore_doc_titles)
         if titles:
             ignored.update(doc_id for doc_id, doc in snapshot.docs.items() if doc.title in titles)
@@ -399,7 +419,7 @@ class Runner:
             report["notes"].append(
                 "本轮是 **rescan（重建产物）**：请把下面每篇文档都当作**首次看到**来重新判定，"
                 "并且**重新产出** `emit_application` / `emit_notice`。"
-                "不要因为历史记录（工作日志 / outbox）里说「已经处理过」就跳过 —— "
+                "不要因为历史记录（《Agent 通知》 / outbox）里说「已经处理过」就跳过 —— "
                 "本轮的**唯一目的就是把产物重新生成一遍**。"
                 "（这会导致重复通知，所以 rescan 不是日常命令。）"
             )
@@ -485,18 +505,12 @@ class Runner:
             json.dumps(result.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8"
         )
 
-        # 留痕 → 语雀《工作日志》
-        if self.settings.journal:
-            outcome = journal_mod.journal_or_warn(self.client, self.settings, session_path)
-            result.journal = outcome
-            (run_dir / "journal.json").write_text(
-                json.dumps(outcome, ensure_ascii=False, indent=2), encoding="utf-8"
-            )
-            # 记下《工作日志》的 doc_id：下次取快照就把它排除在外，
-            # 否则「写日志 → 日志变了 → 唤醒 LLM → 又写日志」会自激。
-            if outcome.get("doc_id"):
-                self.state.journal_doc_id = int(outcome["doc_id"])
-                self.save_state()
+        # 对外留痕 → 语雀《Agent 通知》：本周期发出去的通知都在那儿（内容由程序重建）
+        outcome = self.refresh_notice_doc()
+        result.notice_doc = outcome
+        (run_dir / "notice.json").write_text(
+            json.dumps(outcome, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
         return result
 
 
@@ -522,8 +536,11 @@ def build_archive_instruction(
         start_hour=settings.archive_hour,
     )
 
-    root_titles = [n for n in snapshot.toc if n.get("depth") == 1 and n.get("type") == "TITLE"]
-    archive_node = next((n for n in root_titles if str(n.get("title") or "") == "归档区"), None)
+    root_nodes = [n for n in snapshot.toc if n.get("depth") == 1]
+    root_titles = [str(n.get("title") or "") for n in root_nodes]
+    archive_node = next(
+        (n for n in root_nodes if str(n.get("title") or "") == ARCHIVE_ZONE_TITLE), None
+    )
     return {
         "kind": "archive",
         "at": snapshot.taken_at,
@@ -536,13 +553,26 @@ def build_archive_instruction(
         "previous_cycle_title": previous.title,
         "archive_node_uuid": (archive_node or {}).get("uuid", ""),
         "toc": snapshot.toc,
-        "root_titles": [str(n.get("title") or "") for n in root_titles],
+        "root_titles": root_titles,
+        # 根目录的目标顺序（这是**需求**，不是判断，所以由程序给）：
+        # 排完必须再 kb_tree() 读一遍自己核对——工具只返回事实，顺序得自己看。
+        "root_target_order": [
+            GUIDE_TITLE,
+            settings.notice_title,
+            current.title,
+            ARCHIVE_ZONE_TITLE,
+        ],
+        "archive_zone_rule": (
+            "归档区永远在根目录最末；它内部按时间从新到旧、从上往下（刚归档的那个周期在最上面）"
+        ),
         "guide_doc_body": guide_body,
         "counts": {"docs_known": len(snapshot.docs)},
         "notes": (
             []
             if archive_node
-            else ["根目录还没有「归档区」分组，请先用 toc_create 建一个（如果确实需要）。"]
+            else [
+                f"根目录还没有「{ARCHIVE_ZONE_TITLE}」分组，请先用 toc_create 建一个（如果确实需要）。"
+            ]
         ),
     }
 

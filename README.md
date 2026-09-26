@@ -15,7 +15,8 @@
 只有每周六的**归档会话**才把这批写工具挂上去。「能力分级」就是本项目最核心的**可做实验的变量**。
 
 第二个研究问题是**可观测性**：每次 run 的完整 session（喂进去什么 → 它想了什么 → 调了什么工具 →
-最后下什么结论）原样留档，并按时间戳写回语雀《工作日志》，供人复查和改进工作流。
+最后下什么结论）原样留档，对外的两个「看板」是知识库里的《Agent 通知》文档
+（本周期通知，最新的在最上面、周期更替时清空）与 8787 端口的 `/log` 页（每轮结论，说人话）。
 
 > 背景（上一版项目为什么被判定失败）与设计取舍见 [`docs/design.md`](docs/design.md) §0。
 
@@ -41,7 +42,7 @@
 │  runs/<run_id>/session.jsonl  完整留痕（唯一事实来源）            │
 │  outbox/applications/*.json   申请（交给负责提交的同学）          │
 │  outbox/notify/pending/*.json 通知事件（交给投递层）              │
-│  → 渲染成 markdown，按时间戳写回语雀《工作日志》                  │
+│  → 对外：《Agent 通知》文档（本周期通知）+ 8787 `/log`（每轮结论） │
 └───────────────────────────┬────────────────────────────────────┘
                             ▼
 ┌─ 投递层（**独立项目**：QQ 桥，见 docs/interface.md）──────────────┐
@@ -97,14 +98,14 @@ uv run yqa once --force           # 无视 diff，强制唤醒一次
 uv run yqa once --rescan          # 无视快照，把现有全部文档重新评估一遍（会重发通知）
 uv run yqa once --dry-run         # 所有写操作只记录不执行
 uv run yqa archive                # 手动跑一次归档会话（有结构写工具）
-uv run yqa run --interval 60 --quiet-seconds 45 --journal
-                                  # 常驻：轮询 + 静默期合并 + 每周六 00:00 自动归档 + 写工作日志
+uv run yqa run --interval 60 --quiet-seconds 45
+                                  # 常驻：轮询 + 静默期合并 + 每周六 00:00 自动归档
                                   # ★ 唯一写 state.json 的进程；也消费 control/requests/
 uv run yqa sessions               # 看本地留了哪些 run
-uv run yqa render <run_id>        # 把某次 run 的 session 渲染成人话
-uv run yqa journal <run_id>       # 把某次 run 写回语雀《工作日志》
+uv run yqa render <run_id>        # 把某次 run 的 session 渲染成人话（含思考与工具调用）
 uv run yqa export-plan -o plan.json --defaults '{...}'   # 汇总成下游可直接吃的 plan.json
-uv run yqa serve-plan             # 开申请清单下载口（公开、无密钥，见 docs/deploy.md §10）
+uv run yqa serve-plan             # 清单下载口 + 处理日志（/log；公开、无密钥，见 docs/deploy.md §10）
+uv run yqa refresh-notice         # 重建知识库里的《Agent 通知》文档（程序维护，幂等）
 uv run yqa sync-guide             # 把 kb/guide.md 上传为知识库《指导文档（必读）》
 uv run yqa reset-test-data --workspace <工作区> --yes    # 清空测试数据（默认只预览）
 ```
@@ -135,7 +136,7 @@ uv sync
 uv run yqa doctor                 # 先看自检表，尤其「时区」与「知识库 / 写权限」两行
 export YQA_TOKEN=<语雀写权限令牌>      # 或放 ~/.yuque/auth.json
 export DEEPSEEK_API_KEY=<key>
-uv run yqa run --interval 60 --quiet-seconds 45 --journal
+uv run yqa run --interval 60 --quiet-seconds 45
 ```
 
 | 项 | 要求 |
@@ -172,9 +173,10 @@ src/yuque_agent/
 ├── prompts.py    提示词加载（提示词是 .md 文件，不是字符串常量）
 ├── prompts/      polling.md / archive.md  ← 项目里最需要反复迭代的东西
 ├── outputs.py    对外契约：申请 JSON（activity 对齐 crb）/ 通知事件 / plan.json
-├── planserve.py  plan.json 下载口（公开、无密钥；只放行程序算出的那几个文件）
+├── planserve.py  plan.json 下载口 + /log 处理日志（公开、无密钥；只放行程序算出的那几个文件）
 ├── school.py     学校词汇表：校区代码、教学楼代码、节次表、可借日期窗口（查表，不归 LLM）
-├── journal.py    session → markdown → 语雀《工作日志》
+├── noticedoc.py  语雀《Agent 通知》文档：本周期通知，程序维护、幂等重建、周期更替清空
+├── render.py     把 session 渲染成人话（`yqa render`）
 ├── week.py       申请周期的日期计算
 └── kb/           guide.md / template.md（要投放到知识库的内容源文件）
 ```

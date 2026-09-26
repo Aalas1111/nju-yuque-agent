@@ -41,7 +41,7 @@
 │   │   ├── payload.json             喂给 LLM 的输入（含当时的提示词，留底）
 │   │   ├── session.jsonl            逐条留痕：工具调用 / 返回 / 思考
 │   │   ├── result.json              这轮的结构化结果
-│   │   └── journal.json             要写回《工作日志》的内容
+│   │   └── notice.json              这一轮跑完后《Agent 通知》的刷新结果（程序做的）
 │   ├── control/                     控制请求队列：外部（QQ 桥）→ 核心常驻进程
 │   │   ├── requests/                请求（once / archive / apply），核心消费
 │   │   └── done/                    回执（核心写，请求方读），7 天自动清理
@@ -132,8 +132,9 @@ journalctl -u yuque-agent -f          # 看日志
 > `--no-sync` 是刻意的：让 `uv run` 直接用已经装好的 `.venv`，不去动它。
 > 升级依赖时要手动 `uv sync` 一次。
 >
-> 用 `--journal` 会写回语雀《工作日志》。它**只在真有事发生时写**（静默轮询不写），
-> 所以不会平白污染那篇文档。
+> 每轮跑完，程序会把**本周期内 agent 发出去的处理通知**重建成《Agent 通知》文档
+> （幂等：内容没变就一个字都不写，静默轮询不写）。周期翻转时它会自动清空。
+> 每轮的「结论」另外在 8787 的 `/log` 页上，见 §10。
 
 ## 5. 运维注意
 
@@ -254,7 +255,7 @@ yqa-as-service doctor                       # 自检（这是第一条该跑的�
 yqa-as-service once --workspace /var/lib/yuque-agent/workspace   # 跑一轮
 yqa-as-service sessions                     # 看本地留了哪些 run
 yqa-as-service render <run_id>              # 把某次 run 渲染成人话
-yqa-as-service reset-test-data --workspace /var/lib/yuque-agent/workspace --scope all --journal
+yqa-as-service reset-test-data --workspace /var/lib/yuque-agent/workspace --scope all
 ```
 
 > ⚠️ **任何会动工作区的命令都必须显式写 `--workspace /var/lib/yuque-agent/workspace`。**
@@ -276,7 +277,8 @@ yqa-as-service reset-test-data --workspace /var/lib/yuque-agent/workspace --scop
 - [ ] 让一个真社员写一篇申请，**等 1~2 分钟**，确认：
   - `outbox/applications/` 出现申请 JSON
   - `outbox/notify/pending/` 出现对应的通知（受理必有 `accepted`）
-  - 语雀《工作日志》多了一节，且**最新的在最上面**
+  - 语雀《Agent 通知》多了本周期的新通知（最新的在最上面），且**根目录顺序**
+    是 `指导文档（必读） → Agent 通知 → 当前周期目录 → 归档区`（见 §10 与 `docs/design.md` §2.1）
 - [ ] 语雀《指导文档（必读）》里描述的通知行为（「受理了会收到 QQ」）与实际情况一致
 - [ ] 交付方（QQ 投递 / 教室借用插件）能读到 `outbox/` 并跑通一次
 
@@ -382,11 +384,18 @@ curl -s http://127.0.0.1:8787/healthz      # 应回 ok
 
 ```text
 GET /                          网页：当前周期 / 条数 / 更新时间 + 下载按钮
+GET /log                       处理日志：最近若干轮的结论（时间/类型/判定/摘要），说人话
 GET /download                  直接下载 plan.json（cac 说的那条）
 GET /plan.json                 同上（别名，方便 curl / 脚本）
 GET /archive/<周期>/plan.json    往期清单（那个版本是冻结的）
 GET /healthz                   给监控用，不泄任何内容
 ```
+
+**`/log` 暴露什么**（它也是公开的，2026-09-26 起取代了《工作日志》文档）：
+每一轮的 **时间 / 类型 / 判定 / 摘要**——摘要是 agent 写给人看的一句话结论
+（如「本轮只有 X 一篇新增文档，是阅读资料不是借用申请，已发 unrecognized 通知」）。
+**没有**工具调用、思考过程、社员原文；`runs/*/session.jsonl` 那种细节留在服务器上。
+它最多列最近 200 轮。
 
 ### 它是哪个级别的东西（**别把它当安全边界**）
 

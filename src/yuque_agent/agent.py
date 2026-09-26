@@ -44,7 +44,8 @@ class RunResult:
     kb_writes: list[dict[str, Any]] = field(default_factory=list)
     error: str = ""
     stop_reason: str = ""
-    journal: dict[str, Any] = field(default_factory=dict)
+    notice_doc: dict[str, Any] = field(default_factory=dict)
+    """这一轮跑完后《Agent 通知》文档的刷新结果（程序做的，不含 LLM 判断）。"""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -60,7 +61,7 @@ class RunResult:
             "kb_writes": self.kb_writes,
             "error": self.error,
             "stop_reason": self.stop_reason,
-            "journal": self.journal,
+            "notice_doc": self.notice_doc,
         }
 
 

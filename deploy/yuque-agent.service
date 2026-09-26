@@ -19,7 +19,7 @@ Environment=PYTHONUNBUFFERED=1
 Environment=UV_CACHE_DIR=/var/lib/yuque-agent/.uv-cache
 SyslogIdentifier=yuque-agent
 
-ExecStart=/usr/local/bin/uv run --no-sync yqa run --workspace /var/lib/yuque-agent/workspace --interval 60 --quiet-seconds 45 --journal
+ExecStart=/usr/local/bin/uv run --no-sync yqa run --workspace /var/lib/yuque-agent/workspace --interval 60 --quiet-seconds 45
 
 Restart=always
 RestartSec=15

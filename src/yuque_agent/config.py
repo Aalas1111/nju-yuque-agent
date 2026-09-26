@@ -20,6 +20,12 @@ DEFAULT_REPO = "lqogh0/jsjysq"
 DEFAULT_API_BASE = "https://api.deepseek.com"
 DEFAULT_MODEL = "deepseek-flash"
 
+#: 知识库里那几个「程序/人一起维护、有固定位置」的节点标题。
+#: 顺序就是它们在根目录里**必须**出现的顺序（见 `docs/design.md` §2.1）。
+GUIDE_TITLE = "指导文档（必读）"
+NOTICE_TITLE = "Agent 通知"
+ARCHIVE_ZONE_TITLE = "归档区"
+
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36"
@@ -118,15 +124,18 @@ class Settings:
     dry_run: bool = False
     """True = 所有写操作（语雀 + 工作区）只记录不执行。"""
 
-    journal: bool = False
-    """True = 把 session 写回语雀《工作日志》文档。"""
+    notice_title: str = NOTICE_TITLE
+    """程序自己维护的那个知识库文档的标题（《Agent 通知》）。
 
-    journal_title: str = "工作日志"
+    它在每个周期内累积 agent 发出的处理通知（最新的在最上面），周期更替时由程序清空。
+    **它的变更永远不算「知识库变了」**——否则「程序写通知 → 通知变了 → 唤醒 LLM → …」
+    会自激（实测踩到过，见 `ignore_doc_titles`）。
+    """
 
-    ignore_doc_titles: tuple[str, ...] = ("工作日志",)
+    ignore_doc_titles: tuple[str, ...] = (NOTICE_TITLE,)
     """**程序自己会写的文档标题。它们的变更永远不算「知识库变了」。**
 
-    否则会出现自激循环：程序写日志 → 日志变了 → 唤醒 LLM → 又写日志 → …
+    否则会出现自激循环：程序写通知 → 通知变了 → 唤醒 LLM → 又写通知 → …
     （实测踩到过：一篇测试文档触发了 13 次 run，其中 8 次就是这个循环，
     每轮白烧 5k token 而且停不下来。）
 

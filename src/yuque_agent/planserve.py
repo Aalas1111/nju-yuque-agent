@@ -25,15 +25,20 @@
 
 ```text
 GET /                            一个网页：显示当前周期/条数/更新时间 + 下载按钮
+GET /log                         处理日志：最近若干轮 agent 做了什么（只有结论，说人话）
 GET /download                    直接下载 plan.json（cac 说的「访问 download 立刻下载」）
 GET /plan.json                   同上（别名，方便 curl / 脚本）
 GET /archive/<周期>/plan.json      往期清单（那个版本是冻结的）
 GET /healthz                     给监控用，不泄任何内容
 ```
+
+``/log`` 是《工作日志》的替代品（2026-09-26 起）：**只渲染每一轮的结论**
+（时间 / 类型 / 判定 / 摘要），没有工具调用、没有思考过程。
 """
 
 from __future__ import annotations
 
+import html
 import json
 import re
 from http import HTTPStatus
@@ -50,6 +55,9 @@ _ARCHIVE_RE = re.compile(r"^/archive/([^/]{1,32})/plan\.json$")
 
 #: 下载时会用到的文件名（写进 Content-Disposition，方便 cac 直接存成 plan.json）。
 _DOWNLOAD_NAME = "plan.json"
+
+#: ``/log`` 最多列多少轮（runs/ 会一直长下去，页面不能无限大）。
+MAX_LOG_ENTRIES = 200
 
 
 def _page(settings: Settings) -> str:
@@ -96,8 +104,81 @@ def _page(settings: Settings) -> str:
 <p style="color:#666;font-size:.85rem;margin-top:2rem">
   下载后先 <code>crb plan --file plan.json</code> 看一眼方案，确认无误再 <code>--save</code>。<br>
   <b>下载前请对一眼上面的周期号</b>——那能看出你有没有拿到上一周那份。<br>
-  往期：<code>/archive/&lt;周期&gt;/plan.json</code>（如 0919-0925）。
+  往期：<code>/archive/&lt;周期&gt;/plan.json</code>（如 0919-0925）。<br>
+  想看 agent 最近做了什么：<a href="/log">处理日志</a>。
 </p>
+</body></html>
+"""
+
+
+def _run_entries(settings: Settings) -> list[dict[str, Any]]:
+    """最近若干轮 run 的结论（新→旧）。读的是 ``runs/*/result.json``。"""
+    if not settings.runs_dir.is_dir():
+        return []
+    entries: list[dict[str, Any]] = []
+    for path in sorted(settings.runs_dir.glob("*/result.json"), reverse=True)[:MAX_LOG_ENTRIES]:
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if isinstance(data, dict):
+            entries.append(data)
+    return entries
+
+
+def _when(run_id: str) -> str:
+    """``20260926-202005-polling-09a8`` → ``2026-09-26 20:20``。"""
+    parts = str(run_id).split("-")
+    if len(parts) < 2 or len(parts[0]) != 8 or len(parts[1]) < 4:
+        return str(run_id)
+    day, clock = parts[0], parts[1]
+    return f"{day[:4]}-{day[4:6]}-{day[6:]} {clock[:2]}:{clock[2:4]}"
+
+
+#: run 类型 → 给人看的名字。
+KIND_NAMES = {"polling": "轮询", "archive": "归档"}
+
+
+def _log_page(settings: Settings) -> str:
+    """处理日志：**只有结论**（时间 / 类型 / 判定 / 摘要）——《工作日志》的替代品。
+
+    刻意不渲染工具调用与思考过程：那是调试用的，在 `runs/*/session.jsonl` 里，
+    而这一页是给人（含社员）看「agent 最近做了什么」的。
+    """
+    entries = _run_entries(settings)
+    if entries:
+        rows = "".join(
+            "<article style='border-top:1px solid #e5e7eb;padding:.9rem 0'>"
+            f"<div style='color:#666;font-size:.85rem'>"
+            f"{html.escape(_when(str(e.get('run_id') or '')))}"
+            f" · {html.escape(KIND_NAMES.get(str(e.get('kind')), str(e.get('kind') or '?')))}"
+            f" · {html.escape(str(e.get('verdict') or '—'))}</div>"
+            "<div style='margin-top:.35rem'>"
+            f"{html.escape(str(e.get('summary') or '（无摘要）')).replace(chr(10), '<br>')}</div>"
+            + (
+                "<div style='color:#b91c1c;margin-top:.35rem'>⚠ "
+                f"{html.escape(str(e.get('error')))}</div>"
+                if e.get("error")
+                else ""
+            )
+            + "</article>"
+            for e in entries
+        )
+        note = f"（只显示最近 {MAX_LOG_ENTRIES} 轮）" if len(entries) >= MAX_LOG_ENTRIES else ""
+        body = rows + f"<p style='color:#666;font-size:.85rem'>{note}</p>"
+    else:
+        body = "<p style='color:#666'>还没有任何处理记录。</p>"
+    return f"""<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex,nofollow">
+<title>处理日志</title></head>
+<body style="font-family:system-ui,-apple-system,sans-serif;max-width:44rem;margin:3rem auto;padding:0 1rem">
+<h1 style="font-size:1.25rem">处理日志</h1>
+<p style="color:#666;font-size:.9rem">agent 每次处理完都会在这里留一条结论（最新的在最上面）。
+要细节（工具调用、思考过程）看服务器上的 <code>runs/&lt;run_id&gt;/session.jsonl</code>。</p>
+{body}
+<p style="margin-top:2rem"><a href="/">← 回到申请清单</a></p>
 </body></html>
 """
 
@@ -117,6 +198,10 @@ class PlanHandler(BaseHTTPRequestHandler):
         if path == "/":
             return self._send(
                 HTTPStatus.OK, _page(self.settings).encode("utf-8"), "text/html; charset=utf-8"
+            )
+        if path == "/log":
+            return self._send(
+                HTTPStatus.OK, _log_page(self.settings).encode("utf-8"), "text/html; charset=utf-8"
             )
         if path in ("/download", "/plan.json"):
             return self._serve(self.settings.plan_file)

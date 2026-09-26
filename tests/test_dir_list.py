@@ -3,7 +3,7 @@
 **这个工具曾经有一个危险的 bug**（真机部署时抓到的）：
 过滤条件写成 ``path == wanted or path.endswith("/" + wanted) or path == ""``，
 最后那个 ``path == ""`` 让**根目录下的文档匹配任意目录**——于是
-``dir_list("归档区/0912-0918")`` 会把根目录的《指导文档》《工作日志》一并返回。
+``dir_list("归档区/0912-0918")`` 会把根目录的《指导文档》《Agent 通知》一并返回。
 
 危险之处在于归档会话：LLM 若信了这个结果，就会以为这两篇系统性文档在归档区，
 **可能把它们从根目录搬走**。当时那轮归档会话自己察觉到了异常（它的思考里写着
@@ -50,7 +50,7 @@ def ctx(tmp_path) -> Ctx:
     toc = [
         # 根目录下的两篇系统性文档（dir 应当是空串）
         toc_node("DOC", "指导文档（必读）", "指导文档（必读）", 100),
-        toc_node("DOC", "工作日志", "工作日志", 101),
+        toc_node("DOC", "Agent 通知", "Agent 通知", 101),
         toc_node("TITLE", "0919-0925", "0919-0925"),
         toc_node("DOC", "新生见面会", "0919-0925/新生见面会", 1, depth=2, parent="0919-0925"),
         # 标题里带 `/` 的文档（真机上真的出现过）
@@ -61,7 +61,7 @@ def ctx(tmp_path) -> Ctx:
     ]
     metas = [
         make_meta(100, "指导文档（必读）", updated_at="2026-09-20T01:00:00Z"),
-        make_meta(101, "工作日志", updated_at="2026-09-20T02:00:00Z"),
+        make_meta(101, "Agent 通知", updated_at="2026-09-20T02:00:00Z"),
         make_meta(1, "新生见面会", updated_at="2026-09-20T03:00:00Z"),
         make_meta(2, "读书会", updated_at="2026-09-20T04:00:00Z"),
         make_meta(3, "带/斜杠的标题", updated_at="2026-09-20T05:00:00Z"),
@@ -101,7 +101,7 @@ def test_nested_dir_does_not_leak_root_docs(ctx: Ctx) -> None:
     result = tools.execute(ctx.ctx, "dir_list", {"dir": "归档区/0912-0918"})
     assert result["ok"] is True
     assert titles(result["result"]) == {"读书会"}, (
-        "归档目录里只该有归档区的文档；混进《指导文档》《工作日志》会诱导归档会话把系统性文档搬走"
+        "归档目录里只该有归档区的文档；混进《指导文档》《Agent 通知》会诱导归档会话把系统性文档搬走"
     )
 
 
@@ -115,7 +115,7 @@ def test_can_list_the_root_explicitly(ctx: Ctx) -> None:
     """根目录下的文档要能单独列出来（用 '.'）。"""
     for token in (".", "根目录"):
         result = tools.execute(ctx.ctx, "dir_list", {"dir": token})
-        assert titles(result["result"]) == {"指导文档（必读）", "工作日志"}, token
+        assert titles(result["result"]) == {"指导文档（必读）", "Agent 通知"}, token
 
 
 def test_unknown_dir_returns_nothing_not_everything(ctx: Ctx) -> None:

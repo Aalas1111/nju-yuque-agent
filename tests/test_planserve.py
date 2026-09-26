@@ -227,3 +227,65 @@ def test_access_is_logged(settings: Settings, server: str, capsys) -> None:
     text = out.out + out.err
     assert "[plan]" in text
     assert "served" in text
+
+
+# -- /log：处理日志（《工作日志》的替代）-----------------------------------
+
+
+def write_run(
+    settings: Settings,
+    run_id: str,
+    *,
+    kind: str = "polling",
+    verdict: str = "accepted",
+    summary: str = "受理了一篇",
+    error: str = "",
+) -> None:
+    run_dir = settings.runs_dir / run_id
+    run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / "result.json").write_text(
+        json.dumps(
+            {
+                "run_id": run_id,
+                "kind": kind,
+                "verdict": verdict,
+                "summary": summary,
+                "error": error,
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+
+def test_log_lists_runs_newest_first_and_only_conclusions(settings: Settings, server: str) -> None:
+    """说人话：时间 / 类型 / 判定 / 摘要——**没有**工具调用和思考过程。"""
+    write_run(settings, "20260926-100000-polling-aaaa", summary="上午那轮")
+    write_run(settings, "20260926-202005-polling-bbbb", summary="晚上那轮", kind="archive")
+
+    status, body, headers = get(f"{server}/log")
+    text = body.decode("utf-8")
+
+    assert status == 200
+    assert "text/html" in headers.get("Content-Type", "")
+    assert text.index("晚上那轮") < text.index("上午那轮"), "最新的必须在最上面"
+    assert "2026-09-26 20:20" in text and "归档" in text
+    assert "tool_calls" not in text and "reasoning" not in text
+
+
+def test_log_escapes_agent_text(settings: Settings, server: str) -> None:
+    """这是个**公开**页面：agent 写的摘要里带 HTML 时必须转义，不能被当脚本执行。"""
+    write_run(settings, "20260926-100000-polling-aaaa", summary="<script>alert(1)</script>")
+    _, body, _ = get(f"{server}/log")
+    text = body.decode("utf-8")
+    assert "<script>" not in text
+    assert "&lt;script&gt;" in text
+
+
+def test_log_is_linked_from_the_download_page_and_tolerates_no_runs(
+    settings: Settings, server: str
+) -> None:
+    _, home, _ = get(f"{server}/")
+    assert "/log" in home.decode("utf-8"), "下载页要能点到处理日志"
+    _, log, _ = get(f"{server}/log")
+    assert "还没有任何处理记录" in log.decode("utf-8")

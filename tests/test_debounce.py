@@ -199,11 +199,11 @@ def test_pending_state_survives_restart(tmp_path) -> None:
     assert llm.calls == 1
 
 
-def test_own_journal_writes_never_trigger_a_run(tmp_path) -> None:
-    """**自激循环回归**：程序自己的《工作日志》变了，不能算「知识库变了」。
+def test_own_notice_doc_writes_never_trigger_a_run(tmp_path) -> None:
+    """**自激循环回归**：程序自己维护的《Agent 通知》变了，不能算「知识库变了」。
 
-    实测踩到过：一篇测试文档触发 13 次 run，其中 8 次是
-    「写日志 → 日志变了 → 唤醒 LLM → 又写日志」。
+    实测踩到过（当时的载体是《工作日志》）：一篇测试文档触发 13 次 run，其中 8 次是
+    「程序写文档 → 文档变了 → 唤醒 LLM → 又写文档」。
     """
     settings = Settings(repo="g/kb", workspace=tmp_path / "ws", quiet_seconds=0)
     settings.ensure_dirs()
@@ -212,37 +212,37 @@ def test_own_journal_writes_never_trigger_a_run(tmp_path) -> None:
     runner = Runner(settings=settings, client=client, llm=llm)  # type: ignore[arg-type]
 
     # 知识库里有申请文档，另有一篇程序自己写的日志文档
-    set_docs(client, (1, "新生见面会"), (99, "工作日志"))
+    set_docs(client, (1, "新生见面会"), (99, "Agent 通知"))
     assert runner.poll_once(now=dt("2026-09-20T10:00:00")) is None  # 基线（静默）
     assert llm.calls == 0
 
     # 日志文档被程序更新了 → 不该唤醒
-    set_docs(client, (1, "新生见面会"), (99, "工作日志"), updated="t1")
+    set_docs(client, (1, "新生见面会"), (99, "Agent 通知"), updated="t1")
     client.doc_metas = [
         make_meta(1, "新生见面会", updated_at="t1"),
-        make_meta(99, "工作日志", updated_at="t2"),
+        make_meta(99, "Agent 通知", updated_at="t2"),
     ]
     assert runner.poll_once(now=dt("2026-09-20T10:01:00")) is None
-    assert llm.calls == 0, "《工作日志》的变更不该唤醒 LLM（否则会自激）"
+    assert llm.calls == 0, "《Agent 通知》的变更不该唤醒 LLM（否则会自激）"
 
     # 但真正来自社员的变更仍要唤醒
-    set_docs(client, (1, "新生见面会"), (2, "读书会"), (99, "工作日志"))
+    set_docs(client, (1, "新生见面会"), (2, "读书会"), (99, "Agent 通知"))
     assert runner.poll_once(now=dt("2026-09-20T10:02:00")) is not None
     assert llm.calls == 1
 
 
-def test_journal_doc_excluded_by_id_even_after_rename(tmp_path) -> None:
-    """靠 doc_id 兜底：即使日志被改名，也不会重新变成变更信号。"""
+def test_notice_doc_excluded_by_id_even_after_rename(tmp_path) -> None:
+    """靠 doc_id 兜底：即使通知文档被改名，也不会重新变成变更信号。"""
     settings = Settings(repo="g/kb", workspace=tmp_path / "ws", quiet_seconds=0)
     settings.ensure_dirs()
     client = FakeYuque()
     llm = FakeLLM(script=[done_response()] * 3)
     runner = Runner(settings=settings, client=client, llm=llm)  # type: ignore[arg-type]
-    runner.state.journal_doc_id = 99
+    runner.state.notice_doc_id = 99
 
-    set_docs(client, (99, "被人改了名的日志"))
+    set_docs(client, (99, "被人改了名的通知"))
     runner.poll_once(now=dt("2026-09-20T10:00:00"))
-    client.doc_metas = [make_meta(99, "被人改了名的日志", updated_at="t2")]
+    client.doc_metas = [make_meta(99, "被人改了名的通知", updated_at="t2")]
     assert runner.poll_once(now=dt("2026-09-20T10:01:00")) is None
     assert llm.calls == 0
 

@@ -10,6 +10,7 @@ yqa archive                     # 手动跑一次归档会话
 yqa run                         # 常驻轮询 + 每周六自动归档
 yqa sessions                    # 看本地留了哪些 run
 yqa render <run_id>             # 把某次 run 的 session 渲染成人话
+yqa refresh-notice              # 重建语雀《Agent 通知》（程序维护，幂等）
 ```
 """
 
@@ -26,9 +27,16 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
-from . import __version__, clock, outputs
-from . import journal as journal_mod
-from .config import DEFAULT_MODEL, DEFAULT_REPO, Settings
+from . import __version__, clock, noticedoc, outputs
+from . import render as render_mod
+from .config import (
+    ARCHIVE_ZONE_TITLE,
+    DEFAULT_MODEL,
+    DEFAULT_REPO,
+    GUIDE_TITLE,
+    NOTICE_TITLE,
+    Settings,
+)
 from .llm import LLMClient, LLMError, describe_llm_error
 from .outputs import publish_plan, write_plan_defaults
 from .planserve import pii_warning
@@ -69,7 +77,6 @@ def _settings(
     repo: str,
     workspace: Path,
     dry_run: bool,
-    journal: bool,
     model: str,
     interval: int,
 ) -> Settings:
@@ -80,7 +87,6 @@ def _settings(
         model=model,
         interval=interval,
         dry_run=dry_run,
-        journal=journal,
     )
 
 
@@ -100,7 +106,7 @@ def doctor(
     model: Annotated[str, typer.Option("--model")] = DEFAULT_MODEL,
 ) -> None:
     """自检：凭证、权限、知识库连通、提示词、工作区。"""
-    settings = _settings(repo, workspace, False, False, model, 60)
+    settings = _settings(repo, workspace, False, model, 60)
     table = Table(title="yuque-agent 自检", show_lines=False)
     table.add_column("项", style="bold")
     table.add_column("结果")
@@ -227,9 +233,6 @@ def once(
     ] = False,
     workspace: Annotated[Path, typer.Option("--workspace", "-w")] = Path("workspace"),
     dry_run: Annotated[bool, typer.Option("--dry-run", help="所有写操作只记录不执行")] = False,
-    journal: Annotated[
-        bool, typer.Option("--journal", help="把 session 写回语雀《工作日志》")
-    ] = False,
     model: Annotated[str, typer.Option("--model")] = DEFAULT_MODEL,
     quiet: Annotated[bool, typer.Option("--quiet", "-q", help="没变化时不打印")] = False,
 ) -> None:
@@ -249,7 +252,7 @@ def once(
       由 ``tests/test_debounce.py::test_force_bypasses_nothing_but_still_needs_quiet`` 锁住。
       如果你绕开 CLI 直接调 ``poll_once(force=True)``，静默期内仍然不会跑。
     """
-    settings = _settings(repo, workspace, dry_run, journal, model, 60)
+    settings = _settings(repo, workspace, dry_run, model, 60)
     client, llm = _clients(settings)
     try:
         runner = Runner(settings=settings, client=client, llm=llm)
@@ -270,13 +273,10 @@ def archive(
     repo: RepoOpt = DEFAULT_REPO,
     workspace: Annotated[Path, typer.Option("--workspace", "-w")] = Path("workspace"),
     dry_run: Annotated[bool, typer.Option("--dry-run", help="所有写操作只记录不执行")] = False,
-    journal: Annotated[
-        bool, typer.Option("--journal", help="把 session 写回语雀《工作日志》")
-    ] = False,
     model: Annotated[str, typer.Option("--model")] = DEFAULT_MODEL,
 ) -> None:
     """手动跑一次归档会话（带结构写工具的那个）。"""
-    settings = _settings(repo, workspace, dry_run, journal, model, 60)
+    settings = _settings(repo, workspace, dry_run, model, 60)
     client, llm = _clients(settings)
     try:
         runner = Runner(settings=settings, client=client, llm=llm)
@@ -300,7 +300,6 @@ def run(
     ] = None,
     workspace: Annotated[Path, typer.Option("--workspace", "-w")] = Path("workspace"),
     dry_run: Annotated[bool, typer.Option("--dry-run")] = False,
-    journal: Annotated[bool, typer.Option("--journal")] = False,
     model: Annotated[str, typer.Option("--model")] = DEFAULT_MODEL,
     max_ticks: Annotated[
         int | None, typer.Option("--max-ticks", help="跑几轮就退出（自测用）")
@@ -314,7 +313,7 @@ def run(
     外部（QQ 桥等）要触发一轮/归档/申请，写 `control/requests/`，不要自己起轮询——
     见 `docs/interface.md` §1.2（两个写者会互相覆盖快照，那是记过事故的）。
     """
-    settings = _settings(repo, workspace, dry_run, journal, model, interval)
+    settings = _settings(repo, workspace, dry_run, model, interval)
     if quiet_seconds is not None:
         settings.quiet_seconds = quiet_seconds
     client, llm = _clients(settings)
@@ -334,7 +333,7 @@ def sessions(
     repo: RepoOpt = DEFAULT_REPO,
 ) -> None:
     """列出本地留档的所有 run。"""
-    settings = _settings(repo, workspace, False, False, DEFAULT_MODEL, 60)
+    settings = _settings(repo, workspace, False, DEFAULT_MODEL, 60)
     runs = sorted(settings.runs_dir.glob("*/session.jsonl")) if settings.runs_dir.exists() else []
     if not runs:
         console.print("[dim]还没有任何 run。[/dim]")
@@ -356,14 +355,14 @@ def render(
     out: Annotated[Path | None, typer.Option("--out", "-o", help="写入文件而不是打印")] = None,
 ) -> None:
     """把某次 run 的 session 渲染成人话。"""
-    settings = _settings(repo, workspace, False, False, DEFAULT_MODEL, 60)
+    settings = _settings(repo, workspace, False, DEFAULT_MODEL, 60)
     path = Path(run_id)
     if not path.is_file():
         path = settings.runs_dir / run_id / "session.jsonl"
     if not path.is_file():
         console.print(f"[red]找不到 session：{run_id}[/red]")
         raise typer.Exit(1)
-    text = journal_mod.render_session(path)
+    text = render_mod.render_session(path)
     if out:
         out.write_text(text, encoding="utf-8")
         console.print(f"已写入 {out}")
@@ -371,25 +370,19 @@ def render(
         console.print(text)
 
 
-@app.command()
-def journal(
-    run_id: Annotated[str, typer.Argument(help="run_id")],
+@app.command("refresh-notice")
+def refresh_notice(
     repo: RepoOpt = DEFAULT_REPO,
     workspace: Annotated[Path, typer.Option("--workspace", "-w")] = Path("workspace"),
-    dry_run: Annotated[bool, typer.Option("--dry-run")] = False,
 ) -> None:
-    """把某次 run 的 session 写回语雀《工作日志》。"""
-    settings = _settings(repo, workspace, dry_run, True, DEFAULT_MODEL, 60)
-    path = settings.runs_dir / run_id / "session.jsonl"
-    if not path.is_file():
-        console.print(f"[red]找不到 session：{path}[/red]")
-        raise typer.Exit(1)
+    """按当前周期的通知重建语雀《Agent 通知》文档（程序维护，幂等）。"""
+    settings = _settings(repo, workspace, False, DEFAULT_MODEL, 60)
     with YuqueClient(
         host=settings.host, token=settings.token, repo=settings.repo, dry_run=settings.dry_run
     ) as client:
-        outcome = journal_mod.journal_or_warn(client, settings, path)
+        outcome = noticedoc.refresh(settings, client)
     if outcome.get("ok"):
-        console.print(f"[green][OK] 已写入《{settings.journal_title}》[/green] {outcome}")
+        console.print(f"[green][OK]《{settings.notice_title}》已更新[/green] {outcome}")
     else:
         console.print(f"[red][FAIL] {outcome.get('error')}[/red]")
         raise typer.Exit(1)
@@ -415,7 +408,7 @@ def export_plan(
     `--defaults` 会被**落盘保存**（`outbox/plan.defaults.json`）：因为 agent 每次
     写申请都会自动重发 plan.json，不存下来那次重发就把借用人信息丢了。
     """
-    settings = _settings(repo, workspace, False, False, DEFAULT_MODEL, 60)
+    settings = _settings(repo, workspace, False, DEFAULT_MODEL, 60)
     parsed: dict = {}
     if defaults:
         try:
@@ -459,7 +452,7 @@ def serve_plan(
     特别是 ``plan.defaults.json``（**借用人姓名与手机号**）永远取不到。
     但它仍是**公开**端点 —— 见 `docs/deploy.md` §10。
     """
-    settings = _settings(repo, workspace, False, False, DEFAULT_MODEL, 60)
+    settings = _settings(repo, workspace, False, DEFAULT_MODEL, 60)
     if port is not None:
         settings.plan_port = port
     try:
@@ -475,9 +468,9 @@ def sync_guide(
     dry_run: Annotated[bool, typer.Option("--dry-run")] = False,
 ) -> None:
     """把 `kb/guide.md` 上传/更新为知识库里的《指导文档（必读）》。"""
-    settings = _settings(repo, Path("workspace"), dry_run, False, DEFAULT_MODEL, 60)
+    settings = _settings(repo, Path("workspace"), dry_run, DEFAULT_MODEL, 60)
     body = (Path(__file__).parent / "kb" / "guide.md").read_text(encoding="utf-8")
-    title = "指导文档（必读）"
+    title = GUIDE_TITLE
     with YuqueClient(
         host=settings.host, token=settings.token, repo=settings.repo, dry_run=settings.dry_run
     ) as client:
@@ -517,7 +510,7 @@ def _inside_checkout(path: Path) -> bool:
 
 
 #: 永远不碰的系统性文档（跟 `Settings.ignore_doc_titles` 一起用）。
-_SYSTEM_DOC_TITLES = ("指导文档（必读）", "指导文档")
+_SYSTEM_DOC_TITLES = (GUIDE_TITLE, "指导文档", NOTICE_TITLE)
 
 
 def _wipe_dir(path: Path, *, pattern: str = "*.json") -> list[str]:
@@ -543,10 +536,6 @@ def reset_test_data(
             help="cycle = 只清当前周期目录（默认）；all = 连归档区一起清",
         ),
     ] = "cycle",
-    include_journal: Annotated[
-        bool,
-        typer.Option("--journal", help="连《工作日志》也重置成干净表头（默认保留——那是留痕）"),
-    ] = False,
     include_runs: Annotated[
         bool,
         typer.Option("--runs", help="连 runs/ 留痕一起删（默认保留——那是证据）"),
@@ -569,7 +558,7 @@ def reset_test_data(
     目的是「测试完回到能交付的干净状态」：
 
     * 知识库：删掉周期目录（`--scope all` 再加归档区）里的**申请文档**；
-      《指导文档》《工作日志》永远不会碰；
+      《指导文档（必读）》《Agent 通知》永远不会碰；
     * 本地产出：`outbox/applications/`、`outbox/notify/{pending,done,unrouted,failed}/`、
       审计流水与序号；
     * 状态：把删掉的文档从快照里**同步摘掉**（不删 state.json——
@@ -581,7 +570,7 @@ def reset_test_data(
         console.print(f"[red]--scope 只能是 cycle 或 all，收到 {scope!r}[/red]")
         raise typer.Exit(2)
 
-    settings = _settings(repo, workspace, False, False, DEFAULT_MODEL, 60)
+    settings = _settings(repo, workspace, False, DEFAULT_MODEL, 60)
     if _inside_checkout(settings.root) and not force:
         console.print(
             f"[red]工作区落在代码检出里：{settings.root}[/red]\n"
@@ -592,7 +581,7 @@ def reset_test_data(
         )
         raise typer.Exit(2)
     cycle_title = cycle_targets(clock.now())[0].title
-    protected = set(_SYSTEM_DOC_TITLES) | set(settings.ignore_doc_titles) | {settings.journal_title}
+    protected = set(_SYSTEM_DOC_TITLES) | set(settings.ignore_doc_titles)
 
     with YuqueClient(host=settings.host, token=settings.token, repo=settings.repo) as client:
         dir_of = doc_dir_map(client.toc())
@@ -602,7 +591,7 @@ def reset_test_data(
                 continue
             where = dir_of.get(meta.doc_id, "")
             in_cycle = where == cycle_title
-            in_archive = where == "归档区" or where.startswith("归档区/")
+            in_archive = where == ARCHIVE_ZONE_TITLE or where.startswith(ARCHIVE_ZONE_TITLE + "/")
             if in_cycle or (scope == "all" and in_archive):
                 doomed.append((meta.doc_id, meta.title, where))
 
@@ -618,7 +607,7 @@ def reset_test_data(
             console.print("  （无）", markup=False)
         for doc_id, title, where in doomed:
             console.print(f"  · {doc_id}  {title}   目录={where or '根目录'}", markup=False)
-        console.print("  《指导文档》《工作日志》永不删。", markup=False, style="dim")
+        console.print(f"  《{GUIDE_TITLE}》《{NOTICE_TITLE}》永不删。", markup=False, style="dim")
 
         local_plan = [
             ("outbox/applications", settings.applications_dir, "*.json"),
@@ -658,14 +647,10 @@ def reset_test_data(
             console.print(
                 f"  · runs/：{n} 个 —— 你加了 --runs，留痕会被删掉", markup=False, style="yellow"
             )
-        if include_journal:
-            console.print(
-                "  · 《工作日志》：会重置成只剩表头（你加了 --journal）",
-                markup=False,
-                style="yellow",
-            )
-        else:
-            console.print("  · 《工作日志》：保留（想一并重置加 --journal）", markup=False)
+        console.print(
+            f"  · 《{NOTICE_TITLE}》：本地通知清空后按空清单重建（只显示本周期通知）",
+            markup=False,
+        )
 
         if not yes:
             console.print("\n[bold]这只是预览。确认无误后加 --yes 真的执行。[/bold]")
@@ -680,14 +665,6 @@ def reset_test_data(
             except YuqueError as exc:
                 console.print(f"  删除失败  {doc_id}：{exc}", markup=False, style="red")
 
-        if include_journal:
-            existing = journal_mod.resolve_journal_doc(client, settings.journal_title)
-            if existing is None:
-                console.print("  《工作日志》不存在，跳过", markup=False, style="dim")
-            else:
-                client.update_doc(existing["doc_id"], body=journal_mod.HEADER)
-                console.print("  已重置《工作日志》为干净表头", markup=False, style="green")
-
     # ---- 本地 ----
     for _label, path, pattern in local_plan:
         _wipe_dir(path, pattern=pattern)
@@ -699,6 +676,20 @@ def reset_test_data(
     if settings.plan_file.exists():
         settings.plan_file.unlink()
     console.print("  本地产出已清空，申请索引已重建", markup=False, style="green")
+
+    # 本地通知清空了 → 《Agent 通知》也该是空的（它就是按本周期通知重建出来的）
+    with YuqueClient(host=settings.host, token=settings.token, repo=settings.repo) as client:
+        outcome = noticedoc.refresh(settings, client)
+    if outcome.get("ok"):
+        console.print(
+            f"  《{NOTICE_TITLE}》已按空清单重建（{outcome.get('count', 0)} 条通知）",
+            markup=False,
+            style="green",
+        )
+    else:
+        console.print(
+            f"  《{NOTICE_TITLE}》重建失败：{outcome.get('error')}", markup=False, style="red"
+        )
 
     if scope == "all" and settings.archive_dir.is_dir():
         shutil.rmtree(settings.archive_dir)
@@ -724,10 +715,6 @@ def reset_test_data(
         )
 
     console.print("\n[bold green]已回到干净起点。[/bold green]")
-    if not include_journal:
-        console.print(
-            "《工作日志》保留着历史留痕；想一并重置加 --journal。", markup=False, style="dim"
-        )
 
 
 def _print_result(result) -> None:
@@ -747,8 +734,8 @@ def _print_result(result) -> None:
         console.print("语雀写操作：")
         for item in payload["kb_writes"]:
             console.print(f"  · {item}")
-    if payload.get("journal"):
-        console.print(f"工作日志：{payload['journal']}")
+    if payload.get("notice_doc"):
+        console.print(f"《{NOTICE_TITLE}》：{payload['notice_doc']}")
     if payload["error"]:
         console.print(f"[red][!] {payload['error']}[/red]")
     console.print(f"[dim]session: {payload['session_path']}[/dim]")
