@@ -163,3 +163,58 @@ def test_bookable_range() -> None:
     lo, hi = school.bookable_range(date(2026, 9, 20))
     assert lo == date(2026, 9, 22)
     assert hi == date(2026, 9, 29)
+
+
+# ---------------------------------------------------------------- 写法覆盖
+
+
+@pytest.mark.parametrize(
+    "written",
+    [
+        "仙I区",
+        "仙Ⅰ区",
+        "仙1区",
+        "仙一区",
+        "仙i区",
+        "仙 I 区",
+        "仙２区",  # 第 I 区
+        "仙II区",
+        "仙Ⅱ区",
+        "仙2区",
+        "仙二区",
+        "仙二",
+        "仙ii区",  # 第 II 区
+        "仙II区3号楼",  # 带尾巴
+    ],
+)
+def test_building_numeric_variants_resolve(written: str) -> None:
+    """数字的各种写法都要能落到同一个 JXLDM（归一在 `school._canon_name`）。
+
+    为什么重要：学校的教学楼字典是**按校区现查**的、还会随学期变，
+    靠「手工枚举所有写法」必漏；归一之后只登记学校系统里的规范名，
+    社员写「仙二」「仙2区」「仙Ⅱ区」都能命中。
+    """
+    code, note = school.normalize_building("3", written)
+    assert code in {"11", "12"}, f"{written!r} 没认出来：{note}"
+
+
+def test_building_case_and_missing_suffix_variants() -> None:
+    assert school.normalize_building("3", "逸夫楼A")[0] == "15"
+    assert school.normalize_building("3", "逸夫楼a区")[0] == "15"
+    assert school.normalize_building("3", "逸夫楼B区")[0] == "16"
+
+
+def test_campus_without_a_building_table_does_not_guess() -> None:
+    """鼓楼(1)/浦口(2) 还没有字典（要登录学校接口现查）→ 留空（= 随机），不猜。"""
+    for campus in ("1", "2"):
+        code, note = school.normalize_building(campus, "任何楼")
+        assert code == "", f"校区 {campus} 没有表时不该猜出代码：{note}"
+        assert "随机" in note
+
+
+def test_known_building_table_is_well_formed() -> None:
+    """表里不许有空的标题/代码，校区键必须是真实校区。"""
+    for campus, table in school.BUILDINGS.items():
+        assert campus in school.CAMPUS_CODES, f"未知校区键：{campus}"
+        for name, code in table.items():
+            assert name.strip() and code.strip(), f"{campus}/{name!r} 有空字段"

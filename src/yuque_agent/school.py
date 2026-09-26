@@ -8,10 +8,21 @@
 * 而且下游（教室借用插件 / `crb`）是**纯程序**，它要的是 `"3"`、`"11"` 这样的代码。
   我们如果递过去「仙II区」，查询会返回空、申请会静默失败。
 
-**关于代码的来源与风险**：教学楼代码表来自上一版项目对学校接口
-（`/jwapp/sys/kxjas/modules/kxjas/jxlcx.do`）的实测记录 + `crb` 的实测输出，
-**只覆盖已知的几个**。认不出来时我们**宁可留空（= 随机）也不猜**——
+**关于代码的来源与风险**：教学楼字典是学校接口**按校区现查**的
+（`POST /jwapp/sys/kxjas/modules/kxjas/jxlcx.do`，body `XXXQDM=<校区代码>`），
+`BUILDINGS` 里只登记了实测过的几个。认不出来时我们**宁可留空（= 随机）也不猜**——
 填一个错的教学楼代码，比不填危险得多。
+
+**怎么补全这张表**（需要南大统一认证的登录态，OpenAPI 拿不到）：
+
+```bash
+# 上一版项目 crb（归档：Archived/NJU_Classroom_Booking）——字典现查现出
+crb login                                   # 扫码（一次）
+crb buildings --campus 3 --json             # → [{"JXLDM":"11","JXLMC":"仙I区"}, …]
+```
+
+把返回的 `JXLMC` / `JXLDM` 填进 :data:`BUILDINGS` 对应校区即可（键用规范名 + JXLDM）。
+数字的各种写法（`Ⅰ`/`1`/`一`、`II`/`2`/`二`、全角）不用登记，:func:`_canon_name` 会归一。
 
 校方规则（来自 谷和平 对借用页面的实测）：
 
@@ -23,7 +34,25 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 from datetime import date, timedelta
+
+#: 教学楼名里的中文数字 → 阿拉伯数字（归一用，见 :func:`_canon_name`）。
+_CJK_DIGITS = {
+    "一": "1",
+    "二": "2",
+    "三": "3",
+    "四": "4",
+    "五": "5",
+    "六": "6",
+    "七": "7",
+    "八": "8",
+    "九": "9",
+    "十": "10",
+}
+
+#: 拉丁（NFKC 折过罗马数字之后的）数字 → 阿拉伯数字。
+_ROMAN_DIGITS = {"i": 1, "ii": 2, "iii": 3, "iv": 4, "v": 5, "ix": 9, "x": 10}
 
 # ---------------------------------------------------------------- 校区
 
@@ -57,15 +86,16 @@ def normalize_campus(text: str) -> str | None:
 
 # ---------------------------------------------------------------- 教学楼
 
-#: ``校区代码 -> {教学楼名: JXLDM}``。**部分覆盖**，来源见模块 docstring。
+#: ``校区代码 -> {教学楼名: JXLDM}``。**只登记学校系统里的规范名**——
+#: 数字的各种写法（Ⅰ/1/一、II/2/二、全角）由 :func:`_canon_name` 归一，不用逐个枚举。
+#:
+#: ⚠️ 目前**只有仙林(3)与苏州(4)**：学校的教学楼字典是按校区现查的，需要登录态；
+#: 鼓楼(1)/浦口(2) 还没有表——那种校区的申请会把教学楼留空（= 随机），不会猜。
+#: 补全办法见模块 docstring 末尾。
 BUILDINGS: dict[str, dict[str, str]] = {
-    "3": {  # 仙林（上一版实测 jxlcx.do 的记录）
+    "3": {  # 仙林（上一版对 jxlcx.do 的实测记录）
         "仙I区": "11",
-        "仙Ⅰ区": "11",
-        "仙1区": "11",
         "仙II区": "12",
-        "仙Ⅱ区": "12",
-        "仙2区": "12",
         "逸夫楼A区": "15",
         "逸夫楼B区": "16",
     },
@@ -76,22 +106,54 @@ BUILDINGS: dict[str, dict[str, str]] = {
 }
 
 
+def _canon_name(text: str) -> str:
+    """把教学楼名里的**数字写法**归一，便于比对。
+
+    先 NFKC（全角 → 半角、罗马数字 Ⅰ Ⅱ → 拉丁 I I），再把拉丁/中文数字折成阿拉伯数字，
+    并去掉空格、统一大小写。于是社员写的这些写法都会落到同一个键上::
+
+        仙I区 · 仙Ⅰ区 · 仙1区 · 仙一区 · 仙i区 · 仙　I 区  →  仙1区
+        逸夫楼A区 · 逸夫楼a区                                →  逸夫楼a区
+
+    为什么要它：学校的教学楼字典是按校区现查的（见 `docs/design.md` D2），
+    每换一学期/一栋楼就得往表里加名字；靠「手工枚举所有写法」必漏，
+    而归一之后**只需登记学校系统里的那个规范名**，常见变体自动覆盖。
+    """
+    flat = unicodedata.normalize("NFKC", text or "").replace(" ", "").lower()
+    flat = "".join(_CJK_DIGITS.get(ch, ch) for ch in flat)
+    # 拉丁数字 → 阿拉伯数字（只在两侧不是字母时替换，别把单词里的 i/v/x 吃掉）
+    flat = re.sub(
+        r"(?<![a-z])(x{1,3}|ix|iv|v|i{1,3})(?![a-z])",
+        lambda m: str(_ROMAN_DIGITS[m.group(1)]),
+        flat,
+    )
+    # 末尾的「区」不算区别（社员常常不写：「逸夫楼A」=「逸夫楼A区」）
+    return flat[:-1] if flat.endswith("区") and len(flat) > 1 else flat
+
+
 def normalize_building(campus_code: str | None, text: str) -> tuple[str, str]:
     """返回 ``(JXLDM, 说明)``。认不出来时 ``JXLDM`` 为空串 = 交给下游随机。
 
     「宁可留空也不猜」：一个错的教学楼代码会让下游去查错的教学楼，
     而留空只是退化成「在同一校区里随机」。
+
+    比对前两边都过 :func:`_canon_name`（数字写法归一），所以
+    「仙二区」「仙2区」「仙Ⅱ区」都能命中表里的「仙I区/仙II区」；表里没有的仍然留空。
     """
     raw = (text or "").strip()
     if not raw:
         return "", "未填教学楼，按随机处理"
     table = BUILDINGS.get(campus_code or "", {})
+    if not table:
+        return "", f"「{raw}」所在校区没有教学楼代码表（留空 = 随机）"
+
+    want = _canon_name(raw)
     for name, code in table.items():
-        if name == raw:
+        if _canon_name(name) == want:
             return code, f"教学楼「{raw}」→ JXLDM={code}"
-    # 容忍「仙II区3号楼」这类带尾巴的写法
-    for name, code in table.items():
-        if name in raw:
+    # 容忍「仙II区3号楼」这类带尾巴的写法。长的名字优先，避免短名把长名截胡。
+    for name, code in sorted(table.items(), key=lambda kv: len(kv[0]), reverse=True):
+        if _canon_name(name) in want:
             return code, f"教学楼「{raw}」按「{name}」解析 → JXLDM={code}"
     return "", f"教学楼「{raw}」不在已知代码表里（留空 = 随机；下游可自行解析）"
 
