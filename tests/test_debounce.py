@@ -327,3 +327,29 @@ def test_newly_ignored_title_is_not_reported_as_removed(tmp_path) -> None:
     assert llm.calls == 0, "「新被忽略的文档」不该被报成 removed 而白叫一轮 LLM"
     assert runner.state.snapshot is not None
     assert 100 not in runner.state.snapshot.docs, "上一轮快照里也该把它摘掉（收敛）"
+
+
+def test_polling_report_carries_the_school_facts(tmp_path) -> None:
+    """每轮的变更报告里带着**学校侧事实**（规范教学楼名），供 LLM 归一套员写法。
+
+    为什么放报告里而不是提示词里：单一事实来源（`school.BUILDINGS`）。
+    那份表是拿登录态从学校接口现查的、会随学期变；抄进提示词就一定漂。
+    """
+    import json
+
+    settings = Settings(repo="g/kb", workspace=tmp_path / "ws", quiet_seconds=0)
+    settings.ensure_dirs()
+    client = FakeYuque()
+    llm = FakeLLM(script=[done_response()])
+    runner = Runner(settings=settings, client=client, llm=llm)  # type: ignore[arg-type]
+
+    runner.poll_once(now=dt("2026-09-20T10:00:00"))  # 基线（静默）
+    set_docs(client, (1, "新生见面会"))
+    result = runner.poll_once(now=dt("2026-09-20T10:01:00"))
+    assert result is not None
+
+    payload = json.loads(
+        (settings.runs_dir / result.run_id / "payload.json").read_text(encoding="utf-8")
+    )
+    assert payload["school"]["buildings"]["3"]["仙II区"] == "12"
+    assert payload["school"]["campuses"]["4"] == "苏州"

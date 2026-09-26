@@ -9,11 +9,17 @@
   我们如果递过去「仙II区」，查询会返回空、申请会静默失败。
 
 **关于代码的来源与风险**：教学楼字典是学校接口**按校区现查**的
-（`POST /jwapp/sys/kxjas/modules/kxjas/jxlcx.do`，body `XXXQDM=<校区代码>`），
-`BUILDINGS` 里只登记了实测过的几个。认不出来时我们**宁可留空（= 随机）也不猜**——
-填一个错的教学楼代码，比不填危险得多。
+（`POST /jwapp/sys/kxjas/modules/kxjas/jxlcx.do`，body `XXXQDM=<校区代码>`）。
+:data:`BUILDINGS` 是 2026-09-26 用登录态拉的全量（四个校区共 16 栋）。
+认不出来时我们**宁可留空（= 随机）也不猜**——填一个错的教学楼代码，比不填危险得多。
 
-**怎么补全这张表**（需要南大统一认证的登录态，OpenAPI 拿不到）：
+**谁负责归一**：把社员的写法（「仙二」「仙2区」「逸夫楼A」）归到规范名**归 LLM**
+——它比任何别名表都强；这份表会随每轮的变更报告下发（:func:`facts`），
+它归一出来的名字就是这里的键。程序只做**规范名 → JXLDM** 这一步机械映射；
+:func:`_canon_name` 那套归一留着当安全网（LLM 万一又塞了个变体进来）。
+详见 `docs/design.md` §7.2。
+
+**怎么重查这张表**（需要南大统一认证的登录态，OpenAPI 拿不到；每学期核一次）：
 
 ```bash
 # 上一版项目 crb（归档：Archived/NJU_Classroom_Booking）——字典现查现出
@@ -36,6 +42,7 @@ from __future__ import annotations
 import re
 import unicodedata
 from datetime import date, timedelta
+from typing import Any
 
 #: 教学楼名里的中文数字 → 阿拉伯数字（归一用，见 :func:`_canon_name`）。
 _CJK_DIGITS = {
@@ -86,24 +93,53 @@ def normalize_campus(text: str) -> str | None:
 
 # ---------------------------------------------------------------- 教学楼
 
-#: ``校区代码 -> {教学楼名: JXLDM}``。**只登记学校系统里的规范名**——
-#: 数字的各种写法（Ⅰ/1/一、II/2/二、全角）由 :func:`_canon_name` 归一，不用逐个枚举。
+#: ``校区代码 -> {规范教学楼名: JXLDM}``。**全量**（2026-09-26 用登录态从学校接口现查）。
 #:
-#: ⚠️ 目前**只有仙林(3)与苏州(4)**：学校的教学楼字典是按校区现查的，需要登录态；
-#: 鼓楼(1)/浦口(2) 还没有表——那种校区的申请会把教学楼留空（= 随机），不会猜。
-#: 补全办法见模块 docstring 末尾。
+#: 「规范名」= 学校系统里那一列 `JXLMC` 原样；数字的各种写法（Ⅰ/1/一、II/2/二、全角）
+#: 不用登记，:func:`_canon_name` 会归一，而且这份表会随每轮的变更报告一起下发给 LLM
+#: （见 :func:`facts`），所以它归一出来的名字**必然**是这里的键。
+#:
+#: 重查办法见模块 docstring 末尾（需要南大统一认证；每学期开学后值得核一次）。
 BUILDINGS: dict[str, dict[str, str]] = {
-    "3": {  # 仙林（上一版对 jxlcx.do 的实测记录）
+    "1": {  # 鼓楼
+        "教学楼": "1",
+        "逸夫馆": "8",
+        "逸夫管理科学楼": "10",
+        "新教学楼": "20",
+        "费彝民楼": "31",
+        "南教": "32",
+    },
+    "2": {  # 浦口
+        "思源图书馆": "30",
+    },
+    "3": {  # 仙林
         "仙I区": "11",
         "仙II区": "12",
         "逸夫楼A区": "15",
         "逸夫楼B区": "16",
+        "逸夫楼C区": "17",
+        "图书馆": "18",
+        "环科楼": "111",
     },
-    "4": {  # 苏州（来自 crb 的实测输出）
+    "4": {  # 苏州
         "南雍楼": "S06",
         "公共教学楼": "S01",
     },
 }
+
+
+def facts() -> dict[str, Any]:
+    """给 LLM 的「学校侧事实」，随每轮的变更报告下发（**不抄进提示词**）。
+
+    为什么下发这一份：**把社员的写法归一到规范名是 LLM 的活**（它比任何别名表都强），
+    但归一目标必须是**程序认得的那几个名字**。所以两边共用同一份表——
+    提示词只说「归一成 `school.buildings` 里的名字」，程序（:func:`normalize_building`）
+    再把规范名换成 JXLDM。这样「LLM 归一 → 程序查表」不可能对不上。
+    """
+    return {
+        "campuses": dict(CAMPUS_CODES),
+        "buildings": {campus: dict(table) for campus, table in BUILDINGS.items()},
+    }
 
 
 def _canon_name(text: str) -> str:
@@ -146,6 +182,9 @@ def normalize_building(campus_code: str | None, text: str) -> tuple[str, str]:
     table = BUILDINGS.get(campus_code or "", {})
     if not table:
         return "", f"「{raw}」所在校区没有教学楼代码表（留空 = 随机）"
+
+    if raw in table.values():  # 直接给了 JXLDM（如「12」）也认
+        return raw, f"教学楼「{raw}」看起来就是 JXLDM，直接用"
 
     want = _canon_name(raw)
     for name, code in table.items():

@@ -204,12 +204,53 @@ def test_building_case_and_missing_suffix_variants() -> None:
     assert school.normalize_building("3", "逸夫楼B区")[0] == "16"
 
 
-def test_campus_without_a_building_table_does_not_guess() -> None:
-    """鼓楼(1)/浦口(2) 还没有字典（要登录学校接口现查）→ 留空（= 随机），不猜。"""
-    for campus in ("1", "2"):
-        code, note = school.normalize_building(campus, "任何楼")
-        assert code == "", f"校区 {campus} 没有表时不该猜出代码：{note}"
-        assert "随机" in note
+def test_building_table_covers_all_four_campuses() -> None:
+    """四个校区都要有表（2026-09-26 用登录态从学校接口拉的全量：共 16 栋）。
+
+    为什么钉住：这张表是**现查**来的（见 `school` 模块 docstring）。
+    谁删/漏一行，社员写了那栋楼就会被当成「认不出来」→ 白白退化成随机。
+    """
+    assert set(school.BUILDINGS) == set(school.CAMPUS_CODES) == {"1", "2", "3", "4"}
+    assert {c: len(t) for c, t in school.BUILDINGS.items()} == {"1": 6, "2": 1, "3": 7, "4": 2}
+
+
+def test_building_codes_match_the_school_dictionary() -> None:
+    """JXLDM 必须与学校字典逐个一致（错代码会让下游去查**错的**教学楼）。"""
+    assert school.BUILDINGS["3"] == {
+        "仙I区": "11",
+        "仙II区": "12",
+        "逸夫楼A区": "15",
+        "逸夫楼B区": "16",
+        "逸夫楼C区": "17",
+        "图书馆": "18",
+        "环科楼": "111",
+    }
+    assert school.BUILDINGS["1"] == {
+        "教学楼": "1",
+        "逸夫馆": "8",
+        "逸夫管理科学楼": "10",
+        "新教学楼": "20",
+        "费彝民楼": "31",
+        "南教": "32",
+    }
+    assert school.BUILDINGS["2"] == {"思源图书馆": "30"}
+    assert school.BUILDINGS["4"] == {"南雍楼": "S06", "公共教学楼": "S01"}
+
+
+def test_normalize_accepts_a_bare_jxldm() -> None:
+    """直接把 JXLDM 递进来也认（别把它当成「认不出来的名字」）。"""
+    assert school.normalize_building("3", "12")[0] == "12"
+    assert school.normalize_building("1", "31")[0] == "31"
+
+
+def test_facts_carry_the_same_table_the_program_uses() -> None:
+    """下发给 LLM 的 facts 必须与程序查表用的是**同一份**。
+
+    否则「LLM 归一出来的名字 → 程序查表」会在两个版本的表之间对不上。
+    """
+    facts = school.facts()
+    assert facts["buildings"] == school.BUILDINGS
+    assert facts["campuses"]["3"] == "仙林"
 
 
 def test_known_building_table_is_well_formed() -> None:

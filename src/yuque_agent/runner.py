@@ -14,7 +14,7 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
-from . import clock, noticedoc, outputs
+from . import clock, noticedoc, outputs, school
 from .agent import RunResult, run_agent, session_path_for
 from .config import ARCHIVE_ZONE_TITLE, GUIDE_TITLE, Settings
 from .llm import LLMClient
@@ -409,6 +409,9 @@ class Runner:
             max_docs=self.settings.max_docs_per_run,
             previews=previews,
         )
+        # 学校侧事实（规范教学楼名、校区）：办学楼名的归一归 LLM，但归一目标得是
+        # 程序认得的那几个名字 —— 把同一份表发下去，两边就不会对不上（见 school.facts）。
+        report["school"] = school.facts()
         if dropped:
             titles = "、".join(f"「{d.title}」" for d in dropped[:5])
             report["notes"].append(

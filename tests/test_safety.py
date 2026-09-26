@@ -412,3 +412,13 @@ def test_polling_prompt_never_asks_members_to_edit_the_doc() -> None:
         + "\n如果确实是必要的，先想清楚语境（只有 `rejected` 的文档没锁定），"
         "再改这条守卫与规矩块。"
     )
+
+
+def test_prompt_points_at_the_school_building_dictionary() -> None:
+    """提示词必须点名「教学楼归一到报告里的 `school.buildings`」。
+
+    这是 2026-09-26 定下的分工：**归一归 LLM**（它比任何别名表都强），
+    但归一目标必须是程序认得的那几个**规范名**——两边共用 `school.BUILDINGS` 一份表，
+    字典随报告下发，所以提示词里点到这个字段名就够（不抄字典）。
+    """
+    assert "school.buildings" in PromptLoader().load("polling")

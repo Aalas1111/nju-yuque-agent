@@ -586,8 +586,9 @@ COMMON_TOOLS: tuple[Tool, ...] = (
     Tool(
         "emit_application",
         "产出一份要素齐备的教室借用申请，交给负责提交的同学。"
-        "请填**社员原话**（校区写「仙林」、教学楼写「仙II区」）——"
-        "程序会自动把它们转成学校系统需要的代码，并在对不上时把错误告诉你。"
+        "请填**社员原话**（校区写「仙林」这类名字即可）——"
+        "程序会自动把名字转成学校系统需要的代码，并在对不上时把错误告诉你。"
+        "**教学楼要归一到报告里 `school.buildings` 的规范名**（社员写「仙二」「逸夫楼A」都算）；"
         "无法确定的（教学楼 / 教室 / 人数）就留空，空 = 随机分配。",
         _params(
             {
@@ -598,7 +599,13 @@ COMMON_TOOLS: tuple[Tool, ...] = (
                 "start": {**STR, "description": "开始时刻 HH:MM，24 小时制"},
                 "end": {**STR, "description": "结束时刻 HH:MM，24 小时制"},
                 "campus": {**STR, "description": "鼓楼 / 浦口 / 仙林 / 苏州"},
-                "building": {**STR, "description": "教学楼，社员怎么写的就怎么填；不确定就留空"},
+                "building": {
+                    **STR,
+                    "description": (
+                        "教学楼：**归一成报告里 `school.buildings` 里的规范名**"
+                        "（如仙林的 `仙II区`、`逸夫楼A区`）；对不上就留空（= 随机），别编"
+                    ),
+                },
                 "room": {**STR, "description": "意向教室，原样透传；不确定就留空"},
                 "people": {**INT, "description": "人数；没写就传 0，程序按 30 计"},
                 "confidence": {**STR, "description": "high / medium / low"},
