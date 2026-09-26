@@ -30,7 +30,7 @@ from .config import Settings, safe_join
 from .outputs import ContractError
 from .session import Stopwatch
 from .snapshot import DocSnapshot
-from .yuque import YuqueClient, YuqueError, dir_map_from_payload
+from .yuque import YuqueClient, YuqueError, dir_map_from_payload, doc_dir_map
 
 MAX_DOC_CHARS = 8000
 MAX_LISTING = 200
@@ -135,24 +135,32 @@ STRLIST = {"type": "array", "items": {"type": "string"}}
 
 
 def _kb_tree(ctx: RunContext, args: dict[str, Any]) -> Any:
-    """知识库目录树（含每个目录下的文档数）。"""
+    """知识库目录树（**实时读取**：看得见自己刚做的改动）。
+
+    列出**全部**节点——含 ``DOC``。为什么文档节点也要列：归档会话的交付标准是
+    「根目录顺序 = 指导文档 → Agent 通知 → 当前周期 → 归档区」，其中**前两项是文档**；
+    只列目录节点的话，「排完再读一遍核对顺序」这件事根本做不到
+    （2026-09-27 正式迁移实测：空库上该工具返回 ``nodes: []``，agent 只能靠工具语义猜）。
+
+    ``docs_here`` 只对目录节点有意义（该目录下有几篇文档）；``DOC`` 节点为 ``null``。
+    """
+    nodes = ctx.client.toc()
     counts: dict[str, int] = {}
-    for path in _doc_dirs(ctx).values():
+    for path in doc_dir_map(nodes).values():
         counts[path] = counts.get(path, 0) + 1
     return {
         "nodes": [
             {
-                "uuid": n.get("uuid"),
-                "type": n.get("type"),
-                "title": n.get("title"),
-                "path": n.get("path"),
-                "depth": n.get("depth"),
-                "docs_here": counts.get(str(n.get("path") or ""), 0),
+                "uuid": n.uuid,
+                "type": n.type,
+                "title": n.title,
+                "path": n.path,
+                "depth": n.depth,
+                "docs_here": counts.get(n.path, 0) if n.type != "DOC" else None,
             }
-            for n in ctx.toc
-            if n.get("type") != "DOC"
+            for n in nodes
         ],
-        "total_docs_known": len(ctx.docs),
+        "total_docs": sum(1 for n in nodes if n.type == "DOC"),
     }
 
 
@@ -543,8 +551,9 @@ def _doc_delete(ctx: RunContext, args: dict[str, Any]) -> Any:
 COMMON_TOOLS: tuple[Tool, ...] = (
     Tool(
         "kb_tree",
-        "查看知识库的目录树（每个目录下有几篇文档）。用来判断一篇文档应该在哪、"
-        "或者知识库结构是不是被人改乱了。",
+        "查看知识库目录树（**实时读取**：含**全部**节点，文档节点也列出来；"
+        "每个目录节点另带 `docs_here`=它下面有几篇文档）。整理完结构后用它对顺序，"
+        "或者判断知识库结构是不是被人改乱了。",
         _params({}),
         _kb_tree,
     ),

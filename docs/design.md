@@ -217,7 +217,7 @@ workspace/
 
 | 通用（polling 与 archive 都有） | 作用 |
 |---|---|
-| `kb_tree()` | 知识库目录树（uuid / 层级 / 每个目录的文档数） |
+| `kb_tree()` | 知识库目录树（**实时读取**，列全部节点含文档；每个目录另带 `docs_here` 文档数） |
 | `dir_list(dir)` | 列某目录下所有文档（不只是本轮变过的） |
 | `doc_read(doc)` | 读全文 markdown（截断到 8000 字） |
 | `ws_list` / `ws_read` / `ws_write` | 工作区读写；`ws_write` 只能写 `notes/` 下（跨轮记忆） |
