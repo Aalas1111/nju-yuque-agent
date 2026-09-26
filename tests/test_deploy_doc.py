@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -58,14 +59,18 @@ def test_agent_unit_pins_the_things_that_actually_matter() -> None:
     assert not missing, "单元里少了关键指令：\n  " + "\n  ".join(missing)
 
 
-def test_plan_service_also_runs_unprivileged_and_has_no_baked_key() -> None:
+def test_plan_service_also_runs_unprivileged_and_has_no_baked_secret() -> None:
     """下载口是整个项目唯一对外的口，这几件不能松。"""
     body = _unit("yuque-agent-plan.service")
     assert "User=yuque" in body
-    # 密钥必须走 EnvironmentFile（600 的那个），不能写进单元
+    # 凭证必须走 EnvironmentFile（600 的那个），不能写进单元
     # —— 单元是 644，世界可读。
     assert "EnvironmentFile=/home/yuque/.yuque/agent.env" in body
-    assert "YQA_PLAN_KEY" not in body, "密钥不能写进单元文件（单元 644，公开可读）"
+    # 泛化的守卫：任何形如 XXX_KEY= / XXX_TOKEN= / XXX_SECRET= 的赋值都不该出现在单元里。
+    # （原来这条钉的是 `YQA_PLAN_KEY`——那是**下载口带密钥时代**的变量，早就删掉了；
+    #   留着一个已经不存在的名字等于没守卫，所以换成「不许出现任何凭证形状的赋值」。）
+    baked = re.findall(r"(?im)^\s*(?:Environment=)?\w*(?:KEY|TOKEN|SECRET|PASSWORD)\w*=", body)
+    assert not baked, f"单元里不该出现凭证赋值：{baked}（凭证走 EnvironmentFile）"
     assert "SuccessExitStatus=143" in body
     assert "ProtectSystem=full" in body
     # 端口与工作区必须显式写出来：默认值是给本机开发用的相对路径

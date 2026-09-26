@@ -26,6 +26,11 @@ GUIDE_TITLE = "指导文档（必读）"
 NOTICE_TITLE = "Agent 通知"
 ARCHIVE_ZONE_TITLE = "归档区"
 
+#: **语雀里那份文档模板的标题**（在语雀的模板设置里人工填的，OpenAPI 设不了，见 D2）。
+#: 从模板新建、又没改名的文档，标题就是它——那是机器给的名字，不是活动名。
+#: ⚠️ 改模板标题时，这里和 `prompts/polling.md` 里的退回例子要一起改。
+TEMPLATE_TITLE = "请填写活动名称"
+
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36"
@@ -145,11 +150,13 @@ class Settings:
     同时 state 里也会记住《Agent 通知》的 doc_id（防改名）。
     """
 
-    placeholder_titles: tuple[str, ...] = ("无标题", "无标题文档")
+    placeholder_titles: tuple[str, ...] = ("无标题", "无标题文档", TEMPLATE_TITLE)
     """**语雀自己生成的占位标题。标题是它、且正文为空 → 根本不算变更。**
 
     「无标题」是官方 API 在 title 为空时自动填的（实测），
     「无标题文档」是网页端新建文档时的默认标题——两个都收。
+    ``TEMPLATE_TITLE``（「请填写活动名称」）是**语雀里那份文档模板的标题**：
+    从模板新建但没改名的文档，标题就长这样。
 
     这是比草稿标记**更早一级的筛子**：草稿标记至少是人主动删的，
     占位标题连人都没碰过，不可能携带借用意图。
@@ -157,6 +164,8 @@ class Settings:
     而且仍然走静默期合并。
 
     正文一有内容也不算中间态（防止「没改标题直接粘正文」的真实申请被静默丢掉）。
+    注意：**「标题是模板名、正文却填了内容」不在此列**——那种要交给 LLM 退回
+    （提示词里写了，别在这里拦）。
     """
 
     plan_admin: str = ""

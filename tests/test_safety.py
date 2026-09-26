@@ -324,6 +324,21 @@ def test_prompt_quotes_the_real_draft_marker() -> None:
     )
 
 
+def test_prompt_knows_the_template_title() -> None:
+    """模板的标题（`请填写活动名称`）必须在提示词里被点名。
+
+    从模板新建、又忘了改名的文档，标题就是它——**那是机器给的名字，不是活动名**。
+    不点名的话，LLM 很可能照「标题就是活动名称」把它当成活动名报上去，
+    cac 收到的申请就叫「请填写活动名称」。
+    （标题是它、正文也是空的：那种更早一步，由 `Settings.placeholder_titles` 直接剔除。）
+    """
+    from yuque_agent.config import TEMPLATE_TITLE
+
+    assert TEMPLATE_TITLE in PromptLoader().load("polling"), (
+        f"提示词里没提模板标题（{TEMPLATE_TITLE!r}）——模板改名了？改 `config.TEMPLATE_TITLE` 时这里要一起改"
+    )
+
+
 def test_tool_grouping_is_frozen() -> None:
     """把工具清单冻住：以后加/删工具，必须同时改这条测试与设计文档 §5。"""
     assert tools.tool_names("polling") == [

@@ -229,3 +229,14 @@ def test_fully_settled_placeholder_does_not_wedge_the_loop(tmp_path) -> None:
         runner.poll_once(now=T0 + timedelta(seconds=offset))
     assert llm.calls == 0
     assert runner.state.pending_since == ""
+
+
+def test_template_title_counts_as_a_placeholder() -> None:
+    """模板的标题（`请填写活动名称`）也算占位标题。
+
+    从模板新建、又没改名的文档，标题就是它——那是机器给的名字，
+    正文还空着的话根本不该叫醒 LLM（正文填了内容则交给 LLM 退回，见提示词）。
+    """
+    from yuque_agent.config import TEMPLATE_TITLE
+
+    assert TEMPLATE_TITLE in Settings().placeholder_titles
