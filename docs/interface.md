@@ -48,6 +48,10 @@
   （`raw` 只有 `kind=apply` 才有。）
 * 核心常驻进程每轮消费一次（**单写者不变**），回执写回 `control/done/<同名>.json`
   （`{ok, summary, run_id, error}`），请求文件被挪走；`done/` 里超过 7 天的回执自动清理。
+  `ok=false` = 这一轮**跑挂了**（`error` 里有原因）；「没有变化」是 `ok=true` + 一句
+  「没有唤醒 LLM（0 token）」——别把两者混着显示（失败的一轮会自动重试，见 `docs/design.md` §2.3）。
+* `kind=once` 与 `yqa once` 同语义：**关掉静默期**（人工敲了就该立刻有结果），但**不强制跑**
+  ——知识库真的没变时不会白唤醒一轮 LLM，回执里会照实说「没有变化，0 token」。
 * `apply`：校验 / 归一化 / 落盘 / 发通知**全部在核心做**（零 LLM）。桥**不要**自己写
   `outbox/applications/`——绕过核心会漏掉契约校验、索引重建和周期翻转
   （`docs/deploy.md` §9 记过一次同类 bug）。

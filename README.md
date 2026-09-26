@@ -149,7 +149,7 @@ uv run yqa run --interval 20 --quiet-seconds 45
 |---|---|
 | Python | 3.12（用 `uv` 管理） |
 | CPU / 内存 | 1 核 1G 够用——这不是算力活，是「等消息」的活 |
-| 磁盘 | 5G，但 **`workspace/` 必须持久化**（它存「处理到哪了」，丢了会重复发通知），别放临时盘 |
+| 磁盘 | 10G 起，但 **`workspace/` 必须持久化**（它存「处理到哪了」，丢了会重复发通知），别放临时盘 |
 | **时区** | **不需要配**：程序钉死 `Asia/Shanghai`，服务器是 UTC 也没关系（见 `docs/design.md` §2.2） |
 | 出网 | `api.yuque.com`、`api.deepseek.com`（要 QQ 投递再加 `bots.qq.com`、`api.sgroup.qq.com`） |
 | 入网端口 | 只开一个 **8787**（申请清单下载口，公开无鉴权） |
