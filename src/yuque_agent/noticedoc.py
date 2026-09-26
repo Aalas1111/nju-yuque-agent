@@ -100,14 +100,17 @@ def _render_item(notice: dict[str, Any]) -> list[str]:
     title = str(doc.get("title") or "")
     member = str((notice.get("member") or {}).get("name") or "")
 
-    lines = [f"## {when} · {KIND_LABELS.get(kind, kind or '通知')}", ""]
+    # 标题行与 `##` 之间**不留空行**——语雀读回来时那个空行会被规范化掉。
+    # 渲染必须与「读回来的形式」逐字一致，否则每轮刷新都会判「内容变了」而白写一次
+    # （2026-09-26 实测踩到：多一个空行 → `unchanged: False` 刷屏）。
+    lines = [f"## {when} · {KIND_LABELS.get(kind, kind or '通知')}"]
     if title:
-        lines += [f"**《{title}》**" + (f"（{member}）" if member else ""), ""]
+        lines.append(f"**《{title}》**" + (f"（{member}）" if member else ""))
     if message := str(notice.get("message") or "").strip():
-        lines += [message, ""]
+        lines += ["", message]
     if reasons := [str(r) for r in (notice.get("reasons") or []) if str(r).strip()]:
-        lines += ["原因：" + "；".join(reasons), ""]
-    lines += ["---", ""]
+        lines += ["", "原因：" + "；".join(reasons)]
+    lines += ["", "---", ""]
     return lines
 
 

@@ -146,6 +146,19 @@ def test_render_of_an_empty_cycle_says_so(settings: Settings) -> None:
     assert body.startswith("# Agent 通知")
 
 
+def test_render_matches_what_yuque_gives_back(settings: Settings) -> None:
+    """渲染结果必须与「语雀读回来的形式」逐字一致——否则每轮刷新都会白写一次。
+
+    2026-09-26 实测踩到：`## 时间 · 类型` 与 `**《标题》**` 之间多一个空行，
+    语雀读回时那个空行被规范化掉，于是刷新永远判定「内容变了」（`unchanged: False`）。
+    """
+    emit(settings, seq=1, kind="accepted", created_at="2026-09-26T20:20:00+08:00")
+    lines = noticedoc.render(settings, "0926-1002").splitlines()
+    head = next(i for i, line in enumerate(lines) if line.startswith("## "))
+    assert lines[head + 1].startswith("**《"), f"标题下面不该有空行：{lines[head : head + 3]!r}"
+    assert lines[-1] == "" and lines[-2] == "---", "条目以 --- 收尾"
+
+
 # ---------------------------------------------------------------- 写文档
 
 
