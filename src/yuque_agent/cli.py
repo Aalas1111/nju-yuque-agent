@@ -17,6 +17,7 @@ yqa refresh-notice              # 重建语雀《Agent 通知》（程序维护�
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import sys
 from pathlib import Path
@@ -462,6 +463,21 @@ def serve_plan(
         raise typer.Exit(1) from exc
 
 
+def _fill_notice_link(client: YuqueClient, settings: Settings, body: str) -> str:
+    """把 ``guide.md`` 里的 ``{{notice_url}}`` 换成《Agent 通知》**当前**的地址。
+
+    为什么要这一步：那篇文档的 URL 带着语雀生成的 slug——文档一旦被删掉重建，slug 就变了，
+    写死的链接会**静默失效**。而它的地址只有程序知道（那篇文档就是程序建的），
+    所以在上传前填。找不到那篇文档时整条链接降级成纯文本（社员照样知道去看哪儿）。
+    """
+    meta = next((m for m in client.docs() if m.title == settings.notice_title), None)
+    if meta is None:
+        return re.sub(r"\[([^\]]+)\]\(\{\{notice_url\}\}\)", r"\1", body)
+    return body.replace(
+        "{{notice_url}}", f"{settings.host.rstrip('/')}/{settings.repo}/{meta.slug}"
+    )
+
+
 @app.command("sync-guide")
 def sync_guide(
     repo: RepoOpt = DEFAULT_REPO,
@@ -474,6 +490,7 @@ def sync_guide(
     with YuqueClient(
         host=settings.host, token=settings.token, repo=settings.repo, dry_run=settings.dry_run
     ) as client:
+        body = _fill_notice_link(client, settings, body)
         existing = next((m for m in client.docs() if m.title == title), None)
         if existing is None:
             if settings.dry_run:

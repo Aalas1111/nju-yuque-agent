@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -211,3 +212,33 @@ def test_resident_path_still_debounces(wired, tmp_path) -> None:
     assert runner.poll_once(now=t0 + timedelta(seconds=46)) is not None, "静默期结束后应当唤醒"
     assert llm.calls == 1
     assert runner.last_skip == "", "真跑了就不该留跳过原因"
+
+
+# ---------------------------------------------------------------- sync-guide
+
+
+def test_sync_guide_fills_the_notice_url() -> None:
+    """`guide.md` 里的 `{{notice_url}}` 必须在上传前换成《Agent 通知》**当前**的地址。
+
+    为什么要有这一步：那篇文档的 URL 带着语雀生成的 slug，文档一旦被删掉重建就会变，
+    写死的链接会**静默失效**（需求方 2026-09-26 审定的《指导文档》里就有这条链接）。
+    """
+    settings = Settings(repo="g/kb", workspace=Path("ws"))
+    body = "看 [Agent通知]({{notice_url}}) 。"
+
+    client = FakeYuque(doc_metas=[make_meta(7, "Agent 通知")])
+    assert cli._fill_notice_link(client, settings, body) == (  # type: ignore[arg-type]
+        "看 [Agent通知](https://www.yuque.com/g/kb/s7) 。"
+    )
+
+    # 那篇文档还没建时：整条链接降级成纯文本，别留一个指向 `{{notice_url}}` 的坏链接
+    assert cli._fill_notice_link(FakeYuque(), settings, body) == "看 Agent通知 。"  # type: ignore[arg-type]
+
+
+def test_guide_source_has_no_hardcoded_kb_url() -> None:
+    """源文件里不许写死知识库地址：`Agent 通知` 的 slug 会变（见上一条）。"""
+    import yuque_agent
+
+    guide = (Path(yuque_agent.__file__).parent / "kb" / "guide.md").read_text(encoding="utf-8")
+    assert "{{notice_url}}" in guide, "链接占位符不见了？"
+    assert "yuque.com/" not in guide, "别把知识库 URL 写死（slug 变了就静默失效）"

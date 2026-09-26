@@ -143,7 +143,7 @@ def test_render_is_newest_first_and_says_people_words(settings: Settings) -> Non
 def test_render_of_an_empty_cycle_says_so(settings: Settings) -> None:
     body = noticedoc.render(settings, "0926-1002")
     assert "本周期还没有通知" in body
-    assert body.startswith("# Agent 通知")
+    assert body.startswith("> 本周期内"), "正文不该再有 `# Agent 通知`（语雀标题已经有一个了）"
 
 
 def test_render_matches_what_yuque_gives_back(settings: Settings) -> None:

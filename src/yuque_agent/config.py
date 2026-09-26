@@ -132,16 +132,17 @@ class Settings:
     会自激（实测踩到过，见 `ignore_doc_titles`）。
     """
 
-    ignore_doc_titles: tuple[str, ...] = (NOTICE_TITLE,)
+    ignore_doc_titles: tuple[str, ...] = (NOTICE_TITLE, GUIDE_TITLE)
     """**程序自己会写的文档标题。它们的变更永远不算「知识库变了」。**
 
-    否则会出现自激循环：程序写通知 → 通知变了 → 唤醒 LLM → 又写通知 → …
+    这两篇都是程序写的（《Agent 通知》每轮跑完重建、《指导文档（必读）》由 ``yqa sync-guide`` 传），
+    不排除的话就会出现自激循环：程序写文档 → 文档变了 → 唤醒 LLM → 又写文档 → …
     （实测踩到过：一篇测试文档触发了 13 次 run，其中 8 次就是这个循环，
     每轮白烧 5k token 而且停不下来。）
 
     注意：只影响**变更检测**，不影响 agent 能不能读到它。
     标题匹配是为了覆盖「首次部署还没记下 doc_id」的情况，
-    同时 state 里也会记住 doc_id（防改名）。
+    同时 state 里也会记住《Agent 通知》的 doc_id（防改名）。
     """
 
     placeholder_titles: tuple[str, ...] = ("无标题", "无标题文档")

@@ -79,8 +79,9 @@ def render(settings: Settings, cycle: str) -> str:
     改它等于改知识库里那篇文档的正文，下一次刷新就会覆盖到 KB 上。
     """
     items = notices_for_cycle(settings, cycle)
+    # 头部**不带大标题**：语雀文档自己就有一个标题（《Agent 通知》），正文再来一个 `#` 是重复的
+    # （2026-09-26 需求方审定：两篇自带文档都不留内部大标题）。
     lines = [
-        "# Agent 通知",
         "> 本周期内 agent 发出的处理通知，**最新的在最上面**。",
         ">",
         "",
