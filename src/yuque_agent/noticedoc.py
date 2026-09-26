@@ -73,14 +73,16 @@ def notices_for_cycle(settings: Settings, cycle: str) -> list[dict[str, Any]]:
 
 
 def render(settings: Settings, cycle: str) -> str:
-    """把本周期该展示的通知渲染成 markdown（**说人话**：没有工具调用、没有思考过程）。"""
+    """把本周期该展示的通知渲染成 markdown（**说人话**：没有工具调用、没有思考过程）。
+
+    头部那两行是**需求方审过稿的**（2026-09-26，从四行压到一行）——
+    改它等于改知识库里那篇文档的正文，下一次刷新就会覆盖到 KB 上。
+    """
     items = notices_for_cycle(settings, cycle)
     lines = [
         "# Agent 通知",
-        "",
-        f"> 本周期（{cycle or '?'}）内 agent 发出的处理通知，**最新的在最上面**。",
-        "> 周期更替（周六 00:00 归档）时本页由程序自动清空——上一周期的通知不会留在这里。",
-        "> 给指导老师的「申请清单已更新」提醒不在本页。",
+        "> 本周期内 agent 发出的处理通知，**最新的在最上面**。",
+        ">",
         "",
     ]
     if not items:
