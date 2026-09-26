@@ -156,7 +156,7 @@ def test_render_matches_what_yuque_gives_back(settings: Settings) -> None:
     lines = noticedoc.render(settings, "0926-1002").splitlines()
     head = next(i for i, line in enumerate(lines) if line.startswith("## "))
     assert lines[head + 1].startswith("**《"), f"标题下面不该有空行：{lines[head : head + 3]!r}"
-    assert lines[-1] == "" and lines[-2] == "---", "条目以 --- 收尾"
+    assert lines[-1] == "---", "条目以 --- 收尾"
 
 
 # ---------------------------------------------------------------- 写文档
