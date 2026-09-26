@@ -87,10 +87,15 @@ useradd -r -m -d /home/yuque -s /usr/sbin/nologin yuque
 git clone https://github.com/Aalas1111/nju-yuque-agent /opt/yuque-agent
 cd /opt/yuque-agent && uv sync
 
-# ④ 放凭证（路径见 §2；权限 600，属主 yuque）
+# ④ 放配置与凭证（路径见 §2；权限 600，属主 yuque）
+#    agent.env 是 systemd 的 EnvironmentFile；**知识库必须在这里配**（没有默认库）
 install -d -m 700 -o yuque -g yuque /home/yuque/.yuque
 printf '{"token": "<语雀写权限令牌>"}\n' > /home/yuque/.yuque/auth.json
-printf 'DEEPSEEK_API_KEY=<key>\n'        > /home/yuque/.yuque/agent.env
+cat > /home/yuque/.yuque/agent.env <<'ENV'
+DEEPSEEK_API_KEY=<key>
+YQA_REPO=<group>/<repo>
+# YQA_HOST=https://<知识库的域名>    # 默认 www.yuque.com；挂了自定义域名（如 nova.yuque.com）时写它
+ENV
 chown yuque:yuque /home/yuque/.yuque/* && chmod 600 /home/yuque/.yuque/*
 
 # ⑤ 状态目录
@@ -344,9 +349,9 @@ chmod 600 /home/yuque/.yuque/agent.env && systemctl restart yuque-agent
 
 ```bash
 # ① scp（零新增攻击面，推荐日常用）
-scp lihe@<服务器地址>:/var/lib/yuque-agent/workspace/lqogh0_jsjysq/outbox/plan.json .
+scp lihe@<服务器地址>:/var/lib/yuque-agent/workspace/ghxd00_jsjysq/outbox/plan.json .
 # 往期的：
-scp "lihe@<服务器地址>:/var/lib/yuque-agent/workspace/lqogh0_jsjysq/outbox/archive/0919-0925/plan.json" .
+scp "lihe@<服务器地址>:/var/lib/yuque-agent/workspace/ghxd00_jsjysq/outbox/archive/0919-0925/plan.json" .
 
 # ② 网页（见 §10；**无密钥**，打开即下载）
 #    http://<服务器地址>:8787/

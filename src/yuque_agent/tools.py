@@ -602,8 +602,9 @@ COMMON_TOOLS: tuple[Tool, ...] = (
                 "building": {
                     **STR,
                     "description": (
-                        "教学楼：**归一成报告里 `school.buildings` 里的规范名**"
-                        "（如仙林的 `仙II区`、`逸夫楼A区`）；对不上就留空（= 随机），别编"
+                        "教学楼：**照抄报告里 `school.buildings` 的规范名**（逐字，"
+                        "如仙林的 `仙II区`、`逸夫楼A区`——程序是精确查表，差一字符就查不到）；"
+                        "对不上就留空（= 随机），别编"
                     ),
                 },
                 "room": {

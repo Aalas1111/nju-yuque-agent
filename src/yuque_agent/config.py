@@ -4,7 +4,9 @@
 
 * 凭证只从**环境变量**或**已有的凭证文件**读；本模块永不写凭证、永不打印凭证；
 * 语雀 token 优先级：``YQA_TOKEN`` > ``YUQUE_TOKEN`` > ``~/.yuque/auth.json``；
-* LLM key 优先级：``YQA_LLM_KEY`` > ``DEEPSEEK_API_KEY`` > ``~/.pi/agent/auth.json``。
+* LLM key 优先级：``YQA_LLM_KEY`` > ``DEEPSEEK_API_KEY`` > ``~/.pi/agent/auth.json``；
+* **没有默认知识库**：``repo`` 必须显式给（``--repo`` 或 ``YQA_REPO``）——
+  2026-09-27 正式迁移时去掉了默认值，见 :func:`Settings.from_env`。
 """
 
 from __future__ import annotations
@@ -16,9 +18,22 @@ from pathlib import Path
 from typing import Any
 
 DEFAULT_HOST = "https://www.yuque.com"
-DEFAULT_REPO = "lqogh0/jsjysq"
+"""语雀的公开入口。知识库挂在别的域名下（如 ``nova.yuque.com``）时用 ``YQA_HOST`` 覆盖——
+它只影响**程序拼出来的链接**（如《Agent 通知》地址）；API 走哪个域名都能通。"""
+
+#: 没有默认知识库：``repo`` 必须显式配置。这里是唯一的报错文案（CLI 与脚本共用）。
+NO_REPO_MESSAGE = (
+    "没有配置知识库：本项目没有默认知识库，请显式给 --repo（或设 YQA_REPO）。\n"
+    "例：--repo <group>/<repo>（就是语雀地址里 /<group>/<repo> 那两段）。"
+)
+
 DEFAULT_API_BASE = "https://api.deepseek.com"
 DEFAULT_MODEL = "deepseek-flash"
+
+
+class ConfigError(RuntimeError):
+    """配置缺失/不合法——比 :class:`~yuque_agent.yuque.YuqueError` 更早一步（还没到联网）。"""
+
 
 #: 知识库里那几个「程序/人一起维护、有固定位置」的节点标题。
 #: 顺序就是它们在根目录里**必须**出现的顺序（见 `docs/design.md` §2.1）。
@@ -81,7 +96,8 @@ def resolve_llm_key(explicit: str = "") -> str:
 class Settings:
     """一次进程运行的全部配置。"""
 
-    repo: str = DEFAULT_REPO
+    repo: str = ""
+    """知识库 namespace，如 ``<group>/<repo>``。**没有默认值**——必须显式配置。"""
     host: str = DEFAULT_HOST
     token: str = ""
 
@@ -184,8 +200,13 @@ class Settings:
 
     @classmethod
     def from_env(cls, **overrides: Any) -> Settings:
+        """环境变量 + 显式覆盖（``overrides`` 里 ``None`` 的值不生效）。
+
+        缺 ``repo`` 直接 :class:`ConfigError`——**没有默认知识库**，
+        与其拿一个写死的 namespace 去连别人的知识库，不如当场停下来。
+        """
         settings = cls(
-            repo=os.environ.get("YQA_REPO", DEFAULT_REPO),
+            repo=os.environ.get("YQA_REPO", ""),
             host=os.environ.get("YQA_HOST", DEFAULT_HOST),
             workspace=Path(os.environ.get("YQA_WORKSPACE", "workspace")),
             interval=int(os.environ.get("YQA_INTERVAL", "60")),
@@ -197,6 +218,8 @@ class Settings:
         for key, value in overrides.items():
             if value is not None:
                 setattr(settings, key, value)
+        if not settings.repo:
+            raise ConfigError(NO_REPO_MESSAGE)
         settings.token = resolve_yuque_token(settings.token)
         settings.api_key = resolve_llm_key(settings.api_key)
         return settings
@@ -204,7 +227,7 @@ class Settings:
     # -- 派生路径 ---------------------------------------------------------
     @property
     def slug(self) -> str:
-        """``lqogh0/jsjysq`` → ``lqogh0_jsjysq``（用作目录名）。"""
+        """``<group>/<repo>`` → ``<group>_<repo>``（用作目录名）。"""
         return self.repo.replace("/", "_")
 
     @property

@@ -33,9 +33,9 @@ from . import render as render_mod
 from .config import (
     ARCHIVE_ZONE_TITLE,
     DEFAULT_MODEL,
-    DEFAULT_REPO,
     GUIDE_TITLE,
     NOTICE_TITLE,
+    ConfigError,
     Settings,
 )
 from .llm import LLMClient, LLMError, describe_llm_error
@@ -81,17 +81,33 @@ def _settings(
     model: str,
     interval: int,
 ) -> Settings:
-    """CLI 参数 > 环境变量 > 凭证文件（见 `config.Settings.from_env`）。"""
-    return Settings.from_env(
-        repo=repo,
-        workspace=workspace,
-        model=model,
-        interval=interval,
-        dry_run=dry_run,
-    )
+    """CLI 参数 > 环境变量 > 凭证文件（见 `config.Settings.from_env`）。
+
+    ``repo`` 空串 = 命令行没给 —— 回退到 ``YQA_REPO``；两边都没有就直接退出
+    （**没有默认知识库**：写死一个 namespace 意味着「忘配的人会连到别人的知识库」，
+    那比当场停下危险得多）。
+    """
+    try:
+        return Settings.from_env(
+            repo=repo or None,
+            workspace=workspace,
+            model=model,
+            interval=interval,
+            dry_run=dry_run,
+        )
+    except ConfigError as exc:
+        console.print(str(exc), markup=False)
+        raise typer.Exit(2) from exc
 
 
-RepoOpt = Annotated[str, typer.Option("--repo", "-r", help="知识库 namespace")]
+RepoOpt = Annotated[
+    str,
+    typer.Option(
+        "--repo",
+        "-r",
+        help="知识库 namespace（如 group/repo）。不写就看 YQA_REPO；**没有默认知识库**",
+    ),
+]
 
 
 @app.command()
@@ -102,7 +118,7 @@ def version() -> None:
 
 @app.command()
 def doctor(
-    repo: RepoOpt = DEFAULT_REPO,
+    repo: RepoOpt = "",
     workspace: Annotated[Path, typer.Option("--workspace", "-w")] = Path("workspace"),
     model: Annotated[str, typer.Option("--model")] = DEFAULT_MODEL,
 ) -> None:
@@ -220,7 +236,7 @@ def _poll_skip_message(runner: Runner, settings: Settings) -> str:
 
 @app.command()
 def once(
-    repo: RepoOpt = DEFAULT_REPO,
+    repo: RepoOpt = "",
     force: Annotated[
         bool,
         typer.Option(
@@ -271,7 +287,7 @@ def once(
 
 @app.command()
 def archive(
-    repo: RepoOpt = DEFAULT_REPO,
+    repo: RepoOpt = "",
     workspace: Annotated[Path, typer.Option("--workspace", "-w")] = Path("workspace"),
     dry_run: Annotated[bool, typer.Option("--dry-run", help="所有写操作只记录不执行")] = False,
     model: Annotated[str, typer.Option("--model")] = DEFAULT_MODEL,
@@ -290,7 +306,7 @@ def archive(
 
 @app.command()
 def run(
-    repo: RepoOpt = DEFAULT_REPO,
+    repo: RepoOpt = "",
     interval: Annotated[int, typer.Option("--interval", "-i", help="轮询间隔（秒）")] = 60,
     quiet_seconds: Annotated[
         int | None,
@@ -331,7 +347,7 @@ def run(
 @app.command()
 def sessions(
     workspace: Annotated[Path, typer.Option("--workspace", "-w")] = Path("workspace"),
-    repo: RepoOpt = DEFAULT_REPO,
+    repo: RepoOpt = "",
 ) -> None:
     """列出本地留档的所有 run。"""
     settings = _settings(repo, workspace, False, DEFAULT_MODEL, 60)
@@ -352,7 +368,7 @@ def sessions(
 def render(
     run_id: Annotated[str, typer.Argument(help="run_id 或 session.jsonl 的路径")],
     workspace: Annotated[Path, typer.Option("--workspace", "-w")] = Path("workspace"),
-    repo: RepoOpt = DEFAULT_REPO,
+    repo: RepoOpt = "",
     out: Annotated[Path | None, typer.Option("--out", "-o", help="写入文件而不是打印")] = None,
 ) -> None:
     """把某次 run 的 session 渲染成人话。"""
@@ -373,7 +389,7 @@ def render(
 
 @app.command("refresh-notice")
 def refresh_notice(
-    repo: RepoOpt = DEFAULT_REPO,
+    repo: RepoOpt = "",
     workspace: Annotated[Path, typer.Option("--workspace", "-w")] = Path("workspace"),
 ) -> None:
     """按当前周期的通知重建语雀《Agent 通知》文档（程序维护，幂等）。"""
@@ -391,7 +407,7 @@ def refresh_notice(
 
 @app.command("export-plan")
 def export_plan(
-    repo: RepoOpt = DEFAULT_REPO,
+    repo: RepoOpt = "",
     workspace: Annotated[Path, typer.Option("--workspace", "-w")] = Path("workspace"),
     out: Annotated[Path | None, typer.Option("--out", "-o", help="写入文件；默认打印")] = None,
     defaults: Annotated[str, typer.Option("--defaults", help="defaults 对象的 JSON 字符串")] = "",
@@ -437,7 +453,7 @@ def export_plan(
 
 @app.command("serve-plan")
 def serve_plan(
-    repo: RepoOpt = DEFAULT_REPO,
+    repo: RepoOpt = "",
     workspace: Annotated[Path, typer.Option("--workspace", "-w")] = Path("workspace"),
     host: Annotated[str, typer.Option("--host", help="监听地址；默认所有网卡")] = "0.0.0.0",
     port: Annotated[int | None, typer.Option("--port", help="默认 YQA_PLAN_PORT 或 8787")] = None,
@@ -480,7 +496,7 @@ def _fill_notice_link(client: YuqueClient, settings: Settings, body: str) -> str
 
 @app.command("sync-guide")
 def sync_guide(
-    repo: RepoOpt = DEFAULT_REPO,
+    repo: RepoOpt = "",
     dry_run: Annotated[bool, typer.Option("--dry-run")] = False,
 ) -> None:
     """把 `kb/guide.md` 上传/更新为知识库里的《指导文档（必读）》。"""
@@ -544,7 +560,7 @@ def _wipe_dir(path: Path, *, pattern: str = "*.json") -> list[str]:
 
 @app.command()
 def reset_test_data(
-    repo: RepoOpt = DEFAULT_REPO,
+    repo: RepoOpt = "",
     workspace: Annotated[Path, typer.Option("--workspace", "-w")] = Path("workspace"),
     scope: Annotated[
         str,

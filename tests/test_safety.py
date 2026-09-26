@@ -415,13 +415,19 @@ def test_polling_prompt_never_asks_members_to_edit_the_doc() -> None:
 
 
 def test_prompt_points_at_the_school_building_dictionary() -> None:
-    """提示词必须点名「教学楼归一到报告里的 `school.buildings`」。
+    """提示词必须点名「教学楼归一到报告里的 `school.buildings`」，并说清**照抄**。
 
     这是 2026-09-26 定下的分工：**归一归 LLM**（它比任何别名表都强），
     但归一目标必须是程序认得的那几个**规范名**——两边共用 `school.BUILDINGS` 一份表，
     字典随报告下发，所以提示词里点到这个字段名就够（不抄字典）。
+
+    「照抄」那句是 2026-09-27 补的：程序侧同时删掉了模糊匹配，只剩精确查表，
+    差一个字符（如拉丁 `II` 写成罗马 `Ⅱ`）就查不到——不写这一句，LLM 会以为
+    它在做「意思上」的归一，而程序要的是**逐字一致**。
     """
-    assert "school.buildings" in PromptLoader().load("polling")
+    text = PromptLoader().load("polling")
+    assert "school.buildings" in text
+    assert "照抄" in text, "要写明「按表里的写法照抄」——程序是精确查表"
 
 
 def test_prompt_points_at_the_room_notation_table() -> None:

@@ -242,3 +242,31 @@ def test_guide_source_has_no_hardcoded_kb_url() -> None:
     guide = (Path(yuque_agent.__file__).parent / "kb" / "guide.md").read_text(encoding="utf-8")
     assert "{{notice_url}}" in guide, "链接占位符不见了？"
     assert "yuque.com/" not in guide, "别把知识库 URL 写死（slug 变了就静默失效）"
+
+
+# ------------------------------------------------- 没有默认知识库（2026-09-27）
+
+
+def test_repo_is_required_and_the_error_says_what_to_do(monkeypatch) -> None:
+    """`--repo` 与 `YQA_REPO` 都没有 → 当场停下（exit 2）并说清怎么配。
+
+    为什么钉死：2026-09-27 正式迁移时删掉了写死的默认 namespace。
+    留着它的失败模式很隐蔽——**忘配的人会安安静静连到别人的知识库**；
+    而当场报错只烦这一次。
+    """
+    monkeypatch.delenv("YQA_REPO", raising=False)
+    result = CliRunner().invoke(cli.app, ["once", "--workspace", "ws"])
+    assert result.exit_code == 2, result.output
+    assert "YQA_REPO" in result.output
+    assert "默认知识库" in result.output
+
+
+def test_repo_falls_back_to_the_env_var(wired, monkeypatch) -> None:
+    """不写 `--repo` 时从 `YQA_REPO` 读——两条路有一条通就不该拦。"""
+    monkeypatch.setenv("YQA_REPO", "g/kb")
+    set_docs(wired["client"])
+
+    result = CliRunner().invoke(cli.app, ["once", "--workspace", str(wired["workspace"])])
+
+    assert result.exit_code == 0, result.output
+    assert wired["settings"].repo == "g/kb"

@@ -188,7 +188,7 @@ workspace/
   "run_id": "20260920-101834-polling-7d44",
   "kind": "polling",
   "at": "2026-09-20T10:18:34+08:00",     // 「今天」以它为准
-  "repo": { "namespace": "lqogh0/jsjysq", "toc_sha": "31ea039222dd55ca" },
+  "repo": { "namespace": "<group>/<repo>", "toc_sha": "31ea039222dd55ca" },
   "first_run": false,
   "toc_changed": true,
   "toc": [ { "uuid": "…", "type": "TITLE|DOC", "title": "…", "depth": 1, "path": "…",
@@ -300,8 +300,10 @@ crb plan --file plan.json --save
 * 两边靠**同一份表**对齐：`school.BUILDINGS`（四个校区共 16 栋，拿登录态从学校接口现查）
   随每轮的变更报告下发（`school.facts()`），提示词只说「归一到 `school.buildings` 里的名字」。
   —— **不抄进提示词**是因为那份表随学期会变，抄进去必然漂；
-* 程序里那套 `_canon_name`（数字写法归一、末尾「区」容错、长名优先）留着当**安全网**，
-  LLM 万一又塞了个变体进来也能兜住；
+* 程序侧**只做精确查表**（2026-09-27 删掉了原先那套 `_canon_name` 模糊匹配）：
+  键与学校系统里的写法逐字一致（`仙II区` 与 `仙Ⅱ区` 是两个字符串），LLM 塞进来一个
+  变体就查不到 → 留空。**不兜**的理由：兜住等于把「LLM 没归好」这件事藏起来，
+  而兜错就是把下游引到**另一栋**教学楼——留空只退化成同校区随机，代价小得多；
 * 认不出来的教学楼**宁可留空（= 随机）也不猜**（`tests/test_school.py` 锁死）。
 
 ### 7.3 通知事件

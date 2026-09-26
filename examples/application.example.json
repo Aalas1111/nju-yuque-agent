@@ -5,7 +5,7 @@
   "_comment": "一份「要素齐备」的教室借用申请。activity 对象就是 crb 的 Activity 原样，下游可直接吃。见 docs/handoff.md。",
   "created_at": "2026-09-20T10:18:40+08:00",
   "source": {
-    "repo": "lqogh0/jsjysq",
+    "repo": "<group>/<repo>",
     "doc_id": 1234567,
     "title": "新生见面会",
     "author": "张三",

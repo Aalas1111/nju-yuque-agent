@@ -2,6 +2,10 @@
 
 这一层是「程序负责测量、LLM 负责判断」里的**测量**那一半。它必须**确定、可测**——
 因为下游（教室借用插件）是纯程序，一个错的教学楼代码会让它去查错的教学楼。
+
+楼名的**写法归一归 LLM**（字典随变更报告下发，见 `school.facts`），
+程序只做**精确查表**。2026-09-27 清掉了原先那套模糊匹配（数字写法归一 / 末尾容错 /
+长名优先）——它会把「LLM 没归好」悄悄兜住，而兜错就会指到另一栋楼。
 """
 
 from __future__ import annotations
@@ -46,8 +50,36 @@ def test_normalize_building_known() -> None:
     assert "JXLDM=12" in note
 
 
-def test_normalize_building_tolerates_suffix() -> None:
-    assert school.normalize_building("3", "仙II区3号楼")[0] == "12"
+def test_normalize_building_is_an_exact_lookup() -> None:
+    """规范名照抄能命中——这是「LLM 归一 → 程序查表」里程序的那一半。"""
+    assert school.normalize_building("3", "仙II区")[0] == "12"
+    assert school.normalize_building("3", "逸夫楼A区")[0] == "15"
+
+
+@pytest.mark.parametrize(
+    "written",
+    [
+        "仙二",
+        "仙二区",
+        "仙2区",
+        "仙Ⅱ区",  # 罗马数字 Ⅱ（U+2161）：规范化写法是拉丁 II，这是**另一个**字符串
+        "仙ii区",
+        "仙1区",
+        "仙一区",
+        "逸夫楼A",
+        "逸夫楼a区",
+        "仙II区3号楼",
+    ],
+)
+def test_variant_spellings_are_left_to_the_llm(written: str) -> None:
+    """写法变体在程序这一层**不命中**（留空 = 随机）。
+
+    归一归 LLM：它拿到的变更报告里带着 `school.BUILDINGS`，归一目标与这里的键
+    必然一致。程序再猜一遍只会把「LLM 没归好」这件事藏起来——
+    猜错就是把下游引到**另一栋**教学楼（2026-09-27 按负责人意见删掉模糊匹配）。
+    """
+    code, note = school.normalize_building("3", written)
+    assert code == "", f"{written!r} 被程序猜出来了（{note}）——变体应由 LLM 归一"
 
 
 def test_normalize_building_unknown_is_empty_not_a_guess() -> None:
@@ -163,45 +195,6 @@ def test_bookable_range() -> None:
     lo, hi = school.bookable_range(date(2026, 9, 20))
     assert lo == date(2026, 9, 22)
     assert hi == date(2026, 9, 29)
-
-
-# ---------------------------------------------------------------- 写法覆盖
-
-
-@pytest.mark.parametrize(
-    "written",
-    [
-        "仙I区",
-        "仙Ⅰ区",
-        "仙1区",
-        "仙一区",
-        "仙i区",
-        "仙 I 区",
-        "仙２区",  # 第 I 区
-        "仙II区",
-        "仙Ⅱ区",
-        "仙2区",
-        "仙二区",
-        "仙二",
-        "仙ii区",  # 第 II 区
-        "仙II区3号楼",  # 带尾巴
-    ],
-)
-def test_building_numeric_variants_resolve(written: str) -> None:
-    """数字的各种写法都要能落到同一个 JXLDM（归一在 `school._canon_name`）。
-
-    为什么重要：学校的教学楼字典是**按校区现查**的、还会随学期变，
-    靠「手工枚举所有写法」必漏；归一之后只登记学校系统里的规范名，
-    社员写「仙二」「仙2区」「仙Ⅱ区」都能命中。
-    """
-    code, note = school.normalize_building("3", written)
-    assert code in {"11", "12"}, f"{written!r} 没认出来：{note}"
-
-
-def test_building_case_and_missing_suffix_variants() -> None:
-    assert school.normalize_building("3", "逸夫楼A")[0] == "15"
-    assert school.normalize_building("3", "逸夫楼a区")[0] == "15"
-    assert school.normalize_building("3", "逸夫楼B区")[0] == "16"
 
 
 def test_building_table_covers_all_four_campuses() -> None:

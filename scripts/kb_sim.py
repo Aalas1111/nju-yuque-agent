@@ -1,22 +1,26 @@
 """模拟社员：往知识库里写测试文档 / 清理测试文档。
 
+⚠️ **这是开发/测试工具，不会碰「没指定的库」**：它按 ``--repo``（必填）真的往
+那个知识库里写文档、删文档。**只对测试副本知识库用**——别对着生产库跑
+（上线后的生产库就是 ``--repo`` 所指的那个）。
+
 开发期用它在「当前申请目录」里造出各种形态的申请，验证整条链路：
 **写文档 → 程序轮询发现变更 → 唤醒 LLM → 产出申请 JSON / 通知事件 → 留痕**。
 
 ```bash
 # 写一篇（默认写进当前申请目录）
-uv run python scripts/kb_sim.py write --title "新生见面会" \
+uv run python scripts/kb_sim.py --repo <group>/<test-repo> write --title "新生见面会" \
   --body-file tests/scenarios/t1_standard.md
 
 # 写一篇草稿（正文首行保留【草稿】）
-uv run python scripts/kb_sim.py write --title "读书会" \
+uv run python scripts/kb_sim.py --repo <group>/<test-repo> write --title "读书会" \
   --body-file tests/scenarios/t2_draft.md
 
 # 看当前目录里有哪些文档
-uv run python scripts/kb_sim.py ls
+uv run python scripts/kb_sim.py --repo <group>/<test-repo> ls
 
 # 清理：删掉本轮模拟写入的全部文档（按 --manifest 记录）
-uv run python scripts/kb_sim.py clean
+uv run python scripts/kb_sim.py --repo <group>/<test-repo> clean
 ```
 """
 
@@ -30,7 +34,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from yuque_agent import clock  # noqa: E402
-from yuque_agent.config import DEFAULT_REPO, Settings  # noqa: E402
+from yuque_agent.config import Settings  # noqa: E402
 from yuque_agent.week import cycle_of  # noqa: E402
 from yuque_agent.yuque import YuqueClient, YuqueError  # noqa: E402
 
@@ -77,7 +81,7 @@ def cmd_write(args: argparse.Namespace) -> None:
         client.wait_toc_settled()
         slug = str((created or {}).get("slug") or "")
         print(f"[write] doc_id={doc_id} title={args.title!r} -> {target_dir}")
-        print(f"        https://nova.yuque.com/{settings.repo}/{slug}")
+        print(f"        {settings.host.rstrip('/')}/{settings.repo}/{slug}")
 
     rows = _load_manifest()
     rows.append({"doc_id": doc_id, "title": args.title, "dir": target_dir, "slug": slug})
@@ -121,7 +125,11 @@ def cmd_clean(args: argparse.Namespace) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="模拟社员在知识库里写/改/清理测试文档")
-    parser.add_argument("--repo", default=DEFAULT_REPO)
+    parser.add_argument(
+        "--repo",
+        required=True,
+        help="目标知识库 namespace（必填：本项目没有默认知识库；只能指向测试副本）",
+    )
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     w = sub.add_parser("write", help="新建一篇测试文档")

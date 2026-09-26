@@ -84,7 +84,8 @@ uv run yqa doctor
 |---|---|---|
 | `YQA_TOKEN` / `YUQUE_TOKEN` | 语雀 token（归档需要写权限：`repo` + `doc`） | `~/.yuque/auth.json` |
 | `YQA_LLM_KEY` / `DEEPSEEK_API_KEY` | LLM API key | `~/.pi/agent/auth.json` |
-| `YQA_REPO` | 知识库 namespace，默认 `lqogh0/jsjysq` | |
+| `YQA_REPO` | 知识库 namespace（`<group>/<repo>`）。**必填：没有默认知识库** | 无——不配就拒绝启动 |
+| `YQA_HOST` | 知识库的访问域名（只影响程序拼的链接，如《Agent 通知》地址） | `https://www.yuque.com` |
 | `YQA_PLAN_ADMIN` | 「清单已更新」通知发给谁（语雀侧人名，见 `docs/deploy.md` §9） | |
 
 QQ 桥的凭证（`YQA_QQ_*`、`qqbot.json`）归它自己的项目管。
@@ -93,7 +94,7 @@ QQ 桥的凭证（`YQA_QQ_*`、`qqbot.json`）归它自己的项目管。
 
 ```bash
 uv run yqa doctor                 # 自检：token / scope / 知识库 / 模型 / 提示词
-uv run yqa once                   # 跑一轮轮询（没变化就什么都不做）
+uv run yqa once --repo <group>/<repo>   # 跑一轮轮询（没变化就什么都不做）
 uv run yqa once --force           # 无视 diff，强制唤醒一次
 uv run yqa once --rescan          # 无视快照，把现有全部文档重新评估一遍（会重发通知）
 uv run yqa once --dry-run         # 所有写操作只记录不执行
@@ -109,6 +110,10 @@ uv run yqa refresh-notice         # 重建知识库里的《Agent 通知》文�
 uv run yqa sync-guide             # 把 kb/guide.md 上传为知识库《指导文档（必读）》
 uv run yqa reset-test-data --workspace <工作区> --yes    # 清空测试数据（默认只预览）
 ```
+
+> **知识库必须显式给**：`--repo`（或 `YQA_REPO`）——本项目**没有默认知识库**，
+> 两边都没有时命令直接停下（写死一个 namespace 意味着「忘配的人会连到别人的库」）。
+> 上面除 `--repo` 外其余命令同理。
 
 > ⚠️ **任何会动工作区的命令都要显式写 `--workspace`**：默认值是相对路径 `workspace`。
 > 服务的工作区是 `/var/lib/yuque-agent/workspace`（见 `docs/deploy.md` §6）。
@@ -134,6 +139,7 @@ uv run yqa reset-test-data --workspace <工作区> --yes    # 清空测试数据
 ```bash
 uv sync
 uv run yqa doctor                 # 先看自检表，尤其「时区」与「知识库 / 写权限」两行
+export YQA_REPO=<group>/<repo>         # 知识库 namespace（必填，没有默认库）
 export YQA_TOKEN=<语雀写权限令牌>      # 或放 ~/.yuque/auth.json
 export DEEPSEEK_API_KEY=<key>
 uv run yqa run --interval 60 --quiet-seconds 45

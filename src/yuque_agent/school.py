@@ -15,9 +15,10 @@
 
 **谁负责归一**：把社员的写法（「仙二」「仙2区」「逸夫楼A」）归到规范名**归 LLM**
 ——它比任何别名表都强；这份表会随每轮的变更报告下发（:func:`facts`），
-它归一出来的名字就是这里的键。程序只做**规范名 → JXLDM** 这一步机械映射；
-:func:`_canon_name` 那套归一留着当安全网（LLM 万一又塞了个变体进来）。
-详见 `docs/design.md` §7.2。
+它归一出来的名字就是这里的键。程序**只做「规范名 → JXLDM」这一步精确查表**，
+不做任何模糊匹配（2026-09-27 清掉了原先的 `_canon_name` 安全网）：
+变体匹配会把「LLM 没归好」这件事悄悄藏起来，而查不到就留空（= 随机）更诚实、
+也更好排查。详见 `docs/design.md` §7.2。
 
 **怎么重查这张表**（需要南大统一认证的登录态，OpenAPI 拿不到；每学期核一次）：
 
@@ -27,8 +28,8 @@ crb login                                   # 扫码（一次）
 crb buildings --campus 3 --json             # → [{"JXLDM":"11","JXLMC":"仙I区"}, …]
 ```
 
-把返回的 `JXLMC` / `JXLDM` 填进 :data:`BUILDINGS` 对应校区即可（键用规范名 + JXLDM）。
-数字的各种写法（`Ⅰ`/`1`/`一`、`II`/`2`/`二`、全角）不用登记，:func:`_canon_name` 会归一。
+把返回的 `JXLMC` / `JXLDM` 填进 :data:`BUILDINGS` 对应校区即可（键用 JXLMC 原样）。
+表的键必须与学校系统里的写法**逐字一致**（含罗马数字写法）——因为查表是精确的。
 
 校方规则（来自 谷和平 对借用页面的实测）：
 
@@ -40,26 +41,8 @@ crb buildings --campus 3 --json             # → [{"JXLDM":"11","JXLMC":"仙I�
 from __future__ import annotations
 
 import re
-import unicodedata
 from datetime import date, timedelta
 from typing import Any
-
-#: 教学楼名里的中文数字 → 阿拉伯数字（归一用，见 :func:`_canon_name`）。
-_CJK_DIGITS = {
-    "一": "1",
-    "二": "2",
-    "三": "3",
-    "四": "4",
-    "五": "5",
-    "六": "6",
-    "七": "7",
-    "八": "8",
-    "九": "9",
-    "十": "10",
-}
-
-#: 拉丁（NFKC 折过罗马数字之后的）数字 → 阿拉伯数字。
-_ROMAN_DIGITS = {"i": 1, "ii": 2, "iii": 3, "iv": 4, "v": 5, "ix": 9, "x": 10}
 
 # ---------------------------------------------------------------- 校区
 
@@ -95,9 +78,10 @@ def normalize_campus(text: str) -> str | None:
 
 #: ``校区代码 -> {规范教学楼名: JXLDM}``。**全量**（2026-09-26 用登录态从学校接口现查）。
 #:
-#: 「规范名」= 学校系统里那一列 `JXLMC` 原样；数字的各种写法（Ⅰ/1/一、II/2/二、全角）
-#: 不用登记，:func:`_canon_name` 会归一，而且这份表会随每轮的变更报告一起下发给 LLM
-#: （见 :func:`facts`），所以它归一出来的名字**必然**是这里的键。
+#: 「规范名」= 学校系统里那一列 `JXLMC` **原样**（连罗马数字的写法也是）。
+#: 这份表会随每轮的变更报告一起下发给 LLM（见 :func:`facts`），
+#: 它归一出来的名字**必然**是这里的键——所以查表是精确的，不需要变体匹配。
+#: 键必须与学校系统逐字一致：`仙II区`（拉丁 II）与 `仙Ⅱ区`（罗马 Ⅱ）是**两个**字符串。
 #:
 #: 重查办法见模块 docstring 末尾（需要南大统一认证；每学期开学后值得核一次）。
 BUILDINGS: dict[str, dict[str, str]] = {
@@ -169,39 +153,16 @@ def facts() -> dict[str, Any]:
     }
 
 
-def _canon_name(text: str) -> str:
-    """把教学楼名里的**数字写法**归一，便于比对。
-
-    先 NFKC（全角 → 半角、罗马数字 Ⅰ Ⅱ → 拉丁 I I），再把拉丁/中文数字折成阿拉伯数字，
-    并去掉空格、统一大小写。于是社员写的这些写法都会落到同一个键上::
-
-        仙I区 · 仙Ⅰ区 · 仙1区 · 仙一区 · 仙i区 · 仙　I 区  →  仙1区
-        逸夫楼A区 · 逸夫楼a区                                →  逸夫楼a区
-
-    为什么要它：学校的教学楼字典是按校区现查的（见 `docs/design.md` D2），
-    每换一学期/一栋楼就得往表里加名字；靠「手工枚举所有写法」必漏，
-    而归一之后**只需登记学校系统里的那个规范名**，常见变体自动覆盖。
-    """
-    flat = unicodedata.normalize("NFKC", text or "").replace(" ", "").lower()
-    flat = "".join(_CJK_DIGITS.get(ch, ch) for ch in flat)
-    # 拉丁数字 → 阿拉伯数字（只在两侧不是字母时替换，别把单词里的 i/v/x 吃掉）
-    flat = re.sub(
-        r"(?<![a-z])(x{1,3}|ix|iv|v|i{1,3})(?![a-z])",
-        lambda m: str(_ROMAN_DIGITS[m.group(1)]),
-        flat,
-    )
-    # 末尾的「区」不算区别（社员常常不写：「逸夫楼A」=「逸夫楼A区」）
-    return flat[:-1] if flat.endswith("区") and len(flat) > 1 else flat
-
-
 def normalize_building(campus_code: str | None, text: str) -> tuple[str, str]:
     """返回 ``(JXLDM, 说明)``。认不出来时 ``JXLDM`` 为空串 = 交给下游随机。
 
-    「宁可留空也不猜」：一个错的教学楼代码会让下游去查错的教学楼，
-    而留空只是退化成「在同一校区里随机」。
+    **只做精确查表**：``text`` 要么是 :data:`BUILDINGS` 里的规范名，要么就是 JXLDM 本身。
 
-    比对前两边都过 :func:`_canon_name`（数字写法归一），所以
-    「仙二区」「仙2区」「仙Ⅱ区」都能命中表里的「仙I区/仙II区」；表里没有的仍然留空。
+    为什么不做模糊匹配（2026-09-27 删掉了原来的那一套）：写法归一**归 LLM**
+    （它拿到的变更报告里就带着这张表，归一目标与这里的键必然一致）。
+    程序再去猜「仙二」是不是「仙II区」，等于把 LLM 判断的正确性用一份别名表
+    又赌了一遍——猜错就把下游引到**另一栋**教学楼，而查不到留空只是退化成随机。
+    「宁可留空也不猜」是这一层的安全属性。
     """
     raw = (text or "").strip()
     if not raw:
@@ -210,18 +171,12 @@ def normalize_building(campus_code: str | None, text: str) -> tuple[str, str]:
     if not table:
         return "", f"「{raw}」所在校区没有教学楼代码表（留空 = 随机）"
 
+    code = table.get(raw)
+    if code is not None:
+        return code, f"教学楼「{raw}」→ JXLDM={code}"
     if raw in table.values():  # 直接给了 JXLDM（如「12」）也认
         return raw, f"教学楼「{raw}」看起来就是 JXLDM，直接用"
-
-    want = _canon_name(raw)
-    for name, code in table.items():
-        if _canon_name(name) == want:
-            return code, f"教学楼「{raw}」→ JXLDM={code}"
-    # 容忍「仙II区3号楼」这类带尾巴的写法。长的名字优先，避免短名把长名截胡。
-    for name, code in sorted(table.items(), key=lambda kv: len(kv[0]), reverse=True):
-        if _canon_name(name) in want:
-            return code, f"教学楼「{raw}」按「{name}」解析 → JXLDM={code}"
-    return "", f"教学楼「{raw}」不在已知代码表里（留空 = 随机；下游可自行解析）"
+    return "", f"教学楼「{raw}」不是表里的规范名（留空 = 随机；下游可自行解析）"
 
 
 # ---------------------------------------------------------------- 节次
