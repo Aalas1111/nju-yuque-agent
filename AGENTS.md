@@ -107,8 +107,8 @@
 1. `ruff check . && ruff format --check .`
 2. `pytest`（本地；在机器上则必须经由 `scripts/deploy.sh`）
 3. 碰了 `deploy/*.service` → `pytest tests/test_deploy_doc.py`（它钉住几条关键指令）
-4. 部署后：两个单元 `systemctl is-active`，日志里有 `READY`、没有 `Traceback`，
-   并且 `ops.log` 多了一行
+4. 部署后：两个单元 `systemctl is-active`，日志里有启动行（`[watch] 开始常驻：…` 与
+   `[plan] 下载口已开：…`）、没有 `Traceback`，并且 `ops.log` 多了一行
 
 ## 6. 出事了怎么办
 
