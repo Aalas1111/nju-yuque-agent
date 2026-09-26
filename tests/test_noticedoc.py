@@ -66,8 +66,6 @@ def doc_meta(doc_id: int = 9, title: str = ""):
         updated_at="t",
         created_at="c",
         author="",
-        author_login="",
-        word_count=0,
     )
 
 

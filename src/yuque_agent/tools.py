@@ -32,8 +32,15 @@ from .session import Stopwatch
 from .snapshot import DocSnapshot
 from .yuque import YuqueClient, YuqueError, dir_map_from_payload, doc_dir_map
 
-MAX_DOC_CHARS = 8000
-MAX_LISTING = 200
+MAX_DOC_CHARS = 7000
+"""doc_read 每篇正文最多回给 LLM 多少字符。
+
+必须小于 :data:`agent.MAX_RESULT_CHARS`——否则「正文超限」这层自己的截断说明
+会被 agent 那层的截断盖掉，LLM 拿到的是双重转义的预览，比正文本身还难读。
+"""
+
+MAX_LISTING = 100
+"""dir_list / ws_list 单次最多列多少行（再多就该缩小范围，而不是把上下文灌满）。"""
 
 
 class ToolError(RuntimeError):
@@ -51,6 +58,7 @@ class RunContext:
     kind: str
     """``polling`` | ``archive``"""
     run_dir: Path
+    """本次 run 的留痕目录（payload / session / result 都在这下面）。"""
     toc: list[dict[str, Any]] = field(default_factory=list)
     docs: dict[int, DocSnapshot] = field(default_factory=dict)
     today: date | None = None

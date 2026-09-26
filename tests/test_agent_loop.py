@@ -7,9 +7,9 @@ import json
 import pytest
 
 from tests.fakes import Ctx, FakeLLM, call
-from yuque_agent.agent import run_agent, session_path_for
+from yuque_agent.agent import MAX_RESULT_CHARS, _bounded, run_agent, session_path_for
 from yuque_agent.config import Settings
-from yuque_agent.llm import LLMResponse, ToolCall, Usage
+from yuque_agent.llm import LLMError, LLMResponse, ToolCall, Usage
 from yuque_agent.prompts import PromptLoader
 from yuque_agent.session import SessionRecorder, read_events
 
@@ -111,7 +111,55 @@ def test_usage_is_accumulated_across_steps(settings: Settings) -> None:
     assert result.usage.completion_tokens == 10
 
 
-# ---------------------------------------------------------------- 留痕
+# ---------------------------------------------------------------- 异常与截断
+
+
+class _ExplodingLLM:
+    """一调就炸的 LLM（模拟网络断了 / key 过期）。"""
+
+    model = "fake-exploding"
+    send_reasoning_back = True
+
+    def chat(self, messages, *, tools=None):  # noqa: ANN001
+        raise LLMError("网络错误（ConnectError）：模拟断了")
+
+    def close(self) -> None:
+        pass
+
+
+def test_llm_exception_is_recorded_and_does_not_escape(settings: Settings) -> None:
+    """一次调用炸了也要留痕（error 事件 + result.error + stop_reason=error），不能把整轮崩掉。
+
+    这条路径 2026-09-27 之前没有任何测试——而它正是「失败重试」（`runner._note_polling_outcome`）
+    赖以判断的入口，坏了会让失败看起来像成功。
+    """
+    env = Ctx.build(settings)
+    session_path = session_path_for(env.ctx.run_dir)
+    with SessionRecorder(session_path) as session:
+        result = run_agent(
+            llm=_ExplodingLLM(),  # type: ignore[arg-type]
+            ctx=env.ctx,
+            prompt=PromptLoader(),
+            payload={"run_id": "r1", "kind": "polling"},
+            session=session,
+        )
+
+    assert result.stop_reason == "error"
+    assert "LLMError" in result.error
+    events = list(read_events(session_path))
+    assert any(e.get("t") == "error" for e in events), "现场（error 事件）必须留在 session 里"
+    assert events[-1]["t"] == "run_end" and events[-1]["error"]
+
+
+def test_bounded_truncates_huge_results() -> None:
+    """工具结果超限时截成「预览 + 说明」，别把上下文灌爆。"""
+    small = {"ok": True, "result": {"body": "短"}}
+    assert _bounded(small) is small, "没超限的结果原样回灌"
+
+    huge = _bounded({"ok": True, "result": {"body": "x" * (MAX_RESULT_CHARS + 1)}})
+    assert huge["ok"] is True and huge["truncated"] is True
+    assert len(huge["preview"]) == MAX_RESULT_CHARS
+    assert "截断" in huge["note"] and "不是失败" in huge["note"]
 
 
 def test_session_records_the_whole_story(settings: Settings) -> None:

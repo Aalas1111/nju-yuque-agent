@@ -44,8 +44,11 @@ def test_process_pending_runs_once_and_writes_receipt(tmp_path: Path) -> None:
 
     assert results[0]["ok"] is True
     assert runner.polls == 1
-    assert runner.force_flags == [True]  # 人工命令：无视 diff 也要跑
-    assert runner.debounce_flags == [False]  # 且关掉静默期
+    # 人工命令：关掉静默期（debounce=False），但**不**强行跑空轮——
+    # 真有变化时 force 与否都会跑，「其实没变」时不该白唤醒一轮 LLM
+    # （回执里会照实说「没有变化，0 token」）。语义与 `yqa once` 一致。
+    assert runner.force_flags == [False]
+    assert runner.debounce_flags == [False]
     data = receipt(settings)
     assert data["ok"] is True
     assert data["run_id"]  # 回执里有 run_id，请求方能给出「run: …」
@@ -100,6 +103,34 @@ def test_unknown_kind_is_rejected_with_receipt(tmp_path: Path) -> None:
     data = receipt(settings)
     assert data["ok"] is False
     assert "未知 kind" in data["error"]
+
+
+def test_once_without_a_runner_is_refused(tmp_path: Path) -> None:
+    """核心进程没在跑（runner=None）时，once/archive 只能如实拒绝——只有 apply 能空跑。"""
+    settings = make_settings(tmp_path)
+    for kind in ("once", "archive"):
+        write_request(settings, {"kind": kind, "requested_by": "u-1"})
+        control.process_pending(settings, runner=None, log=lambda _t: None)
+        path = next(settings.control_done_dir.glob(f"*-{kind}-*.json"))
+        data = json.loads(path.read_text(encoding="utf-8"))
+        assert data["ok"] is False
+        assert "没有 runner" in data["error"]
+
+
+def test_prune_done_removes_only_old_receipts(tmp_path: Path) -> None:
+    """回执留 7 天就够——不然 done/ 会一直长（投递方只读最近的几条）。"""
+    import os
+
+    settings = make_settings(tmp_path)
+    fresh = settings.control_done_dir / "20260927-120000-once-aaaaaa.json"
+    stale = settings.control_done_dir / "20260101-120000-once-bbbbbb.json"
+    fresh.write_text("{}", encoding="utf-8")
+    stale.write_text("{}", encoding="utf-8")
+    old = clock.now().timestamp() - 8 * 86400
+    os.utime(stale, (old, old))
+
+    assert control.prune_done(settings) == 1
+    assert fresh.exists() and not stale.exists()
 
 
 # ---------------------------------------------------------------- apply

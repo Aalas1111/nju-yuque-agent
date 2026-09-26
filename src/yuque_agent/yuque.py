@@ -50,7 +50,6 @@ class TocNode:
     """``DOC`` / ``TITLE`` / ``LINK``"""
     title: str
     doc_id: int
-    slug: str
     parent_uuid: str
     depth: int
     """根节点为 1。"""
@@ -68,9 +67,6 @@ class DocMeta:
     updated_at: str
     created_at: str
     author: str
-    author_login: str
-    word_count: int
-    doc_type: str = "Doc"
 
 
 @dataclass(frozen=True)
@@ -181,13 +177,11 @@ class YuqueClient:
         nodes: dict[str, TocNode] = {}
         for index, item in enumerate(raw):
             doc_id = _to_int(item.get("doc_id"))
-            slug = str(item.get("slug") or "")
             nodes[str(item.get("uuid") or "")] = TocNode(
                 uuid=str(item.get("uuid") or ""),
                 type=str(item.get("type") or ""),
                 title=str(item.get("title") or ""),
                 doc_id=doc_id,
-                slug="" if slug == "#" else slug,
                 parent_uuid=str(item.get("parent_uuid") or ""),
                 depth=0,
                 path="",
@@ -249,7 +243,7 @@ class YuqueClient:
         meta = _to_doc_meta(data)
         return DocDetail(**meta.__dict__, body=str(data.get("body") or ""))
 
-    # -- 写（只有这 5 个）--------------------------------------------------
+    # -- 写（一共 7 个，见模块 docstring）----------------------------------
     def create_doc(
         self, *, title: str, body: str, slug: str = "", public: int | None = None
     ) -> dict[str, Any]:
@@ -336,7 +330,11 @@ class YuqueClient:
         )
 
     def toc_rename(self, *, node_uuid: str, title: str) -> Any:
-        """改目录节点标题（实测：``editNode`` + ``node_uuid`` + ``title`` 有效）。"""
+        """改目录节点标题（实测：``editNode`` + ``node_uuid`` + ``title`` 有效）。
+
+        **没有注册给任何工具集**（见 `docs/design.md` D9）：目录改名风险高又难判定，
+        只留给人工/脚本。留着实现是为了「能力边界一眼可数」——写方法全在这里。
+        """
         payload: dict[str, Any] = {
             "action": "editNode",
             "action_mode": "sibling",
@@ -400,7 +398,6 @@ def _to_doc_meta(item: dict[str, Any]) -> DocMeta:
     creator = item.get("creator") if isinstance(item.get("creator"), dict) else {}
     user = item.get("user") if isinstance(item.get("user"), dict) else {}
     author = str((creator or {}).get("name") or (user or {}).get("name") or "")
-    author_login = str((creator or {}).get("login") or (user or {}).get("login") or "")
     return DocMeta(
         doc_id=_to_int(item.get("id")),
         slug=str(item.get("slug") or ""),
@@ -408,7 +405,4 @@ def _to_doc_meta(item: dict[str, Any]) -> DocMeta:
         updated_at=str(item.get("updated_at") or ""),
         created_at=str(item.get("created_at") or ""),
         author=author,
-        author_login=author_login,
-        word_count=_to_int(item.get("word_count")),
-        doc_type=str(item.get("type") or "Doc"),
     )

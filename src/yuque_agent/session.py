@@ -56,10 +56,6 @@ class SessionRecorder:
             self._fh.flush()
         self.events_written += 1
 
-    # -- 读 ---------------------------------------------------------------
-    def read(self) -> list[dict[str, Any]]:
-        return list(read_events(self.path))
-
 
 def read_events(path: Path) -> Iterator[dict[str, Any]]:
     """逐行读 session；损坏的行跳过而不是整份作废。"""

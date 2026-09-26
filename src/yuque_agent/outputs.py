@@ -71,7 +71,8 @@ PROGRAM_NOTICE_KINDS = ("plan_updated",)
 为什么单列一类：`plan_updated`（「申请清单已更新，cac 请尽快下载提交」）
 要的是给**管理员**的正向提醒，而 LLM 对「清单变了」这件事没有可靠视角——
 它只知道这一轮改了哪几篇文档，不知道清单整体长什么样、有没有过期。
-由 :func:`write_application` 在写盘后顺手发，才不会漏。
+所以它由**程序**发：`Runner.notify_plan_updated_if_changed()` 按内容指纹去重，
+在「跑完一轮轮询」与「QQ 自助申请落盘」两处被调（见 `runner.py` / `control.py`）。
 
 **能力闸门**：``tools.emit_notice`` 校验的是 ``LLM_NOTICE_KINDS``，
 所以 LLM 根本发不出这一类（不是靠提示词叮嘱）。
@@ -462,7 +463,9 @@ def _next_seq(settings: Settings) -> int:
         current = int(counter.read_text(encoding="utf-8").strip() or "0")
     except (OSError, ValueError):
         current = 0
-    for folder in ("pending", "done"):
+    # 兜底时四个目录都要扫：投递方会把文件挪进 unrouted/ 或 failed/，
+    # 只数 pending/ 与 done/ 的话，.seq 一丢就可能跟那些旧通知撞号。
+    for folder in ("pending", "done", "unrouted", "failed"):
         for path in (settings.notify_dir / folder).glob("*.json"):
             head = path.name.split("-", 1)[0]
             if head.isdigit():

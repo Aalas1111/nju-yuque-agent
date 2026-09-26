@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import secrets
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -38,16 +38,53 @@ from .yuque import YuqueClient
 
 STATE_VERSION = 1
 
+MAX_RUN_RETRIES = 3
+"""一轮失败后最多把基线退回重试几次（2026-09-27 定，负责人拍板）。
+
+变更是在跑 LLM **之前**写进基线的（防进程被重启后重复处理），所以一轮失败如果不退，
+这批变更就再也不会出现在 diff 里——社员什么通知都收不到（《指导文档》向他承诺过会收到）。
+代价是可能重复通知（至少一次语义，与通知投递一致）；上限则挡住「key 过期」这类
+每次都会失败的故障：不设上限就是每一轮都白跑一次。
+"""
+
+ARCHIVE_RETRY_COOLDOWN_SECONDS = 30 * 60
+"""归档失败后的冷却时间（2026-09-27 定）。
+
+归档是唯一的结构维护窗口，失败一次就意味着整周目录形态是错的；但它一轮约 2 万 token，
+失败后必须冷却，不能让 20s 一轮的轮询把它变成热循环。
+"""
+
+ARCHIVE_MAX_FAILURES = 3
+"""归档每个周期最多试几次（含第一次）；到上限就放弃本周期，等下周六的常规窗口。"""
+
 
 @dataclass
 class State:
-    """程序侧记忆：上一轮快照 + 归档水位线 + 静默期计时。**LLM 看不到它，也不需要看到。**"""
+    """程序侧记忆：上一轮快照 + 归档水位线 + 静默期计时。**LLM 看不到它，也不需要看到。**
+
+    ``rounds`` / ``last_poll_at`` 只给人看（state.json 里一眼能看出轮询了多少轮、
+    上一次轮询是什么时候），程序逻辑不依赖它们；``last_archive_at`` 兼作归档失败时的
+    冷却计时起点（见 :meth:`Watcher.archive_retry_at`）。
+    """
 
     snapshot: Snapshot | None = None
     rounds: int = 0
     last_poll_at: str = ""
     last_archive_title: str = ""
     last_archive_at: str = ""
+    """最近一次归档**尝试**的时刻（成功或失败都算）。
+
+    失败时它是冷却计时的起点（见 :meth:`Watcher.archive_retry_at`），
+    成功时就只是一条给人看的记录。
+    """
+
+    retry_failures: int = 0
+    """连续失败了几轮（轮询侧，见 :meth:`Runner._note_polling_outcome`）。
+
+    到 :data:`MAX_RUN_RETRIES` 就放弃这一批（按老语义「认赔」，留痕里看得见）。
+    """
+    archive_failures: int = 0
+    """本周期归档失败了几次（到 :data:`ARCHIVE_MAX_FAILURES` 就放弃本周期）。"""
 
     pending_since: str = ""
     """首次检测到变化的时间（ISO）。非空 = 有一批变更正在等静默期结束。"""
@@ -84,6 +121,8 @@ class State:
             "last_poll_at": self.last_poll_at,
             "last_archive_title": self.last_archive_title,
             "last_archive_at": self.last_archive_at,
+            "retry_failures": self.retry_failures,
+            "archive_failures": self.archive_failures,
             "pending_since": self.pending_since,
             "pending_polls": self.pending_polls,
             "notice_doc_id": self.notice_doc_id,
@@ -102,6 +141,8 @@ class State:
             last_poll_at=str(payload.get("last_poll_at") or ""),
             last_archive_title=str(payload.get("last_archive_title") or ""),
             last_archive_at=str(payload.get("last_archive_at") or ""),
+            retry_failures=int(payload.get("retry_failures") or 0),
+            archive_failures=int(payload.get("archive_failures") or 0),
             pending_since=str(payload.get("pending_since") or ""),
             pending_polls=int(payload.get("pending_polls") or 0),
             notice_doc_id=int(payload.get("notice_doc_id") or payload.get("journal_doc_id") or 0),
@@ -129,6 +170,18 @@ def save_state(state: State, path: Path) -> None:
 def new_run_id(kind: str, *, at: datetime | None = None) -> str:
     stamp = clock.compact_stamp(at)
     return f"{stamp}-{kind}-{secrets.token_hex(2)}"
+
+
+def _run_failed(result: RunResult) -> bool:
+    """这一轮算不算「没做成」（要记账的那两种）。
+
+    * ``error`` 非空：LLM 调用/留痕抛了异常（网络、key、磁盘……）；
+    * ``llm_stopped_without_done``：模型自己停了却没调 ``done``——什么判断都没落地。
+
+    ``max_steps`` / ``max_tool_calls`` **不算**：那是「做到一半被截住」，
+    重跑会把已经产出的通知再发一遍，而它至少还有一份留痕可查。
+    """
+    return bool(result.error) or result.stop_reason == "llm_stopped_without_done"
 
 
 def _seconds_since(stamp: str, now: datetime) -> float | None:
@@ -461,10 +514,49 @@ class Runner:
                 "`outbox/applications/` 为什么变空了。"
             )
         result = self._execute(run_id=run_id, kind="polling", payload=report)
+        # 失败要记账（必要时把基线退回，见 _note_polling_outcome）：变更是在跑 LLM **之前**
+        # 就写进基线的，不退的话这批变更永远不会再出现在 diff 里，社员什么通知都收不到。
+        self._note_polling_outcome(result, prev=prev, had_work=changes.n_docs > 0)
         # 跑完再看一眼清单：这一轮若改了申请，管理员该收到一条「请下载提交」。
         # 放在 _execute 之后，所以一轮里写多少份申请都只提醒一次。
         self.notify_plan_updated_if_changed()
         return result
+
+    def _note_polling_outcome(
+        self, result: RunResult, *, prev: Snapshot | None, had_work: bool
+    ) -> None:
+        """一轮跑失败的记账：把基线退回 ``prev``，下一轮常规轮询会重新检测这批变更。
+
+        为什么必须退：变更在跑 LLM **之前**就进了基线（防进程被重启后重复处理），
+        所以失败不退 = 这批变更**永久丢失**（社员收不到任何通知，而《指导文档》承诺过会收到）。
+        退回去的代价是可能重复通知——与通知投递的「至少一次」语义一致，可以接受。
+
+        为什么要有上限：key 过期 / 余额不足这类故障每轮都会失败，不设上限就是永远白跑；
+        到 :data:`MAX_RUN_RETRIES` 就按老语义「认赔」，但在结果里记一笔（``/log`` 看得见）。
+        """
+        if not _run_failed(result):
+            if self.state.retry_failures:
+                self.state.retry_failures = 0
+                self.save_state()
+            return
+        if prev is None or not had_work:
+            # 没有可退的基线（首次运行建立基线 / --force 跑了个空报告）：没有东西可丢
+            result.retry = {"rolled_back": False, "why": "没有可退的基线（首次运行或空报告）"}
+        elif self.state.retry_failures >= MAX_RUN_RETRIES:
+            self.state.retry_failures = 0
+            self.save_state()
+            result.retry = {"rolled_back": False, "gave_up": True, "max": MAX_RUN_RETRIES}
+        else:
+            self.state.retry_failures += 1
+            self.state.snapshot = prev
+            self.save_state()
+            result.retry = {
+                "rolled_back": True,
+                "attempt": self.state.retry_failures,
+                "max": MAX_RUN_RETRIES,
+                "note": "已把基线退回，下一轮轮询会重新检测这批变更",
+            }
+        self._save_result(result)
 
     # -- 归档入口 ---------------------------------------------------------
     def archive_once(self, *, now: datetime | None = None) -> RunResult:
@@ -482,15 +574,52 @@ class Runner:
         )
         run_id = new_run_id("archive", at=moment)
         payload["run_id"] = run_id
-        result = self._execute(run_id=run_id, kind="archive", payload=payload)
-
-        self.state.last_archive_at = moment.isoformat(timespec="seconds")
-        self.state.last_archive_title = str(payload.get("cycle_title") or "")
-        self.save_state()
+        # docs 用**这次刚拿的快照**：state.snapshot 是上一次轮询的基线（冷启动时是空的），
+        # 拿它当工具上下文会和 payload 里的新鲜目录树对不上。
+        result = self._execute(run_id=run_id, kind="archive", payload=payload, docs=current.docs)
+        self._note_archive_outcome(result, moment=moment, cycle_title=str(payload["cycle_title"]))
         return result
 
+    def _note_archive_outcome(
+        self, result: RunResult, *, moment: datetime, cycle_title: str
+    ) -> None:
+        """归档失败也要记账：不推水位线 + 冷却后再试（见 :meth:`Watcher.archive_due`）。
+
+        为什么不能像轮询那样「认赔」：归档是**唯一**的结构维护窗口，失败一次就意味着
+        整周目录形态是错的（当周目录没建 / 上个周期没进归档区）。但它一轮约 2 万 token，
+        所以失败后冷却 :data:`ARCHIVE_RETRY_COOLDOWN_SECONDS`、每周期最多试
+        :data:`ARCHIVE_MAX_FAILURES` 次；到上限才推进水位线（本周期放弃，等下周六）。
+        """
+        self.state.last_archive_at = moment.isoformat(timespec="seconds")
+        if not _run_failed(result):
+            self.state.last_archive_title = cycle_title
+            self.state.archive_failures = 0
+            self.save_state()
+            return
+        self.state.archive_failures += 1
+        if self.state.archive_failures >= ARCHIVE_MAX_FAILURES:
+            self.state.last_archive_title = cycle_title  # 放弃本周期
+            self.state.archive_failures = 0
+            result.retry = {"gave_up": True, "max": ARCHIVE_MAX_FAILURES, "cycle": cycle_title}
+        else:
+            retry_at = moment + timedelta(seconds=ARCHIVE_RETRY_COOLDOWN_SECONDS)
+            result.retry = {
+                "attempt": self.state.archive_failures,
+                "max": ARCHIVE_MAX_FAILURES,
+                "retry_at": retry_at.isoformat(timespec="seconds"),
+            }
+        self.save_state()
+        self._save_result(result)
+
     # -- 执行 -------------------------------------------------------------
-    def _execute(self, *, run_id: str, kind: str, payload: dict[str, Any]) -> RunResult:
+    def _execute(
+        self,
+        *,
+        run_id: str,
+        kind: str,
+        payload: dict[str, Any],
+        docs: dict[int, DocSnapshot] | None = None,
+    ) -> RunResult:
         self.settings.ensure_dirs()
         if self.settings.dry_run:
             # dry-run 下写操作不会真的生效，而 agent 会去读回来确认 ——
@@ -514,7 +643,11 @@ class Runner:
             kind=kind,
             run_dir=run_dir,
             toc=list(payload.get("toc") or []),
-            docs=self.state.snapshot.docs if self.state.snapshot else {},
+            # docs 默认用 state 里的基线快照（轮询路径刚把它推进到本轮）；
+            # 归档路径传自己那份新鲜快照（state.snapshot 可能是上一次轮询的、甚至为空）。
+            docs=docs
+            if docs is not None
+            else (self.state.snapshot.docs if self.state.snapshot else {}),
             today=_day_of(payload),
         )
 
@@ -533,7 +666,6 @@ class Runner:
         (run_dir / "result.json").write_text(
             json.dumps(result.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8"
         )
-
         # 对外留痕 → 语雀《Agent 通知》：本周期发出去的通知都在那儿（内容由程序重建）
         outcome = self.refresh_notice_doc()
         result.notice_doc = outcome
@@ -541,6 +673,17 @@ class Runner:
             json.dumps(outcome, ensure_ascii=False, indent=2), encoding="utf-8"
         )
         return result
+
+    def _save_result(self, result: RunResult) -> None:
+        """把（记账之后可能改过的）结果重写进 ``runs/<run_id>/result.json``。
+
+        失败重试的记账发生在 :meth:`_execute` 之后，而 result.json 是 `/log` 与事后
+        排查读的那一份——记账不能只活在内存里。
+        """
+        path = self.settings.runs_dir / result.run_id / "result.json"
+        path.write_text(
+            json.dumps(result.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8"
+        )
 
 
 # ---------------------------------------------------------------- 归档指令

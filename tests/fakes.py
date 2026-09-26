@@ -112,7 +112,6 @@ def make_toc(*spec: tuple[str, str, int, str]) -> list[TocNode]:
                 type=node_type,
                 title=title,
                 doc_id=doc_id,
-                slug=f"s{doc_id}" if doc_id else "",
                 parent_uuid=uuid_of.get(parent_title, ""),
                 depth=2 if parent_title else 1,
                 path=f"{parent_title}/{title}" if parent_title else title,
@@ -130,8 +129,6 @@ def make_meta(doc_id: int, title: str, *, updated_at: str = "2026-09-20T00:00:00
         updated_at=updated_at,
         created_at="2026-09-19T00:00:00Z",
         author="模拟社员",
-        author_login="member",
-        word_count=10,
     )
 
 
@@ -237,6 +234,7 @@ class FakeRunner:
         self.archives = 0
         self.force_flags: list[bool] = []
         self.debounce_flags: list[bool] = []
+        self.plan_notices = 0
 
     def poll_once(
         self,
@@ -260,3 +258,8 @@ class FakeRunner:
             if self.archive_result is not None
             else FakeRunResult(kind="archive")
         )
+
+    def notify_plan_updated_if_changed(self):
+        """真 Runner 有这个方法（QQ 自助申请后要提醒 cac）；这里只记次数。"""
+        self.plan_notices += 1
+        return None

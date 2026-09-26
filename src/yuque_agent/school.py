@@ -57,8 +57,6 @@ _CAMPUS_ALIASES: dict[str, str] = {}
 for _code, _name in CAMPUS_CODES.items():
     for _alias in (_code, _name, f"{_name}校区", f"南京大学{_name}校区", f"{_name}区"):
         _CAMPUS_ALIASES[_alias] = _code
-# 常见口头简称
-_CAMPUS_ALIASES.update({"鼓楼校区": "1", "苏州校区": "4", "浦口": "2"})
 
 
 def normalize_campus(text: str) -> str | None:

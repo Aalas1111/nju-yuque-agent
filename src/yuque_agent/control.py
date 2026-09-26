@@ -148,6 +148,10 @@ def process_pending(
             ok = bool(outcome.get("ok"))
             summary = outcome.get("summary", "")
             error = "; ".join(outcome.get("errors") or [])
+            if ok and runner is not None:
+                # 清单变了要提醒 cac 去下载。poll_once 里那次提醒只在**真跑了一轮**之后
+                # 才走得到，而这条路（QQ 自助申请）不经过 LLM——所以在这里补一次。
+                _notify_plan_changed(runner, log)
         else:
             ok, error = False, f"未知 kind：{kind!r}（支持 {list(REQUEST_KINDS)}）"
 
@@ -159,6 +163,17 @@ def process_pending(
     return results
 
 
+def _notify_plan_changed(runner: Any, log: LogFn) -> None:
+    """把「清单已更新」补给管理员（见 `Runner.notify_plan_updated_if_changed`）。
+
+    失败只记日志：申请已经落盘成功了，提醒发不出去不该把回执判成失败。
+    """
+    try:
+        runner.notify_plan_updated_if_changed()
+    except Exception as exc:  # noqa: BLE001 - 通知失败不能拖垮队列
+        log(f"[control] plan_updated 通知失败（忽略）：{type(exc).__name__}: {exc}")
+
+
 def _run_once(runner: Any, kind: str) -> tuple[bool, str, str, str]:
     """跑一轮（``once`` / ``archive``），返回 (ok, summary, run_id, error)。"""
     try:
@@ -167,7 +182,9 @@ def _run_once(runner: Any, kind: str) -> tuple[bool, str, str, str]:
         else:
             # debounce=False：人工命令（管理员在 QQ 里敲的），敲了就该立刻有结果，
             # 不该被静默期吃掉——和 `yqa once` 同理。
-            result = runner.poll_once(force=True, debounce=False)
+            # force 保持 False（= 与 `yqa once` 一致）：真的有变化时它一样会跑，
+            # 而「其实没变」时不该白唤醒一轮 LLM（回执里会照实说「没有变化，0 token」）。
+            result = runner.poll_once(force=False, debounce=False)
     except Exception as exc:  # noqa: BLE001 - 失败要回执，不能让队列卡住
         return False, "", "", f"{type(exc).__name__}: {exc}"
     if result is None:
@@ -175,7 +192,12 @@ def _run_once(runner: Any, kind: str) -> tuple[bool, str, str, str]:
         reason = {"no_change": "没有变化", "quiet_period": "还在静默期内"}.get(skip) or skip
         reason = reason or "没有变化"
         return True, f"这一轮没有唤醒 LLM（{reason}，0 token）。", "", ""
-    return True, _summarize(result), str(getattr(result, "run_id", "")), ""
+    run_id = str(getattr(result, "run_id", ""))
+    error = str(getattr(result, "error", "") or "")
+    if error:
+        # 跑挂了要如实说：回执 ok=False，请求方（QQ 桥）才能把它当失败显示
+        return False, _summarize(result), run_id, error
+    return True, _summarize(result), run_id, ""
 
 
 def _summarize(result: Any) -> str:
@@ -186,6 +208,9 @@ def _summarize(result: Any) -> str:
         f"verdict={getattr(result, 'verdict', '') or '—'}",
         f"tokens={tokens}",
     ]
+    note = result.retry_note() if hasattr(result, "retry_note") else ""
+    if note:
+        bits.append(note)
     head = getattr(result, "summary", "") or "(无摘要)"
     return f"{head}\n   " + " · ".join(bits)
 

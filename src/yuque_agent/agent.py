@@ -27,7 +27,14 @@ from .prompts import PromptLoader
 from .session import SessionRecorder, Stopwatch, now_iso
 from .tools import RunContext, execute, tool_schemas
 
-MAX_RESULT_CHARS = 6000
+MAX_RESULT_CHARS = 12000
+"""单个工具结果回灌给 LLM 前的大小上限（字符），超了截成预览。
+
+为什么放到 12000（2026-09-27 从 6000 上调）：变更报告的 payload 本身就带着**全量目录树**
+（不受这里管），所以把工具结果卡得比它还小，只会让 LLM「看不懂又拿不到」——
+归档会话要靠 ``kb_tree()`` 核对根目录顺序，被截断的话那件事根本做不了。
+真正撞上限的只剩病态大结果（几百行的 dir_list 之类），那时截断才有意义。
+"""
 
 
 @dataclass
@@ -46,6 +53,22 @@ class RunResult:
     stop_reason: str = ""
     notice_doc: dict[str, Any] = field(default_factory=dict)
     """这一轮跑完后《Agent 通知》文档的刷新结果（程序做的，不含 LLM 判断）。"""
+    retry: dict[str, Any] = field(default_factory=dict)
+    """失败重试的记账（程序写的，见 `runner._note_polling_outcome` / `_note_archive_outcome`）。
+    空字典 = 这一轮没有需要重试的东西。"""
+
+    def retry_note(self) -> str:
+        """失败重试记账的一句话版本（给人看；没有要重试的东西就返回空串）。"""
+        retry = self.retry
+        if not retry:
+            return ""
+        if retry.get("gave_up"):
+            return f"已放弃重试（连续失败 {retry.get('max')} 次）"
+        if retry.get("rolled_back"):
+            return f"已把基线退回，下一轮重试（第 {retry.get('attempt')}/{retry.get('max')} 次）"
+        if retry.get("attempt"):
+            return f"冷却到 {retry.get('retry_at')} 后重试（第 {retry.get('attempt')}/{retry.get('max')} 次）"
+        return str(retry.get("why") or "")
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -62,6 +85,7 @@ class RunResult:
             "error": self.error,
             "stop_reason": self.stop_reason,
             "notice_doc": self.notice_doc,
+            "retry": self.retry,
         }
 
 
@@ -197,7 +221,10 @@ def _bounded(value: dict[str, Any]) -> dict[str, Any]:
     return {
         "ok": value.get("ok"),
         "truncated": True,
-        "note": f"结果超过 {MAX_RESULT_CHARS} 字已截断，需要细节请缩小范围重试",
+        "note": (
+            f"结果超过 {MAX_RESULT_CHARS} 字已截断（这不是失败，ok=true 仍然成立）；"
+            "下面是截断后的 JSON 预览——需要细节请缩小查询范围再试"
+        ),
         "preview": text[:MAX_RESULT_CHARS],
     }
 

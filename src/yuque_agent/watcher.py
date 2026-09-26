@@ -17,12 +17,12 @@ from __future__ import annotations
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from . import clock, control
 from .agent import RunResult
 from .config import Settings
-from .runner import Runner
+from .runner import ARCHIVE_RETRY_COOLDOWN_SECONDS, Runner
 from .week import cycle_boundary, cycle_targets
 
 LogFn = Callable[[str], None]
@@ -44,10 +44,11 @@ class Watcher:
         )
 
     def archive_due(self, now: datetime) -> bool:
-        """到点了、且本周期还没做过。
+        """到点了、本周期还没做成、并且不在失败冷却里。
 
         "本周期" 用「当前周期的目录名」标识——它在一整个周期内不变，
-        所以进程重启、跨天补跑都不会重复归档。
+        所以进程重启、跨天补跑都不会重复归档；失败重试也靠它区分周期
+        （见 :meth:`archive_retry_at` 与 `Runner._note_archive_outcome`）。
         """
         if not self.settings.archive_enabled:
             return False
@@ -58,7 +59,25 @@ class Watcher:
             start_weekday=self.settings.archive_weekday,
             start_hour=self.settings.archive_hour,
         )
-        return self.runner.state.last_archive_title != current.title
+        if self.runner.state.last_archive_title == current.title:
+            return False
+        return self.archive_retry_at(now) is None
+
+    def archive_retry_at(self, now: datetime) -> datetime | None:
+        """归档还在失败冷却期里就返回「什么时候可以再试」，否则 ``None``。
+
+        计时起点是上一次**尝试**（``state.last_archive_at``），而 ``archive_failures``
+        只在失败时 > 0——成功、或一个周期试满放弃之后都归零，所以冷却不会跨周期。
+        """
+        state = self.runner.state
+        if state.archive_failures <= 0:
+            return None
+        try:
+            attempted = datetime.fromisoformat(state.last_archive_at)
+        except ValueError:
+            return None
+        retry_at = attempted + timedelta(seconds=ARCHIVE_RETRY_COOLDOWN_SECONDS)
+        return retry_at if now < retry_at else None
 
     # -- 单步 -------------------------------------------------------------
     def tick(self, now: datetime | None = None) -> list[str]:
@@ -131,5 +150,7 @@ def _summarize(kind: str, result: RunResult) -> str:
         bits.append(f"语雀写操作={len(result.kb_writes)}")
     if result.error:
         bits.append(f"ERROR={result.error}")
+    if note := result.retry_note():
+        bits.append(note)
     head = f"{result.summary}" if result.summary else "(无摘要)"
     return f"{head}\n   " + " · ".join(bits)
