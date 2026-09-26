@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import json
 import pathlib
 import re
 
@@ -122,6 +123,31 @@ def test_emit_notice_requires_message(env: Ctx) -> None:
 def test_emit_application_requires_essential_fields(env: Ctx) -> None:
     result = tools.execute(env.ctx, "emit_application", {"doc_id": 1, "campus": "仙林"})
     assert result["ok"] is False
+
+
+def test_emit_application_without_people_means_no_capacity_filter(env: Ctx) -> None:
+    """社员没写人数 = 不限（`people=0`），**不再**偷偷按 30 计。
+
+    2026-09-27 负责人拍板：《指导文档》向社员承诺的是「不填就不限」，
+    而填 30 会让下游按 ≥30 人筛教室——小活动被塞进大教室。
+    """
+    result = tools.execute(
+        env.ctx,
+        "emit_application",
+        {
+            "doc_id": 1,
+            "doc_title": "新生见面会",
+            "activity_name": "新生见面会",
+            "activity_date": "2026-09-30",
+            "start": "16:10",
+            "end": "18:00",
+            "campus": "仙林",
+        },
+    )
+    assert result["ok"] is True, result
+    record = json.loads(pathlib.Path(result["result"]["path"]).read_text(encoding="utf-8"))
+    assert record["activity"]["people"] == 0, "没写人数 = 0 = 不筛容量"
+    assert record["derived"]["people_source"] == "unspecified"
 
 
 def test_done_marks_context_finished(env: Ctx) -> None:

@@ -424,6 +424,62 @@ def drop_placeholders(
     return dropped
 
 
+def drop_archived(changes: Changes, archive_title: str) -> list[DocSnapshot]:
+    """把**在归档区里**的文档从变更里剔除（返回被剔除的）。
+
+    为什么要这一层（2026-09-27 负责人拍板）：归档区是终点站——那里的改动，
+    LLM 唯一的正确动作是「什么都不做」（提示词写着「一律不处理、不通知」）。
+    既然它无事可做，就不该为它花 token 叫醒一次；结构性的问题留给每周六的
+    归档会话（它另有一条完整目录树，不看这里的变更列表）。
+
+    为什么归程序：判断只需要一个**事实**——文档所在的目录（由 ``parent_uuid`` 算出的
+    ``dir``，和「文档在哪个目录」是同一份算法）。这和占位标题那道筛子同类：
+    机器可测的前置条件，不是语义判断。目录节点被改名时这条筛子会失效
+    （那时又回到 LLM 判断），提示词里那条规矩仍在，兜得住。
+    """
+    if not archive_title:
+        return []
+
+    def in_archive(doc: DocSnapshot) -> bool:
+        where = doc.dir or ""
+        return where == archive_title or where.startswith(f"{archive_title}/")
+
+    dropped: list[DocSnapshot] = []
+
+    kept_added: list[DocSnapshot] = []
+    for doc in changes.added:
+        if in_archive(doc):
+            dropped.append(doc)
+        else:
+            kept_added.append(doc)
+    changes.added = kept_added
+
+    kept_updated: list[tuple[DocSnapshot, DocSnapshot]] = []
+    for old, new in changes.updated:
+        if in_archive(new):
+            dropped.append(new)
+        else:
+            kept_updated.append((old, new))
+    changes.updated = kept_updated
+
+    kept_removed: list[DocSnapshot] = []
+    for doc in changes.removed:
+        if in_archive(doc):
+            dropped.append(doc)
+        else:
+            kept_removed.append(doc)
+    changes.removed = kept_removed
+
+    kept_toc_only: list[DocSnapshot] = []
+    for doc in changes.toc_only:
+        if in_archive(doc):
+            dropped.append(doc)
+        else:
+            kept_toc_only.append(doc)
+    changes.toc_only = kept_toc_only
+    return dropped
+
+
 def _content_sha(title: str, body: str) -> str:
     """标题也算内容——标题就是活动名称，改名是实质变更。"""
     return hashlib.sha256(f"{title}\x00{body.strip()}".encode()).hexdigest()

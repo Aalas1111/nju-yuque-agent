@@ -197,3 +197,25 @@ def test_apply_is_idempotent_for_same_person_and_day(tmp_path: Path) -> None:
     )
     assert first["application_id"] == second["application_id"]
     assert len(list(settings.applications_dir.glob("20*.json"))) == 1  # 不含 index.json
+
+
+def test_apply_without_people_means_no_capacity_filter(tmp_path: Path) -> None:
+    """QQ 这条路也一样：不填人数 = 0 = 不筛容量（别替社员按 30 计）。
+
+    2026-09-27 负责人拍板：程序侧跟着《指导文档》的承诺走（「不填就不限」）。
+    """
+    settings = make_settings(tmp_path)
+    raw = _valid_raw()
+    raw.pop("people")
+
+    outcome = control.apply_from_raw(settings, raw, log=lambda _t: None)
+
+    assert outcome["ok"] is True
+    app = json.loads(
+        (settings.applications_dir / f"{outcome['application_id']}.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert app["activity"]["people"] == 0
+    assert app["derived"]["people_source"] == "unspecified"
+    assert app["raw"]["people"] is None

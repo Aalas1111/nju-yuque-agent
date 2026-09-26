@@ -204,7 +204,8 @@ def apply_from_raw(
     """把「原始字段」的借用申请落盘（**校验与产物写入都在核心**，零 LLM）。
 
     ``raw``：``activity_name`` / ``date``(YYYY-MM-DD) / ``start``(HH:MM) /
-    ``end``(HH:MM) / ``campus``(校区名或代码) / ``people``(整数，可省，默认 30)。
+    ``end``(HH:MM) / ``campus``(校区名或代码) / ``people``(整数，可省；
+    **不填 = 0 = 不筛容量**，与《指导文档》和 LLM 那条路一致)。
 
     失败发 ``rejected``、成功发 ``accepted`` 通知；两者都带 ``target``
     （QQ 桥据此直投给申请人本人）。
@@ -249,9 +250,11 @@ def apply_from_raw(
     if people is not None and (not isinstance(people, int) or people < 1):
         errors.append(f"人数要是正整数（收到 {people!r}）")
         people = None
-    people_source = "user_input" if people is not None else "default"
+    people_source = "user_input" if people is not None else "unspecified"
     if people is None:
-        people = 30
+        # 不填 = 不限（0 = 不筛容量）：别替社员按 30 计——那会让下游
+        # 按 ≥30 人筛教室，小活动被塞进大教室（2026-09-27 负责人拍板）。
+        people = 0
 
     if errors or day is None or span is None or campus_code is None:
         message = "你的借用申请没能受理：\n" + "\n".join(f"- {e}" for e in errors)

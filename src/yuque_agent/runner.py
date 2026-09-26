@@ -26,6 +26,7 @@ from .snapshot import (
     Snapshot,
     build_report,
     compute_changes,
+    drop_archived,
     drop_placeholders,
     enrich_and_refine,
     take_snapshot,
@@ -155,12 +156,13 @@ class Runner:
     prompt: PromptLoader = field(default_factory=PromptLoader)
     _state: State | None = field(default=None, repr=False)
 
-    #: 上一次 :meth:`poll_once` 为什么没唤醒 LLM，取值 ``"no_change"`` / ``"quiet_period"``，
-    #: 真的跑了就是空串。
+    #: 上一次 :meth:`poll_once` 为什么没唤醒 LLM，取值 ``"no_change"`` / ``"quiet_period"``
+    #: / ``"archived_only"``，真的跑了就是空串。
     #:
-    #: 为什么要有这个字段：``poll_once`` 返回 ``None`` 有**两种**原因——「没变化」和
-    #: 「还在静默期」。调用方如果一律说「知识库没有变化」，就会在静默期里说假话。
-    #: 实测踩到过：写完文档立刻 ``yqa once``，被报「没有变化」，让人以为程序坏了。
+    #: 为什么要有这个字段：``poll_once`` 返回 ``None`` 有**三种**原因——「没变化」、
+    #: 「还在静默期」、「变的只有归档区（程序已忽略）」。调用方如果一律说「知识库没有变化」，
+    #: 就会在后两种情形说假话。实测踩到过：写完文档立刻 ``yqa once``，被报「没有变化」，
+    #: 让人以为程序坏了。
     last_skip: str = ""
 
     #: 上一轮 :meth:`rotate_cycle_if_needed` 真搬了东西时的结果（否则 ``None``）。
@@ -331,6 +333,7 @@ class Runner:
         outputs.ensure_plan_published(self.settings, cycle=self.state.active_cycle)
         current, changes = self.detect()
         dropped: list[DocSnapshot] = []
+        archived: list[DocSnapshot] = []
         self.last_skip = ""
 
         if rescan:
@@ -362,6 +365,9 @@ class Runner:
             # 复用上面已经读到的正文，**零额外请求**。
             dropped = drop_placeholders(changes, previews, self.settings.placeholder_titles)
             self.state.placeholder_dropped = len(dropped)
+            # 第四道筛子：**归档区里的改动不是信号**（那是终点站，LLM 对它无事可做）。
+            # 省的是 token，不省判断——「该不该处理」在归档区里没有判断空间。
+            archived = drop_archived(changes, ARCHIVE_ZONE_TITLE)
 
             # ---- 静默期判定：到这里 changes 已经只剩下「真的可能要做点什么」的了 ----
             if changes.empty:
@@ -395,7 +401,9 @@ class Runner:
         if changes.empty and not force:
             # 注意：**首次运行也是静默的**——那时报告本来就是空的（只建基线），
             # 叫醒 LLM 只会得到一句「无事可做」，纯粹是白烧 token。
-            self.last_skip = "no_change"
+            # 归档区里的改动也算「无事可做」，但**不能报成「知识库没有变化」**：
+            # 与静默期那条同理，提示语必须构造上是真的。
+            self.last_skip = "archived_only" if archived else "no_change"
             return None
 
         run_id = new_run_id("polling", at=moment)
@@ -417,6 +425,12 @@ class Runner:
             report["notes"].append(
                 f"另有 {len(dropped)} 篇文档是语雀刚建出来的中间态（标题还是占位标题"
                 f"且正文为空）：{titles}——程序已把它们从变更里剔除，不需要你处理。"
+            )
+        if archived:
+            titles = "、".join(f"「{d.title}」" for d in archived[:5])
+            report["notes"].append(
+                f"另有 {len(archived)} 篇文档在「{ARCHIVE_ZONE_TITLE}」里被改动：{titles}"
+                "——程序已把它们从变更里剔除（归档区是终点站，不需要你处理）。"
             )
         if collapsed > 1:
             report["notes"].append(

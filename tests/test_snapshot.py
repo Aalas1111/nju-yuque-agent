@@ -13,11 +13,13 @@ import json
 
 from tests.fakes import FakeYuque, make_meta, make_toc
 from yuque_agent.snapshot import (
+    Changes,
     DocSnapshot,
     Snapshot,
     _content_sha,
     build_report,
     compute_changes,
+    drop_archived,
     enrich_and_refine,
     take_snapshot,
 )
@@ -283,3 +285,40 @@ def test_take_snapshot_toc_sha_changes_when_structure_changes() -> None:
         )
     )  # type: ignore[arg-type]
     assert a.toc_sha != b.toc_sha
+
+
+# ---------------------------------------------------------------- 归档区那道筛子
+
+
+def test_drop_archived_removes_docs_inside_the_archive_zone() -> None:
+    """归档区里的改动**不是信号**（2026-09-27 负责人拍板）。
+
+    那里是终点站，LLM 唯一的正确动作是「什么都不做」——不该为它花 token 叫醒一次。
+    """
+    changes = Changes(
+        added=[doc(1, "归档区里的新文档", dir="归档区/0912-0918"), doc(2, "活跃的申请")],
+        updated=[(doc(3, "归档区里被改的", dir="归档区"), doc(3, "归档区里被改的", dir="归档区"))],
+        removed=[doc(4, "归档区里被删的", dir="归档区/0919-0925")],
+        toc_only=[doc(5, "归档区里被挪的", dir="归档区/0919-0925")],
+    )
+
+    dropped = drop_archived(changes, "归档区")
+
+    assert [d.doc_id for d in dropped] == [1, 3, 4, 5]
+    assert [d.doc_id for d in changes.added] == [2], "活跃目录里的文档照旧是信号"
+    assert changes.updated == []
+    assert changes.removed == []
+    assert changes.toc_only == []
+
+
+def test_drop_archived_keeps_docs_that_only_mention_archive_in_the_title() -> None:
+    """只按「文档所在目录」判，不看标题——别把标题里带「归档区」的活跃文档误伤。"""
+    changes = Changes(added=[doc(1, "归档区改造方案（申请借教室开个会）", dir="0926-1002")])
+    assert drop_archived(changes, "归档区") == []
+    assert [d.doc_id for d in changes.added] == [1]
+
+
+def test_drop_archived_without_a_title_is_a_noop() -> None:
+    changes = Changes(added=[doc(1, "x", dir="归档区/0912-0918")])
+    assert drop_archived(changes, "") == []
+    assert len(changes.added) == 1

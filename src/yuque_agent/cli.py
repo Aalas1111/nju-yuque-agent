@@ -226,11 +226,13 @@ def _clients(settings: Settings) -> tuple[YuqueClient, LLMClient]:
 def _poll_skip_message(runner: Runner, settings: Settings) -> str:
     """本轮没唤醒 LLM 时，该对用户说什么。
 
-    ``poll_once`` 返回 ``None`` 有**两种**原因（没变化 / 还在静默期），
-    一律说「没有变化」就会在静默期里说假话。
+    ``poll_once`` 返回 ``None`` 有**三种**原因（没变化 / 还在静默期 /
+    只有归档区在动），一律说「没有变化」就会在静默期与归档区那两种情形说假话。
     """
     if runner.last_skip == "quiet_period":
         return f"i 知识库刚变过，还在 {settings.quiet_seconds}s 静默期内，本轮未唤醒 LLM。"
+    if runner.last_skip == "archived_only":
+        return "i 变的只有「归档区」里的文档（终点站，程序已忽略），未唤醒 LLM。"
     return "i 知识库没有变化，未唤醒 LLM。"
 
 

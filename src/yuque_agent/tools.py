@@ -35,9 +35,6 @@ from .yuque import YuqueClient, YuqueError, dir_map_from_payload, doc_dir_map
 MAX_DOC_CHARS = 8000
 MAX_LISTING = 200
 
-DEFAULT_PEOPLE = 30
-"""人数未填时的缺省值（与《指导文档》一致）。"""
-
 
 class ToolError(RuntimeError):
     """工具执行失败。消息会原样回给 LLM。"""
@@ -339,10 +336,11 @@ def _emit_application(ctx: RunContext, args: dict[str, Any]) -> Any:
     building_code, building_note = school.normalize_building(campus_code, building_text)
     room_text = str(args.get("room") or "").strip()
 
-    people = int(args.get("people") or 0)
-    people_source = "document" if people else "default"
-    if people <= 0:
-        people = DEFAULT_PEOPLE
+    people = max(int(args.get("people") or 0), 0)
+    people_source = "document" if people else "unspecified"
+    # 社员没写人数 → 0（= 不筛容量）。**不再偷偷按 30 计**：指导文档向社员承诺的是
+    # 「不填就不限」，而填 30 会让下游按 ≥30 人去筛教室——小活动被塞进大教室
+    # （2026-09-27 负责人拍板：程序侧跟着改）。
 
     warnings = [str(w) for w in (args.get("warnings") or [])]
     normalizations = [str(n) for n in (args.get("normalizations") or [])]
@@ -623,7 +621,7 @@ COMMON_TOOLS: tuple[Tool, ...] = (
                         "（下游是精确匹配，差一字符就退化成随机）；不确定就留空"
                     ),
                 },
-                "people": {**INT, "description": "人数；没写就传 0，程序按 30 计"},
+                "people": {**INT, "description": "人数；社员没写就传 0（= 不限、不筛容量）"},
                 "confidence": {**STR, "description": "high / medium / low"},
                 "normalizations": {**STRLIST, "description": "你做过哪些规范化（供人复核）"},
                 "warnings": {**STRLIST, "description": "可疑但放行的提醒"},
