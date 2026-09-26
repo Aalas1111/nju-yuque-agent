@@ -422,3 +422,10 @@ def test_prompt_points_at_the_school_building_dictionary() -> None:
     字典随报告下发，所以提示词里点到这个字段名就够（不抄字典）。
     """
     assert "school.buildings" in PromptLoader().load("polling")
+
+
+def test_prompt_points_at_the_room_notation_table() -> None:
+    """提示词必须点名 `school.rooms`（意向教室的写法归一目标）。"""
+    text = PromptLoader().load("polling")
+    assert "school.rooms" in text
+    assert "精确" in text, "要写明「下游是精确匹配」——否则 LLM 不会当回事"

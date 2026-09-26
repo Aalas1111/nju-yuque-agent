@@ -128,17 +128,44 @@ BUILDINGS: dict[str, dict[str, str]] = {
 }
 
 
+#: 各校区**教室名**的写法规则与真实样例（2026-09-26 从学校接口「空闲教室查询」抽样）。
+#:
+#: 为什么要单独记：下游（crb `planner.py:182`）对意向教室是**精确字符串匹配**——
+#: 差一个字符（拉丁 I vs 罗马 Ⅰ、半角/全角、有无连字符）就**静默退化成随机教室**。
+#: 样例只用来**锚定写法**（取自某一时段的空闲教室，不是全集）。
+ROOM_NOTATION: dict[str, dict[str, Any]] = {
+    "1": {
+        "rule": "楼简称 + 房间号（`馆2-101`、`教115`、`新教-203`），数字是半角",
+        "examples": ["教115", "馆2-101", "新教-203"],
+        "caveat": "「专用教室」是占位名、不唯一，别指定",
+    },
+    "2": {
+        "rule": "楼简称 + 方位 + 房间号（`图东101`），通常没有连字符",
+        "examples": ["图东101", "图东407"],
+    },
+    "3": {
+        "rule": "楼简称 + **真罗马数字**（`Ⅰ` U+2160 / `Ⅱ` U+2161，**不是拉丁 I**）+ `-` + 房间号",
+        "examples": ["仙Ⅰ-410", "仙Ⅱ-218", "逸B-506", "图书馆124"],
+    },
+    "4": {
+        "rule": "楼简称 + 方位/字母 + 房间号（`南雍-东108`、`苏教A209`）",
+        "examples": ["南雍-东108", "苏教A209"],
+    },
+}
+
+
 def facts() -> dict[str, Any]:
     """给 LLM 的「学校侧事实」，随每轮的变更报告下发（**不抄进提示词**）。
 
     为什么下发这一份：**把社员的写法归一到规范名是 LLM 的活**（它比任何别名表都强），
-    但归一目标必须是**程序认得的那几个名字**。所以两边共用同一份表——
-    提示词只说「归一成 `school.buildings` 里的名字」，程序（:func:`normalize_building`）
-    再把规范名换成 JXLDM。这样「LLM 归一 → 程序查表」不可能对不上。
+    但归一目标必须是**程序/下游认得的那几个名字**。所以两边共用同一份表——
+    提示词只说「归一成 `school.buildings` / `school.rooms` 里的写法」，程序
+    （:func:`normalize_building`）再把规范名换成 JXLDM。这样「LLM 归一 → 程序查表」不可能对不上。
     """
     return {
         "campuses": dict(CAMPUS_CODES),
         "buildings": {campus: dict(table) for campus, table in BUILDINGS.items()},
+        "rooms": {campus: dict(note) for campus, note in ROOM_NOTATION.items()},
     }
 
 

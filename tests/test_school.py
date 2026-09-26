@@ -259,3 +259,19 @@ def test_known_building_table_is_well_formed() -> None:
         assert campus in school.CAMPUS_CODES, f"未知校区键：{campus}"
         for name, code in table.items():
             assert name.strip() and code.strip(), f"{campus}/{name!r} 有空字段"
+
+
+def test_room_notation_is_shipped_to_the_llm() -> None:
+    """各校区教室名的写法规则/样例必须随 facts 下发（下游精确匹配，差一字符就退随机）。"""
+    rooms = school.facts()["rooms"]
+    assert set(rooms) == {"1", "2", "3", "4"}
+    for campus, note in rooms.items():
+        assert note["rule"].strip() and note["examples"], f"校区 {campus} 缺写法规则或样例"
+    # 仙林那一条最容易踩：真罗马数字 U+2160/U+2161，不是拉丁 I
+    assert "Ⅰ" in rooms["3"]["examples"][0] and "I" not in rooms["3"]["examples"][0][:1]
+    assert "仙Ⅰ-410" in rooms["3"]["examples"]
+
+
+def test_room_notation_does_not_leak_a_room_type() -> None:
+    """教室类型字典（智慧研讨 11 等）用户明确「暂时不做」——别顺手加进来。"""
+    assert "教室类型" not in str(school.facts())

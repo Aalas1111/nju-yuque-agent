@@ -606,7 +606,13 @@ COMMON_TOOLS: tuple[Tool, ...] = (
                         "（如仙林的 `仙II区`、`逸夫楼A区`）；对不上就留空（= 随机），别编"
                     ),
                 },
-                "room": {**STR, "description": "意向教室，原样透传；不确定就留空"},
+                "room": {
+                    **STR,
+                    "description": (
+                        "意向教室：**按报告里 `school.rooms` 的写法规则归一**"
+                        "（下游是精确匹配，差一字符就退化成随机）；不确定就留空"
+                    ),
+                },
                 "people": {**INT, "description": "人数；没写就传 0，程序按 30 计"},
                 "confidence": {**STR, "description": "high / medium / low"},
                 "normalizations": {**STRLIST, "description": "你做过哪些规范化（供人复核）"},
