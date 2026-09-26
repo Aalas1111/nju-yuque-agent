@@ -298,7 +298,7 @@ def _ws_write(ctx: RunContext, args: dict[str, Any]) -> Any:
 
 
 def _emit_application(ctx: RunContext, args: dict[str, Any]) -> Any:
-    """产出一份「要素齐备」的教室借用申请，交给负责提交的同学。
+    """产出一份「要素齐备」的教室借用申请，交给负责提交的 cac。
 
     分工：**LLM 给「社员原话」（校区名/教学楼名/时间），程序做查表归一化**
     （校区名→代码、教学楼名→`JXLDM`、`HH:MM`→节次）。
@@ -594,7 +594,7 @@ COMMON_TOOLS: tuple[Tool, ...] = (
     ),
     Tool(
         "emit_application",
-        "产出一份要素齐备的教室借用申请，交给负责提交的同学。"
+        "产出一份要素齐备的教室借用申请，交给负责提交的 cac。"
         "请填**社员原话**（校区写「仙林」这类名字即可）——"
         "程序会自动把名字转成学校系统需要的代码，并在对不上时把错误告诉你。"
         "**教学楼要归一到报告里 `school.buildings` 的规范名**（社员写「仙二」「逸夫楼A」都算）；"
@@ -627,7 +627,7 @@ COMMON_TOOLS: tuple[Tool, ...] = (
                 "confidence": {**STR, "description": "high / medium / low"},
                 "normalizations": {**STRLIST, "description": "你做过哪些规范化（供人复核）"},
                 "warnings": {**STRLIST, "description": "可疑但放行的提醒"},
-                "notes": {**STRLIST, "description": "给负责提交的同学看的备注"},
+                "notes": {**STRLIST, "description": "给负责提交的 cac 看的备注"},
             },
             ["doc_id", "activity_date", "campus", "start", "end"],
         ),

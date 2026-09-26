@@ -435,3 +435,28 @@ def test_prompt_points_at_the_room_notation_table() -> None:
     text = PromptLoader().load("polling")
     assert "school.rooms" in text
     assert "精确" in text, "要写明「下游是精确匹配」——否则 LLM 不会当回事"
+
+
+def test_prompt_names_cac_as_the_submitter_not_a_member() -> None:
+    """受理通知里「交给谁」要写对：**负责提交的是 `cac`，不是「同学」**。
+
+    2026-09-27 负责人指正。实测那一轮发出去的通知里全是「已交给负责提交的同学」，
+    而社员在群里认得的是 cac 这个名字——称呼写错，收到通知的人不知道该找谁。
+    提示词与工具描述都要跟着改（这两处都是 LLM 的输入）。
+
+    和文案规矩那一组同款：错误说法只允许出现在**规矩块内部**（当反例引用），
+    块外再出现就红。
+    """
+    text = PromptLoader().load("polling")
+    rules = _prompt_copy_rules_block(text)
+    offenders = [
+        f"第 {no} 行：{line.strip()}"
+        for no, line in enumerate(text.replace(rules, "").splitlines(), start=1)
+        if "负责提交的同学" in line
+    ]
+    assert not offenders, "提交人叫 cac，别再写「负责提交的同学」：\n  " + "\n  ".join(offenders)
+    assert "cac" in text
+
+    descriptions = " ".join(tool.description for tool in tools.tools_for("polling"))
+    assert "负责提交的同学" not in descriptions
+    assert "cac" in descriptions, "工具描述里也该点名 cac（LLM 两处都会读）"

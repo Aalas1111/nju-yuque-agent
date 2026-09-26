@@ -291,7 +291,7 @@ yqa-as-service reset-test-data --workspace /var/lib/yuque-agent/workspace --scop
 
 * **通知投递**：`outbox/notify/pending/` 需要有人来搬（QQ 桥是官方投递方，
   已拆成独立项目——见 §11）。没人搬就会一直堆着。协议见 `docs/handoff.md` §3。
-* **申请消费**：`outbox/applications/` 里的 JSON 要交给负责提交教室的同学
+* **申请消费**：`outbox/applications/` 里的 JSON 要交给负责提交教室的 cac
   （`yqa export-plan` 能汇总成下游可直接吃的 `plan.json`）。协议见 `docs/handoff.md` §2。
 * **借不到怎么办**：目前**没有任何通道**把「借失败了」回传。这个闭环要不要做、谁做，
   见 `docs/handoff.md` §4 的待确认项。
