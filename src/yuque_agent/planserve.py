@@ -102,9 +102,6 @@ def _page(settings: Settings) -> str:
              text-decoration:none;border-radius:.4rem;font-size:1rem">下载 plan.json</a></p>
 {table}
 <p style="color:#666;font-size:.85rem;margin-top:2rem">
-  下载后先 <code>crb plan --file plan.json</code> 看一眼方案，确认无误再 <code>--save</code>。<br>
-  <b>下载前请对一眼上面的周期号</b>——那能看出你有没有拿到上一周那份。<br>
-  往期：<code>/archive/&lt;周期&gt;/plan.json</code>（如 0919-0925）。<br>
   想看 agent 最近做了什么：<a href="/log">处理日志</a>。
 </p>
 </body></html>
