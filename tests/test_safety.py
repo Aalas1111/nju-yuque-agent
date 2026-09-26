@@ -305,6 +305,25 @@ def test_guide_promises_match_what_the_system_can_do() -> None:
     )
 
 
+def test_prompt_quotes_the_real_draft_marker() -> None:
+    """提示词里引用的「草稿标记」必须与模板第一行**逐字一致**。
+
+    模板是需求方会随时改的（2026-09-26 改过一次：`【草稿】填完请删掉这一行，agent 才会处理本文档`
+    → `【草稿】填完请把这一行删掉`）。提示词里留着旧原文的话，LLM 会按字面去认一句话，
+    而那句话已经不存在了——「草稿标记删了一半」这类判断就会走偏。
+    """
+    import yuque_agent
+
+    template = (pathlib.Path(yuque_agent.__file__).parent / "kb" / "template.md").read_text(
+        encoding="utf-8"
+    )
+    marker = template.splitlines()[0].strip()
+    assert marker.startswith("【草稿】"), f"模板第一行不再像草稿标记了：{marker!r}"
+    assert marker in PromptLoader().load("polling"), (
+        f"提示词里没引用模板当前的草稿标记（{marker!r}）——模板改了，提示词要跟着改"
+    )
+
+
 def test_tool_grouping_is_frozen() -> None:
     """把工具清单冻住：以后加/删工具，必须同时改这条测试与设计文档 §5。"""
     assert tools.tool_names("polling") == [
