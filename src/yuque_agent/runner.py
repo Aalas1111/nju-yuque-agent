@@ -178,18 +178,28 @@ class Runner:
         save_state(self.state, self.settings.state_file)
 
     # -- 轮询入口 ---------------------------------------------------------
-    def snapshot_now(self) -> Snapshot:
-        """拿一次快照，并**把程序自己写的文档剔除掉**。
+    def _drop_ignored(self, snapshot: Snapshot | None) -> None:
+        """把「程序自己维护的文档」从快照里**就地**剔除（《Agent 通知》《指导文档（必读）》）。
 
-        为什么必须剔除：《Agent 通知》就在被监控的知识库里。不剔的话：
-        程序写通知 → 通知变了 → 唤醒 LLM → 又写通知 → …（自激循环，实测踩到过）。
+        为什么必须剔除：它们就在被监控的知识库里。不剔的话：
+        程序写文档 → 文档变了 → 唤醒 LLM → 又写文档 → …（自激循环，实测踩到过）。
+
+        **上一轮快照也要过同一道筛子**（见 :meth:`detect`）：否则「刚把某个标题加进
+        ``ignore_doc_titles``」会让它在第一轮里凭空变成 ``removed``（上一轮快照里有、
+        这一轮被滤掉了）——2026-09-26 实测白烧过一轮 LLM。
         """
-        snapshot = take_snapshot(self.client)
+        if snapshot is None:
+            return
         ignored = self._ignored_doc_ids(snapshot)
         if ignored:
             snapshot.docs = {
                 doc_id: doc for doc_id, doc in snapshot.docs.items() if doc_id not in ignored
             }
+
+    def snapshot_now(self) -> Snapshot:
+        """拿一次快照，并**把程序自己维护的文档剔除掉**（见 :meth:`_drop_ignored`）。"""
+        snapshot = take_snapshot(self.client)
+        self._drop_ignored(snapshot)
         return snapshot
 
     # -- 周期翻转：把上个周期的产物搬进 archive/ -------------------------
@@ -278,8 +288,10 @@ class Runner:
 
     def detect(self) -> tuple[Snapshot, Changes]:
         """只做感知：拿快照 + 比对。**不唤醒 LLM。**"""
+        previous = self.state.snapshot
+        self._drop_ignored(previous)  # 上一轮快照也过同一道筛子，见 _drop_ignored
         current = self.snapshot_now()
-        changes = compute_changes(self.state.snapshot, current)
+        changes = compute_changes(previous, current)
         return current, changes
 
     def poll_once(

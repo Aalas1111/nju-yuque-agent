@@ -288,3 +288,42 @@ def test_llm_error_does_not_wedge_the_loop(tmp_path) -> None:
     assert result is not None
     assert runner.state.pending_since == ""
     assert result.stop_reason  # 有明确的停止原因
+
+
+def test_newly_ignored_title_is_not_reported_as_removed(tmp_path) -> None:
+    """给某个标题加上忽略规则时，别让它凭空变成「这篇被删了」。
+
+    实测踩到（2026-09-26）：把《指导文档（必读）》加进 `ignore_doc_titles` 并重启后，
+    第一轮把它报成 `removed`——上一轮快照里还有它、这一轮被筛掉了。
+    agent 自己看出是噪音（`nothing_to_do`），但那一轮 LLM 是白叫的。
+    所以**上一轮快照也要过同一道筛子**。
+    """
+    from yuque_agent.snapshot import DocSnapshot, Snapshot
+
+    settings = Settings(repo="g/kb", workspace=tmp_path / "ws", quiet_seconds=0)
+    settings.ensure_dirs()
+    client = FakeYuque()
+    llm = FakeLLM(script=[done_response()])
+    runner = Runner(settings=settings, client=client, llm=llm)  # type: ignore[arg-type]
+
+    # 上一轮快照里有这篇「程序自己维护的文档」（那时它还没进忽略名单）
+    runner.state.snapshot = Snapshot(
+        taken_at="2026-09-20T09:00:00+08:00",
+        docs={
+            100: DocSnapshot(
+                doc_id=100,
+                slug="g",
+                title="指导文档（必读）",
+                updated_at="2026-09-19T00:00:00Z",
+                created_at="2026-09-19T00:00:00Z",
+                author="",
+                dir="",
+            )
+        },
+    )
+    set_docs(client, (100, "指导文档（必读）"))
+
+    assert runner.poll_once(now=dt("2026-09-20T10:00:00")) is None
+    assert llm.calls == 0, "「新被忽略的文档」不该被报成 removed 而白叫一轮 LLM"
+    assert runner.state.snapshot is not None
+    assert 100 not in runner.state.snapshot.docs, "上一轮快照里也该把它摘掉（收敛）"
