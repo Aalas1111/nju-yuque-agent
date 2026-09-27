@@ -192,6 +192,8 @@ outbox/notify/delivery.jsonl                          投递方的审计流水�
 | `deleted` | **已受理**的文档被删 | 强调「删文档 ≠ 撤回申请」 |
 | `info` | 其它需要告知社员的 | —— |
 | `plan_updated` | **清单变了**（程序发，见下） | 给 **cac** 的：「请尽快下载并提交」 |
+| `borrow_approved` | **教室借用申请被学校审核通过了**（程序发，来自 `crb-notify`） | 附活动名、时间、**分配到的教室** |
+| `borrow_rejected` | **教室借用申请被学校退回**（程序发，来自 `crb-notify`） | 附活动名、时间、**学校给的原因**（`SHYJ`） |
 
 #### `plan_updated`（**只能由程序发**）
 

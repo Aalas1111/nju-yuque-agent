@@ -62,10 +62,15 @@ NOTICE_KINDS = (
     "deleted",
     "info",
     "plan_updated",
+    # 教室借用的**审批结果**（来自下游 crb-notify 的接收入口）。
+    # 与 agent 的 accepted/rejected 是两件事：那两个是「要素齐备 / 不齐备」，
+    # 这两个是「学校审核通过 / 不通过」。
+    "borrow_approved",
+    "borrow_rejected",
 )
 """所有合法的通知类型。其中有几个**只能由程序发**，见下。"""
 
-PROGRAM_NOTICE_KINDS = ("plan_updated",)
+PROGRAM_NOTICE_KINDS = ("plan_updated", "borrow_approved", "borrow_rejected")
 """**程序专属**的通知类型：LLM 不许发。
 
 为什么单列一类：`plan_updated`（「申请清单已更新，cac 请尽快下载提交」）
