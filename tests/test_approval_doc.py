@@ -1,6 +1,6 @@
 """《审批结果》文档 + 它在根目录里的位置。
 
-这份文档是**程序维护**的，内容取自下游 ``crb-agent`` 写在工作区里的
+这份文档是**程序维护**的，内容取自下游 ``crb-notify`` 写在工作区里的
 ``outbox/approval/notifications.json``（本项目不查学校系统，见 docs/handoff.md §1.1）。
 
 三条要守住的东西：

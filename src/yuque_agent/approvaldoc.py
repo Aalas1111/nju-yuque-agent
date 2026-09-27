@@ -3,7 +3,7 @@
 它是**程序维护**的（不是 LLM 写的），和《Agent 通知》同一个模子：
 **内容是文件的纯函数**，每轮重建，所以周期翻滚、手动重跑、漏跑一轮都不会让内容漂。
 
-数据来自下游 ``crb-agent``：它轮询学校的教室借用申请列表，把「结束了」的挑出来
+数据来自下游 ``crb-notify``：它接收浏览器插件读到的申请列表，把「结束了」的挑出来
 写进工作区的 ``outbox/approval/``：
 
 * ``notifications.json`` —— 对外文档（``nova.classroom-borrow-notification.v1``），
@@ -34,7 +34,7 @@ MAX_ITEMS = 200
 
 
 def approval_dir(settings: Settings) -> Path:
-    """下游 ``crb-agent`` 的产出目录。"""
+    """下游 ``crb-notify`` 的产出目录。"""
     return settings.plan_file.parent / "approval"
 
 
@@ -78,7 +78,7 @@ def render(settings: Settings) -> str:
     # 头部**不带大标题**：语雀文档自己就有一个标题（《审批结果》）。
     lines = [
         "> 教室借用申请的审批结果，**最新的在最上面**。",
-        "> 由程序自动维护（`crb-agent` 轮询学校系统得到），**请勿手工编辑**。",
+        "> 由程序自动维护（浏览器插件读到申请列表，`crb-notify` 判定），**请勿手工编辑**。",
         "",
     ]
     if not items:

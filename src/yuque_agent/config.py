@@ -158,7 +158,7 @@ class Settings:
     approval_title: str = APPROVAL_TITLE
     """程序维护的《审批结果》文档的标题。
 
-    内容是**教室借用申请的审批结果**（通过 / 退回），由下游 ``crb-agent`` 轮询学校
+    内容是**教室借用申请的审批结果**（通过 / 退回），由下游 ``crb-notify`` 接收申请
     系统得到、写在工作区的 ``outbox/approval/notifications.json`` 里，
     本仓库只负责把它渲染进知识库（``yqa refresh-approval``）。
 

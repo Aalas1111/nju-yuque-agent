@@ -415,10 +415,10 @@ def refresh_approval(
 ) -> None:
     """按下游产出的审批结果重建语雀《审批结果》文档（程序维护，幂等）。
 
-    内容取自工作区 ``outbox/approval/notifications.json``（由 ``crb-agent``
-    轮询学校系统产出）。这东西**不查学校系统**——本项目不持有学校登录态。
+    内容取自工作区 ``outbox/approval/notifications.json``（由 ``crb-notify``
+    接收浏览器插件读到的申请列表后产出）。这东西**不查学校系统**——本项目不持有学校登录态。
 
-    由 ``crb-agent`` 的轮询在检测到变化时调用；也可以手工跑（不变化就不写）。
+    由 ``crb-notify`` 在收到记录时调用；也可以手工跑（不变化就不写）。
     """
     settings = _settings(repo, workspace, False, DEFAULT_MODEL, 20)
     with YuqueClient(
