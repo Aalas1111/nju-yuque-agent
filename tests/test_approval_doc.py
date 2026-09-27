@@ -19,7 +19,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.fakes import FakeYuque
+from tests.fakes import FakeYuque, make_toc
 from yuque_agent import approvaldoc
 from yuque_agent.config import APPROVAL_TITLE, GUIDE_TITLE, NOTICE_TITLE, Settings
 
@@ -231,6 +231,102 @@ def test_the_archive_prompt_documents_the_new_order() -> None:
     assert "审批结果" in text
     assert "第 3 位" in text  # 审批结果的位置
     assert "五" in text  # 「这五条」
+
+
+def test_the_step_that_reorders_does_not_carry_its_own_list() -> None:
+    """重排那一步**不许**自己抄一份顺序，只能照抄指令里的 `root_target_order`。
+
+    实测踩到（2026-09-27）：这一步抄的是**四项**（少了《审批结果》），而程序给的是五项
+    —— 它照着排，正好把《审批结果》留在了归档区下面。抄一份就一定会漂。
+    """
+    text = (
+        Path(__file__).resolve().parents[1] / "src" / "yuque_agent" / "prompts" / "archive.md"
+    ).read_text(encoding="utf-8")
+    step = text.split("5. **按", 1)[1].split("6. **", 1)[0]
+    assert "root_target_order" in step, "要指明照哪个字段排"
+    assert "<当前周期>" not in step, "别自己拼一份清单出来 —— 抄过一次就漂了"
+
+
+# ---------------------------------------------------------------- 位置：程序自己摆
+def root_order(client: FakeYuque) -> list[str]:
+    return [node.title for node in client.toc_nodes if node.depth == 1]
+
+
+def test_it_is_pulled_up_to_just_after_the_notice(settings: Settings) -> None:
+    """实测踩到（2026-09-27）：它落在**归档区下面**。
+
+    `create_doc` 只能把新文档追加到根目录末尾，而摆位置只有周期翻转那一刻才做 ——
+    于是新建的《审批结果》会在最下面待一整周。位置是需求，所以程序自己摆。
+    """
+    client = client_with_existing(approvaldoc.render(settings))
+    client.toc_nodes = make_toc(
+        (GUIDE_TITLE, "DOC", 1, ""),
+        (NOTICE_TITLE, "DOC", 2, ""),
+        ("0926-1002", "TITLE", 0, ""),
+        ("归档区", "TITLE", 0, ""),
+        (APPROVAL_TITLE, "DOC", 9, ""),
+    )
+
+    outcome = approvaldoc.refresh(settings, client)
+
+    assert outcome["ok"] is True
+    assert outcome["moved"] == [GUIDE_TITLE, NOTICE_TITLE, APPROVAL_TITLE]
+    assert root_order(client) == [GUIDE_TITLE, NOTICE_TITLE, APPROVAL_TITLE, "0926-1002", "归档区"]
+
+
+def test_placement_is_a_no_op_when_the_order_is_already_right(settings: Settings) -> None:
+    """顺序已经对了就一个字节都不写 —— 它每收一条结果都会跑一次，不能天天重排。"""
+    client = client_with_existing(approvaldoc.render(settings))
+    client.toc_nodes = make_toc(
+        (GUIDE_TITLE, "DOC", 1, ""),
+        (NOTICE_TITLE, "DOC", 2, ""),
+        (APPROVAL_TITLE, "DOC", 9, ""),
+        ("0926-1002", "TITLE", 0, ""),
+        ("归档区", "TITLE", 0, ""),
+    )
+
+    outcome = approvaldoc.refresh(settings, client)
+
+    assert outcome["ok"] is True and "moved" not in outcome
+    assert client.calls == [], f"什么都不该写，实际写了 {client.calls}"
+
+
+def test_placement_only_touches_the_front_of_the_root(settings: Settings) -> None:
+    """别人放在根目录的散篇只是被挤到后面，**相对顺序不动**，归档区仍在最末。"""
+    client = client_with_existing(approvaldoc.render(settings))
+    client.toc_nodes = make_toc(
+        (GUIDE_TITLE, "DOC", 1, ""),
+        ("某人的散篇", "DOC", 8, ""),
+        (NOTICE_TITLE, "DOC", 2, ""),
+        ("0926-1002", "TITLE", 0, ""),
+        ("归档区", "TITLE", 0, ""),
+        (APPROVAL_TITLE, "DOC", 9, ""),
+    )
+
+    approvaldoc.refresh(settings, client)
+
+    assert root_order(client) == [
+        GUIDE_TITLE,
+        NOTICE_TITLE,
+        APPROVAL_TITLE,
+        "某人的散篇",
+        "0926-1002",
+        "归档区",
+    ]
+
+
+def test_a_placement_failure_does_not_deny_the_body_write(settings: Settings) -> None:
+    """摆位置失败**不能**把「正文已经写好了」说成失败 —— 那是两件事。"""
+    from yuque_agent.yuque import YuqueError
+
+    client = client_with_existing("旧的正文")
+    client.toc = lambda: (_ for _ in ()).throw(YuqueError("模拟目录读取失败"))  # type: ignore
+
+    outcome = approvaldoc.refresh(settings, client)
+
+    assert outcome["ok"] is True
+    assert outcome["unchanged"] is False, "正文确实写了"
+    assert "模拟目录读取失败" in outcome["place_error"]
 
 
 def test_approval_doc_changes_never_count_as_kb_changes(settings: Settings) -> None:

@@ -7,7 +7,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from yuque_agent.llm import LLMResponse, ToolCall, Usage
@@ -79,8 +79,26 @@ class FakeYuque:
     ):
         return self._record("toc_add", title=title, doc_ids=doc_ids, target_uuid=target_uuid)
 
-    def toc_move(self, *, node_uuid: str, target_uuid: str = ""):
-        return self._record("toc_move", node_uuid=node_uuid, target_uuid=target_uuid)
+    def toc_move(self, *, node_uuid: str, target_uuid: str = "", prepend: bool = False):
+        """**真的**改顺序 —— 语义照实测的来：落进 `target_uuid` 这个父节点的末尾，
+        `prepend=True` 落最前；不带 `target_uuid` 就是根目录。
+
+        只有记录不留痕的话，「排完顺序对不对」就测不出来了 ——
+        而顺序正是这个假件最该帮上忙的地方。
+        """
+        self._record("toc_move", node_uuid=node_uuid, target_uuid=target_uuid, prepend=prepend)
+        nodes = list(self.toc_nodes)
+        index = next((i for i, n in enumerate(nodes) if n.uuid == node_uuid), None)
+        if index is None:
+            return {"__dry_run__": True, "op": "toc_move"}
+        moved = replace(
+            nodes.pop(index), parent_uuid=target_uuid, depth=1 if not target_uuid else 2
+        )
+        siblings = [i for i, n in enumerate(nodes) if n.parent_uuid == target_uuid]
+        at = (siblings[0] if prepend else siblings[-1] + 1) if siblings else 0
+        nodes.insert(at, moved)
+        self.toc_nodes = nodes
+        return {"__dry_run__": True, "op": "toc_move"}
 
     def toc_remove(self, *, node_uuid: str, with_children: bool = False):
         return self._record("toc_remove", node_uuid=node_uuid, with_children=with_children)

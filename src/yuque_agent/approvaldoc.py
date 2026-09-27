@@ -26,7 +26,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from .config import Settings
+from .config import GUIDE_TITLE, Settings
 from .yuque import YuqueClient, YuqueError
 
 #: 每条结果最多渲染多少条（文档是给人看的，不是审计日志；超了只列最近的）。
@@ -133,17 +133,53 @@ def _render_item(item: dict[str, Any]) -> list[str]:
     return lines
 
 
-def refresh(settings: Settings, client: YuqueClient) -> dict[str, Any]:
-    """把《审批结果》重建一次。**幂等**：内容没变就一个字都不写。
+def root_prefix(settings: Settings) -> list[str]:
+    """根目录最前面该是哪几篇（含本文件维护的《审批结果》）。
 
-    文档不存在就建一个（挂进根目录；位置由归档会话按 ``root_target_order`` 保持）。
-    任何失败都只记进返回值，不打断这一轮 —— 和《Agent 通知》一样。
+    这几篇都是**程序/需求方定的**：位置是需求，不是判断，所以由程序自己摆。
+    """
+    return [GUIDE_TITLE, settings.notice_title, settings.approval_title]
+
+
+def ensure_root_place(settings: Settings, client: YuqueClient) -> list[str]:
+    """把根目录开头摆成 :func:`root_prefix` 的样子，返回这次挪了哪几篇。
+
+    **为什么程序自己动手**：``create_doc`` 只能把新文档**追加到根目录末尾**，
+    而唯一被允许动结构的时刻是周期翻转 —— 于是新建的《审批结果》会在归档区**下面**
+    待上一整周（2026-09-27 实测踩到）。归档会话虽然也被交代了目标顺序，但它一周才跑一次，
+    且它的指令里那份清单还漂了（见 ``prompts/archive.md``）。
+
+    只用 ``toc_move`` 有的两个原语（追加到末尾 / 挪到最前，**没有「插到第 N 位」**）：
+    把该在前面的几项**倒着** prepend 一遍，正序就出来了。已经对了就一个字节都不写。
+
+    边界：只摆 ``wanted`` 这几篇。根目录里别的东西（周期目录、归档区、谁放的散篇）
+    只受「被挤到后面」的影响，相对顺序不动 —— 「归档区在不在最末」仍归归档会话管。
+    """
+    wanted = root_prefix(settings)
+    root = [node for node in client.toc() if node.depth == 1]
+    by_title = {node.title: node for node in root}
+    present = [title for title in wanted if title in by_title]
+    if [node.title for node in root[: len(present)]] == present:
+        return []
+    for title in reversed(present):
+        client.toc_move(node_uuid=by_title[title].uuid, prepend=True)
+    client.wait_toc_settled()
+    return present
+
+
+def refresh(settings: Settings, client: YuqueClient) -> dict[str, Any]:
+    """把《审批结果》重建一次，并把它的位置摆对。**幂等**：都对就一个字节都不写。
+
+    文档不存在就建一个（新文档会被 `create_doc` 追加到根目录末尾，紧接着由
+    :func:`ensure_root_place` 挪到《Agent 通知》下面）。任何失败都只记进返回值，
+    不打断这一轮 —— 和《Agent 通知》一样。
     """
     body = render(settings)
     count = len(load_notifications(settings).get("notifications") or [])
     if settings.dry_run:
         return {"ok": True, "dry_run": True, "count": count}
 
+    result: dict[str, Any] = {"ok": True, "count": count}
     try:
         existing = next((m for m in client.docs() if m.title == settings.approval_title), None)
         if existing is None:
@@ -152,22 +188,21 @@ def refresh(settings: Settings, client: YuqueClient) -> dict[str, Any]:
             if doc_id:
                 client.toc_add(doc_ids=[doc_id])
                 client.wait_toc_settled()
-            return {"ok": True, "created": True, "doc_id": doc_id, "count": count}
-        if (client.doc(existing.doc_id).body or "").strip() == body.strip():
-            return {
-                "ok": True,
-                "created": False,
-                "unchanged": True,
-                "doc_id": existing.doc_id,
-                "count": count,
-            }
-        client.update_doc(existing.slug, body=body)
-        return {
-            "ok": True,
-            "created": False,
-            "unchanged": False,
-            "doc_id": existing.doc_id,
-            "count": count,
-        }
+            result |= {"created": True, "doc_id": doc_id}
+        elif (client.doc(existing.doc_id).body or "").strip() == body.strip():
+            result |= {"created": False, "unchanged": True, "doc_id": existing.doc_id}
+        else:
+            client.update_doc(existing.slug, body=body)
+            result |= {"created": False, "unchanged": False, "doc_id": existing.doc_id}
     except (YuqueError, OSError) as exc:
         return {"ok": False, "error": f"{type(exc).__name__}: {exc}", "count": count}
+
+    # 位置独立于正文：正文没变也可能位置是错的（正是实测踩到的那次）。
+    # 它失败不该否认上面已经写成的事，所以单独记一句。
+    try:
+        moved = ensure_root_place(settings, client)
+        if moved:
+            result["moved"] = moved
+    except (YuqueError, OSError) as exc:
+        result["place_error"] = f"{type(exc).__name__}: {exc}"
+    return result
