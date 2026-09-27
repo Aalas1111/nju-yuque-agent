@@ -28,10 +28,9 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
-from . import __version__, approvaldoc, clock, noticedoc, outputs
+from . import __version__, clock, noticedoc, outputs
 from . import render as render_mod
 from .config import (
-    APPROVAL_TITLE,
     ARCHIVE_ZONE_TITLE,
     DEFAULT_MODEL,
     GUIDE_TITLE,
@@ -408,30 +407,6 @@ def refresh_notice(
         raise typer.Exit(1)
 
 
-@app.command("refresh-approval")
-def refresh_approval(
-    repo: RepoOpt = "",
-    workspace: Annotated[Path, typer.Option("--workspace", "-w")] = Path("workspace"),
-) -> None:
-    """按下游产出的审批结果重建语雀《审批结果》文档（程序维护，幂等）。
-
-    内容取自工作区 ``outbox/approval/notifications.json``（由 ``crb-agent``
-    轮询学校系统产出）。这东西**不查学校系统**——本项目不持有学校登录态。
-
-    由 ``crb-agent`` 的轮询在检测到变化时调用；也可以手工跑（不变化就不写）。
-    """
-    settings = _settings(repo, workspace, False, DEFAULT_MODEL, 20)
-    with YuqueClient(
-        host=settings.host, token=settings.token, repo=settings.repo, dry_run=settings.dry_run
-    ) as client:
-        outcome = approvaldoc.refresh(settings, client)
-    if outcome.get("ok"):
-        console.print(f"[green][OK]《{settings.approval_title}》已更新[/green] {outcome}")
-    else:
-        console.print(f"[red][FAIL] {outcome.get('error')}[/red]")
-        raise typer.Exit(1)
-
-
 @app.command("export-plan")
 def export_plan(
     repo: RepoOpt = "",
@@ -570,7 +545,7 @@ def _inside_checkout(path: Path) -> bool:
 
 
 #: 永远不碰的系统性文档（跟 `Settings.ignore_doc_titles` 一起用）。
-_SYSTEM_DOC_TITLES = (GUIDE_TITLE, "指导文档", NOTICE_TITLE, APPROVAL_TITLE)
+_SYSTEM_DOC_TITLES = (GUIDE_TITLE, "指导文档", NOTICE_TITLE)
 
 
 def _wipe_dir(path: Path, *, pattern: str = "*.json") -> list[str]:

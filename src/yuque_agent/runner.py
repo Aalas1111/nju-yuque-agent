@@ -731,8 +731,6 @@ def build_archive_instruction(
         "root_target_order": [
             GUIDE_TITLE,
             settings.notice_title,
-            # 《审批结果》插在《Agent 通知》与活跃周期目录之间（需求方定的位置）。
-            settings.approval_title,
             current.title,
             ARCHIVE_ZONE_TITLE,
         ],
