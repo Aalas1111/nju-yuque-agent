@@ -506,19 +506,26 @@ def serve_plan(
         raise typer.Exit(1) from exc
 
 
-def _fill_notice_link(client: YuqueClient, settings: Settings, body: str) -> str:
-    """把 ``guide.md`` 里的 ``{{notice_url}}`` 换成《Agent 通知》**当前**的地址。
+#: `kb/guide.md` 里的链接占位符 → 那篇文档的标题（都是**程序维护**的文档）。
+#: 为什么不写死 URL：slug 是语雀生成的，文档删了重建就变，写死的链接会**静默失效**。
+GUIDE_LINKS = {"notice_url": NOTICE_TITLE, "approval_url": APPROVAL_TITLE}
 
-    为什么要这一步：那篇文档的 URL 带着语雀生成的 slug——文档一旦被删掉重建，slug 就变了，
-    写死的链接会**静默失效**。而它的地址只有程序知道（那篇文档就是程序建的），
-    所以在上传前填。找不到那篇文档时整条链接降级成纯文本（社员照样知道去看哪儿）。
+
+def _fill_links(client: YuqueClient, settings: Settings, body: str) -> str:
+    """把 ``guide.md`` 里的 ``{{notice_url}}`` / ``{{approval_url}}`` 换成那篇文档**当前**的地址。
+
+    找不到某篇文档时，那一条链接降级成纯文本（社员照样知道去看哪一篇），
+    绝不留一个指向 ``{{...}}`` 的坏链接。
     """
-    meta = next((m for m in client.docs() if m.title == settings.notice_title), None)
-    if meta is None:
-        return re.sub(r"\[([^\]]+)\]\(\{\{notice_url\}\}\)", r"\1", body)
-    return body.replace(
-        "{{notice_url}}", f"{settings.host.rstrip('/')}/{settings.repo}/{meta.slug}"
-    )
+    metas = {meta.title: meta for meta in client.docs()}
+    for token, title in GUIDE_LINKS.items():
+        meta = metas.get(title)
+        if meta is None:
+            body = re.sub(r"\[([^\]]+)\]\(\{\{" + re.escape(token) + r"\}\}\)", r"\1", body)
+            continue
+        url = f"{settings.host.rstrip('/')}/{settings.repo}/{meta.slug}"
+        body = body.replace("{{" + token + "}}", url)
+    return body
 
 
 @app.command("sync-guide")
@@ -533,7 +540,7 @@ def sync_guide(
     with YuqueClient(
         host=settings.host, token=settings.token, repo=settings.repo, dry_run=settings.dry_run
     ) as client:
-        body = _fill_notice_link(client, settings, body)
+        body = _fill_links(client, settings, body)
         existing = next((m for m in client.docs() if m.title == title), None)
         if existing is None:
             if settings.dry_run:

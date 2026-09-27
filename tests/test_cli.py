@@ -217,31 +217,46 @@ def test_resident_path_still_debounces(wired, tmp_path) -> None:
 # ---------------------------------------------------------------- sync-guide
 
 
-def test_sync_guide_fills_the_notice_url() -> None:
-    """`guide.md` 里的 `{{notice_url}}` 必须在上传前换成《Agent 通知》**当前**的地址。
+def test_sync_guide_fills_the_document_urls() -> None:
+    """`guide.md` 里的占位符必须在上传前换成那篇文档**当前**的地址。
 
     为什么要有这一步：那篇文档的 URL 带着语雀生成的 slug，文档一旦被删掉重建就会变，
     写死的链接会**静默失效**（需求方 2026-09-26 审定的《指导文档》里就有这条链接）。
     """
     settings = Settings(repo="g/kb", workspace=Path("ws"))
-    body = "看 [Agent通知]({{notice_url}}) 。"
+    body = "看 [Agent通知]({{notice_url}}) 和 [《审批结果》]({{approval_url}}) 。"
 
-    client = FakeYuque(doc_metas=[make_meta(7, "Agent 通知")])
-    assert cli._fill_notice_link(client, settings, body) == (  # type: ignore[arg-type]
-        "看 [Agent通知](https://www.yuque.com/g/kb/s7) 。"
+    client = FakeYuque(doc_metas=[make_meta(7, "Agent 通知"), make_meta(9, "审批结果")])
+    assert cli._fill_links(client, settings, body) == (  # type: ignore[arg-type]
+        "看 [Agent通知](https://www.yuque.com/g/kb/s7) 和"
+        " [《审批结果》](https://www.yuque.com/g/kb/s9) 。"
     )
 
-    # 那篇文档还没建时：整条链接降级成纯文本，别留一个指向 `{{notice_url}}` 的坏链接
-    assert cli._fill_notice_link(FakeYuque(), settings, body) == "看 Agent通知 。"  # type: ignore[arg-type]
+    # 那篇文档还没建时：整条链接降级成纯文本，别留一个指向 `{{...}}` 的坏链接
+    assert cli._fill_links(FakeYuque(), settings, body) == (  # type: ignore[arg-type]
+        "看 Agent通知 和 《审批结果》 。"
+    )
 
 
 def test_guide_source_has_no_hardcoded_kb_url() -> None:
-    """源文件里不许写死知识库地址：`Agent 通知` 的 slug 会变（见上一条）。"""
+    """源文件里不许写死知识库地址：那两篇的 slug 会变（见上一条）。"""
     import yuque_agent
 
     guide = (Path(yuque_agent.__file__).parent / "kb" / "guide.md").read_text(encoding="utf-8")
-    assert "{{notice_url}}" in guide, "链接占位符不见了？"
+    for token in ("{{notice_url}}", "{{approval_url}}"):
+        assert token in guide, f"链接占位符 {token} 不见了？"
     assert "yuque.com/" not in guide, "别把知识库 URL 写死（slug 变了就静默失效）"
+
+
+def test_every_guide_placeholder_can_be_filled() -> None:
+    """`guide.md` 里用到的占位符，`GUIDE_LINKS` 里都得有 —— 漏一个就是一条死链。"""
+    import re as _re
+
+    import yuque_agent
+
+    guide = (Path(yuque_agent.__file__).parent / "kb" / "guide.md").read_text(encoding="utf-8")
+    used = set(_re.findall(r"\{\{(\w+)\}\}", guide))
+    assert used <= set(cli.GUIDE_LINKS), f"这些占位符没人填：{sorted(used - set(cli.GUIDE_LINKS))}"
 
 
 # ------------------------------------------------- 没有默认知识库（2026-09-27）
