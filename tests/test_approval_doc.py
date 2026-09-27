@@ -334,6 +334,24 @@ def test_a_placement_failure_does_not_deny_the_body_write(settings: Settings) ->
     assert "模拟目录读取失败" in outcome["place_error"]
 
 
+def test_the_garbage_sweep_knows_all_three_system_docs() -> None:
+    """「清理垃圾」那一步要认出**三篇**系统文档，别只认前两篇。
+
+    实测踩到过它的前身：那一句只写了《指导文档（必读）》与《Agent 通知》，
+    后来加的《审批结果》没补进去（还留着「前两位」这种过期说法）。
+    而这一步正好放着 `doc_delete` —— 漏一篇就可能被当成垃圾删掉，
+    **删了地址会变**，《指导文档》里那个链接随之失效。
+    """
+    text = (
+        Path(__file__).resolve().parents[1] / "src" / "yuque_agent" / "prompts" / "archive.md"
+    ).read_text(encoding="utf-8")
+    step = text.split("6. **顺手看看", 1)[1].split("7. 调", 1)[0]
+    assert "系统性文档" in step
+    for title in (GUIDE_TITLE, NOTICE_TITLE, APPROVAL_TITLE):
+        assert title in step, f"step 6 没把《{title}》列为不能动的系统文档"
+    assert "前两位" not in step, "过期说法：系统文档现在有三篇"
+
+
 def test_approval_doc_changes_never_count_as_kb_changes(settings: Settings) -> None:
     """它的变更不算「知识库变了」——否则「程序写文档 → 唤醒 LLM → 又写」会自激。"""
     assert APPROVAL_TITLE in settings.ignore_doc_titles
