@@ -24,7 +24,7 @@ from pathlib import Path
 
 import pytest
 
-from yuque_agent import outputs
+from yuque_agent import approvaldoc, outputs
 from yuque_agent.config import Settings
 from yuque_agent.runner import Runner, State
 from yuque_agent.week import cycle_of
@@ -137,6 +137,32 @@ def test_rotate_moves_everything_into_the_cycle_folder(settings: Settings) -> No
     # 而且**立刻补一份空清单**：下载口是「打开即下载」，不能出现 404
     fresh = json.loads(settings.plan_file.read_text(encoding="utf-8"))
     assert fresh["activities"] == []
+
+
+def test_the_approval_interface_dir_is_outbox_approval(settings: Settings) -> None:
+    """《审批结果》读的是 `outbox/approval/` —— 下游（crb-notify）写的也是这儿。
+
+    两边认的是同一个字符串。各写各的就会「QQ 通知照发、文档一直是空的」，
+    而且**一点都不报错**（2026-09-27 联调实测踩到，空了整整一轮）。
+    """
+    assert approvaldoc.approval_dir(settings) == settings.outbox_dir / "approval"
+
+
+def test_rotate_outbox_leaves_the_approval_interface_alone(settings: Settings) -> None:
+    """周期翻转搬 applications/ 与 plan.json；`approval/` **不许动**。
+
+    它是下游的账本所在（账本记的是**历史事实**，不按周期分），搬走等于把
+    过去的结果弄丢 —— 而它不在任何归档文件里，丢了就找不回来。
+    """
+    approvals = settings.outbox_dir / "approval"
+    approvals.mkdir(parents=True, exist_ok=True)
+    (approvals / "ledger.jsonl").write_text('{"sqbh": "aaa"}\n', encoding="utf-8")
+    (approvals / "notifications.json").write_text("{}", encoding="utf-8")
+
+    outputs.rotate_outbox(settings, cycle=outputs.current_cycle(settings))
+
+    assert (approvals / "ledger.jsonl").is_file(), "账本被周期翻转搬走了"
+    assert (approvals / "notifications.json").is_file()
 
 
 def test_rotate_keeps_the_archived_plan_frozen(settings: Settings) -> None:
