@@ -39,6 +39,7 @@ class ConfigError(RuntimeError):
 #: 顺序就是它们在根目录里**必须**出现的顺序（见 `docs/design.md` §2.1）。
 GUIDE_TITLE = "指导文档（必读）"
 NOTICE_TITLE = "Agent 通知"
+APPROVAL_TITLE = "审批结果"
 ARCHIVE_ZONE_TITLE = "归档区"
 
 #: **语雀里那份文档模板的标题**（在语雀的模板设置里人工填的，OpenAPI 设不了，见 D2）。
@@ -154,7 +155,18 @@ class Settings:
     会自激（实测踩到过，见 `ignore_doc_titles`）。
     """
 
-    ignore_doc_titles: tuple[str, ...] = (NOTICE_TITLE, GUIDE_TITLE)
+    approval_title: str = APPROVAL_TITLE
+    """程序维护的《审批结果》文档的标题。
+
+    内容是**教室借用申请的审批结果**（通过 / 退回），由下游 ``crb-agent`` 轮询学校
+    系统得到、写在工作区的 ``outbox/approval/notifications.json`` 里，
+    本仓库只负责把它渲染进知识库（``yqa refresh-approval``）。
+
+    和《Agent 通知》一样：**它的变更永远不算「知识库变了」**——否则
+    「程序写文档 → 文档变了 → 唤醒 LLM → 又写文档」会自激（实测踩到过）。
+    """
+
+    ignore_doc_titles: tuple[str, ...] = (NOTICE_TITLE, GUIDE_TITLE, APPROVAL_TITLE)
     """**程序自己会写的文档标题。它们的变更永远不算「知识库变了」。**
 
     这两篇都是程序写的（《Agent 通知》每轮跑完重建、《指导文档（必读）》由 ``yqa sync-guide`` 传），
