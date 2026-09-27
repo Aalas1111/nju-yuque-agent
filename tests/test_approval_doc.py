@@ -123,12 +123,18 @@ def test_render_is_newest_first(settings: Settings) -> None:
     assert text.index("晚的") < text.index("早的")
 
 
-def test_unmatched_is_mentioned_but_not_listed(settings: Settings) -> None:
-    """认不出的**不进正文**（它们是「不知道是谁」的东西），但要让人知道有。"""
+def test_unmatched_never_reaches_the_document(settings: Settings) -> None:
+    """认不出的**一个字都不许进正文**，连「有几条」都不许提。
+
+    它是**运维要向**：可见处是 `crb-notify show` 与接口响应里的 `unmatched` 计数。
+    《审批结果》是给社员看「批没批、哪间教室」的，塞内部状态进去只会让人困惑
+    （需求方 2026-09-27 明确要求删掉那一句）。
+    """
     put(settings, [item()], unmatched=[{"sqbh": "x", "why": "找不到"}])
     text = approvaldoc.render(settings)
-    assert "1** 条结果认不出" in text
+    assert "认不出" not in text
     assert "找不到" not in text
+    assert "unmatched" not in text
 
 
 def test_render_leaves_no_blank_line_between_headings(settings: Settings) -> None:
@@ -212,7 +218,6 @@ def test_refresh_does_not_write_in_dry_run(settings: Settings) -> None:
 def test_missing_file_is_treated_as_no_results(settings: Settings) -> None:
     """下游还没跑过时，读不到文件**不是错误** —— 就是「还没有结束的申请」。"""
     assert approvaldoc.load_notifications(settings) == {}
-    assert approvaldoc.load_unmatched_count(settings) == 0
     assert "还没有审批结束的申请" in approvaldoc.render(settings)
 
 

@@ -4,12 +4,13 @@
 **内容是文件的纯函数**，每轮重建，所以周期翻滚、手动重跑、漏跑一轮都不会让内容漂。
 
 数据来自下游 ``crb-notify``：它接收浏览器插件读到的申请列表，把「结束了」的挑出来
-写进工作区的 ``outbox/approval/``：
+写进 ``outbox/approval/``。这个模块读 ``notifications.json``
+（``nova.classroom-borrow-notification.v1``）渲染。
 
-* ``notifications.json`` —— 对外文档（``nova.classroom-borrow-notification.v1``），
-  这个模块读它渲染；
-* ``unmatched.json`` —— 认不出来的（日期/节次/标题对不上语雀那边），**不进正文**，
-  但会在末尾提一句「有几条需要人看」。
+``unmatched.json``（日期/节次/标题对不上语雀那边的）**完全不进这份文档**：
+《审批结果》是给社员看「批没批、哪间教室」的，认不出的那些是**运维要向**——
+它们的可见处是 `crb-notify show` 与接口响应里的 `unmatched` 计数
+（需求方 2026-09-27 定的：文档里不要出现这类内部状态，页面会到文档里就能看到）。
 
 为什么不由本仓库直接去查学校系统：本项目**不持有学校登录态**（见
 ``docs/handoff.md`` §1.1），那是刻意的边界。
@@ -48,17 +49,6 @@ def load_notifications(settings: Settings) -> dict[str, Any]:
     return data if isinstance(data, dict) else {}
 
 
-def load_unmatched_count(settings: Settings) -> int:
-    """认不出来的条数（``unmatched.json``）。"""
-    path = approval_dir(settings) / "unmatched.json"
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return 0
-    items = data.get("unmatched") if isinstance(data, dict) else None
-    return len(items) if isinstance(items, list) else 0
-
-
 def _stamp(value: Any) -> str:
     """``2026-09-27T10:25:30+08:00`` → ``2026-09-27 10:25``（保持原时区，别自己换算）。"""
     text = str(value or "")
@@ -78,21 +68,13 @@ def render(settings: Settings) -> str:
     # 头部**不带大标题**：语雀文档自己就有一个标题（《审批结果》）。
     lines = [
         "> 教室借用申请的审批结果，**最新的在最上面**。",
-        "> 由程序自动维护（浏览器插件读到申请列表，`crb-notify` 判定），**请勿手工编辑**。",
+        "> 由程序自动维护，**请勿手工编辑**。",
         "",
     ]
     if not items:
         lines += ["（还没有审批结束的申请。）", ""]
     for item in items:
         lines += _render_item(item)
-
-    unmatched = load_unmatched_count(settings)
-    if unmatched:
-        lines += [
-            f"> ⚠️ 还有 **{unmatched}** 条结果认不出对应的活动（日期/节次/标题对不上），",
-            "> 需要人看一眼；它们**不在**上面的清单里，也不会被通知出去。",
-            "",
-        ]
     return "\n".join(lines)
 
 
