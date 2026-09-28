@@ -315,7 +315,8 @@ def run(
         int | None,
         typer.Option(
             "--quiet-seconds",
-            help="静默期（秒）：发现变化后先不叫 LLM，等知识库安静这么久再一次性处理；0=关闭",
+            help="静默期（秒）：自首次看到变化起先不叫 LLM，满这么久再一次性处理"
+            "（每轮轮询检查一次，故实际略晚于这个秒数）；0=关闭",
         ),
     ] = None,
     workspace: Annotated[Path, typer.Option("--workspace", "-w")] = Path("workspace"),

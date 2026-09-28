@@ -111,7 +111,7 @@ class Watcher:
         ticks = 0
         self.log(
             f"[watch] 开始常驻：每 {self.settings.interval}s 轮询 {self.settings.repo}；"
-            f"发现变化后等 {self.settings.quiet_seconds}s 静默期再唤醒 LLM；"
+            f"首见变化起满 {self.settings.quiet_seconds}s 静默期再唤醒 LLM；"
             f"周期翻转/归档时刻 = 每周{'一二三四五六日'[self.settings.archive_weekday]} "
             f"{self.settings.archive_hour:02d}:00"
             + ("（dry-run）" if self.settings.dry_run else "")

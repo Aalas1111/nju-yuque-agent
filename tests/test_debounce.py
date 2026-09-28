@@ -80,7 +80,7 @@ def test_burst_of_edits_triggers_exactly_one_llm_call(tmp_path) -> None:
 
 
 def test_llm_sees_the_final_state_not_the_intermediate_ones(tmp_path) -> None:
-    """LLM 看到的应该是最终状态，而不是「无标题空文档」。"""
+    """LLM 看到的应该是叫醒那一刻的最新状态，而不是「无标题空文档」。"""
     runner, client, llm = make_runner(tmp_path)
     set_docs(client)
     runner.poll_once(now=dt("2026-09-20T10:00:00"))
