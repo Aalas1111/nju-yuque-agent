@@ -88,21 +88,21 @@ git clone https://github.com/Aalas1111/nju-yuque-agent /opt/yuque-agent
 cd /opt/yuque-agent && uv sync
 
 # ④ 放配置与凭证（路径见 §2；权限 600，属主 yuque）
-#    agent.env 是 systemd 的 EnvironmentFile；**知识库必须在这里配**（没有默认库）
+#    agent.env 是 systemd 的 EnvironmentFile；**知识库必须在这里配**（没有默认库）。
+#    LLM 配置也在这**一份**里：**四个单元共读**（yuque-agent 的轮询 / QQ 桥的消息提取
+#    都读 YQA_*）——将来要让某一家单独用别的模型，再给它加专属 EnvironmentFile
+#    （单元里 `EnvironmentFile=-…`，缺文件不报错）。
+#    2026-10-02 起生产走阿里云 Coding Plan。
 install -d -m 700 -o yuque -g yuque /home/yuque/.yuque
 printf '{"token": "<语雀写权限令牌>"}\n' > /home/yuque/.yuque/auth.json
 cat > /home/yuque/.yuque/agent.env <<'ENV'
-DEEPSEEK_API_KEY=<key>
-YQA_REPO=<group>/<repo>
-# YQA_HOST=https://<知识库的域名>    # 默认 www.yuque.com；挂了自定义域名（如 nova.yuque.com）时写它
-ENV
-#    ⚠️ agent.env 是**四个单元共读**的（含 QQ 桥的会话 LLM）。只属于本服务的覆盖放**专属文件**：
-#    2026-10-02 起生产走阿里云 Coding Plan（模型的地址/型号/上限只有本服务用）。
-cat > /home/yuque/.yuque/yuque-agent.env <<'ENV'
+DEEPSEEK_API_KEY=<key>                 # 备用；优先级低于 YQA_LLM_KEY（上面那套 YQA_* 生效后它不再被读到）
 YQA_API_BASE=https://coding.dashscope.aliyuncs.com/v1
 YQA_MODEL=qwen3.7-plus
 YQA_LLM_KEY=<sk-sp-…（百炼控制台 → 订阅 → Coding Plan）>
-YQA_MAX_TOKENS=65536    # 不设人为输出上限（默认 8192 只够 DeepSeek；被截断另有 nudge 兜底）
+YQA_MAX_TOKENS=65536                   # 不设人为输出上限（默认 8192 只够 DeepSeek；被截断另有 nudge 兜底）
+YQA_REPO=<group>/<repo>
+# YQA_HOST=https://<知识库的域名>    # 默认 www.yuque.com；挂了自定义域名（如 nova.yuque.com）时写它
 ENV
 chown yuque:yuque /home/yuque/.yuque/* && chmod 600 /home/yuque/.yuque/*
 
@@ -258,9 +258,6 @@ cat > /usr/local/bin/yqa-as-service <<'WRAP'
 exec sudo -u yuque bash -c '
   set -a
   . /home/yuque/.yuque/agent.env
-  # 本服务专属覆盖（阿里 Coding Plan 的 key/地址/模型/上限在这里；2026-10-02 起）。
-  # 不 source 的话手工跑会退回 agent.env 的旧配置——和正在跑的服务不是同一个模型。
-  [ -f /home/yuque/.yuque/yuque-agent.env ] && . /home/yuque/.yuque/yuque-agent.env
   set +a
   export HOME=/home/yuque
   # 和服务用**同一份**缓存：不设的话手动命令走 ~/.cache/uv，

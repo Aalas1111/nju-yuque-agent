@@ -14,11 +14,6 @@ User=yuque
 Group=yuque
 WorkingDirectory=/opt/yuque-agent
 EnvironmentFile=/home/yuque/.yuque/agent.env
-# 本单元**专属**的覆盖文件（600）：2026-10-02 换阿里 Coding Plan 时加的。
-# agent.env 是**四个单元共读**的（含 QQ 桥的会话 LLM），YQA_LLM_KEY / YQA_API_BASE
-# 放那儿会把别人的模型一起带跑偏；放这里只有本单元看得见。
-# `-` = 文件缺失不报错（干净的部署可以先没有它）。
-EnvironmentFile=-/home/yuque/.yuque/yuque-agent.env
 Environment=HOME=/home/yuque
 Environment=PYTHONUNBUFFERED=1
 Environment=UV_CACHE_DIR=/var/lib/yuque-agent/.uv-cache
