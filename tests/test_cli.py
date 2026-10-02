@@ -310,3 +310,20 @@ def test_max_output_tokens_flows_into_the_llm_client(monkeypatch) -> None:
     finally:
         client.close()
         llm.close()
+
+
+def test_cli_defaults_do_not_shadow_env(monkeypatch, tmp_path) -> None:
+    """环境里的 `YQA_MODEL` / `YQA_INTERVAL` 不能被 CLI 选项的**默认值**盖掉。
+
+    2026-10-02 换阿里 Coding Plan 时踩到：`--model` 的默认值曾写死 `deepseek-flash`，
+    `_settings()` 又把它当「显式覆盖」传下去 —— 服务拿着阿里的地址去要一个
+    deepseek 的模型名，doctor 的探测直接「请求被拒」。
+    """
+    monkeypatch.setenv("YQA_REPO", "g/kb")
+    monkeypatch.setenv("YQA_MODEL", "qwen3.7-plus")
+    monkeypatch.setenv("YQA_INTERVAL", "7")
+
+    settings = cli._settings("", tmp_path / "ws", False)
+
+    assert settings.model == "qwen3.7-plus", "env 里的模型名必须生效"
+    assert settings.interval == 7, "env 里的轮询间隔必须生效"

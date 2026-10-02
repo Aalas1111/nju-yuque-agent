@@ -33,7 +33,6 @@ from . import render as render_mod
 from .config import (
     APPROVAL_TITLE,
     ARCHIVE_ZONE_TITLE,
-    DEFAULT_MODEL,
     GUIDE_TITLE,
     NOTICE_TITLE,
     WORKING_DIR_TITLE,
@@ -79,14 +78,19 @@ def _settings(
     repo: str,
     workspace: Path,
     dry_run: bool,
-    model: str,
-    interval: int,
+    model: str | None = None,
+    interval: int | None = None,
 ) -> Settings:
     """CLI 参数 > 环境变量 > 凭证文件（见 `config.Settings.from_env`）。
 
     ``repo`` 空串 = 命令行没给 —— 回退到 ``YQA_REPO``；两边都没有就直接退出
     （**没有默认知识库**：写死一个 namespace 意味着「忘配的人会连到别人的知识库」，
     那比当场停下危险得多）。
+
+    ⚠️ ``model`` / ``interval`` 的默认值是 **None（= 没给）**，不是写死的默认值。
+    踩过（2026-10-02 换阿里）：选项默认写成 ``deepseek-flash``，这里又把它当
+    「显式覆盖」传下去，**环境里的 ``YQA_MODEL`` 被静默盖掉** —— 服务拿着阿里的
+    地址去要一个 deepseek 的模型名。默认值只许出现在 ``config.py`` 一处。
     """
     try:
         return Settings.from_env(
@@ -121,10 +125,10 @@ def version() -> None:
 def doctor(
     repo: RepoOpt = "",
     workspace: Annotated[Path, typer.Option("--workspace", "-w")] = Path("workspace"),
-    model: Annotated[str, typer.Option("--model")] = DEFAULT_MODEL,
+    model: Annotated[str | None, typer.Option("--model", help="模型；不写就看 YQA_MODEL")] = None,
 ) -> None:
     """自检：凭证、权限、知识库连通、提示词、工作区。"""
-    settings = _settings(repo, workspace, False, model, 5)
+    settings = _settings(repo, workspace, False, model)
     table = Table(title="yuque-agent 自检", show_lines=False)
     table.add_column("项", style="bold")
     table.add_column("结果")
@@ -258,7 +262,7 @@ def once(
     ] = False,
     workspace: Annotated[Path, typer.Option("--workspace", "-w")] = Path("workspace"),
     dry_run: Annotated[bool, typer.Option("--dry-run", help="所有写操作只记录不执行")] = False,
-    model: Annotated[str, typer.Option("--model")] = DEFAULT_MODEL,
+    model: Annotated[str | None, typer.Option("--model", help="模型；不写就看 YQA_MODEL")] = None,
     quiet: Annotated[bool, typer.Option("--quiet", "-q", help="没变化时不打印")] = False,
 ) -> None:
     """跑一轮轮询。没有变化 → 什么都不做（0 token）。
@@ -277,7 +281,7 @@ def once(
       由 ``tests/test_debounce.py::test_force_bypasses_nothing_but_still_needs_quiet`` 锁住。
       如果你绕开 CLI 直接调 ``poll_once(force=True)``，静默期内仍然不会跑。
     """
-    settings = _settings(repo, workspace, dry_run, model, 5)
+    settings = _settings(repo, workspace, dry_run, model)
     client, llm = _clients(settings)
     try:
         runner = Runner(settings=settings, client=client, llm=llm)
@@ -298,10 +302,10 @@ def archive(
     repo: RepoOpt = "",
     workspace: Annotated[Path, typer.Option("--workspace", "-w")] = Path("workspace"),
     dry_run: Annotated[bool, typer.Option("--dry-run", help="所有写操作只记录不执行")] = False,
-    model: Annotated[str, typer.Option("--model")] = DEFAULT_MODEL,
+    model: Annotated[str | None, typer.Option("--model", help="模型；不写就看 YQA_MODEL")] = None,
 ) -> None:
     """手动跑一次归档会话（带结构写工具的那个）。"""
-    settings = _settings(repo, workspace, dry_run, model, 5)
+    settings = _settings(repo, workspace, dry_run, model)
     client, llm = _clients(settings)
     try:
         runner = Runner(settings=settings, client=client, llm=llm)
@@ -315,7 +319,9 @@ def archive(
 @app.command()
 def run(
     repo: RepoOpt = "",
-    interval: Annotated[int, typer.Option("--interval", "-i", help="轮询间隔（秒）")] = 5,
+    interval: Annotated[
+        int | None, typer.Option("--interval", "-i", help="轮询间隔（秒）；不写就看 YQA_INTERVAL")
+    ] = None,
     quiet_seconds: Annotated[
         int | None,
         typer.Option(
@@ -326,7 +332,7 @@ def run(
     ] = None,
     workspace: Annotated[Path, typer.Option("--workspace", "-w")] = Path("workspace"),
     dry_run: Annotated[bool, typer.Option("--dry-run")] = False,
-    model: Annotated[str, typer.Option("--model")] = DEFAULT_MODEL,
+    model: Annotated[str | None, typer.Option("--model", help="模型；不写就看 YQA_MODEL")] = None,
     max_ticks: Annotated[
         int | None, typer.Option("--max-ticks", help="跑几轮就退出（自测用）")
     ] = None,
@@ -359,7 +365,7 @@ def sessions(
     repo: RepoOpt = "",
 ) -> None:
     """列出本地留档的所有 run。"""
-    settings = _settings(repo, workspace, False, DEFAULT_MODEL, 5)
+    settings = _settings(repo, workspace, False)
     runs = sorted(settings.runs_dir.glob("*/session.jsonl")) if settings.runs_dir.exists() else []
     if not runs:
         console.print("[dim]还没有任何 run。[/dim]")
@@ -381,7 +387,7 @@ def render(
     out: Annotated[Path | None, typer.Option("--out", "-o", help="写入文件而不是打印")] = None,
 ) -> None:
     """把某次 run 的 session 渲染成人话。"""
-    settings = _settings(repo, workspace, False, DEFAULT_MODEL, 5)
+    settings = _settings(repo, workspace, False)
     path = Path(run_id)
     if not path.is_file():
         path = settings.runs_dir / run_id / "session.jsonl"
@@ -402,7 +408,7 @@ def refresh_notice(
     workspace: Annotated[Path, typer.Option("--workspace", "-w")] = Path("workspace"),
 ) -> None:
     """按当前周期的通知重建语雀《Agent 通知》文档（程序维护，幂等）。"""
-    settings = _settings(repo, workspace, False, DEFAULT_MODEL, 5)
+    settings = _settings(repo, workspace, False)
     with YuqueClient(
         host=settings.host, token=settings.token, repo=settings.repo, dry_run=settings.dry_run
     ) as client:
@@ -426,7 +432,7 @@ def refresh_approval(
 
     由 ``crb-notify`` 在收到记录时调用；也可以手工跑（不变化就不写）。
     """
-    settings = _settings(repo, workspace, False, DEFAULT_MODEL, 5)
+    settings = _settings(repo, workspace, False)
     with YuqueClient(
         host=settings.host, token=settings.token, repo=settings.repo, dry_run=settings.dry_run
     ) as client:
@@ -458,7 +464,7 @@ def export_plan(
     `--defaults` 会被**落盘保存**（`outbox/plan.defaults.json`）：因为 agent 每次
     写申请都会自动重发 plan.json，不存下来那次重发就把借用人信息丢了。
     """
-    settings = _settings(repo, workspace, False, DEFAULT_MODEL, 5)
+    settings = _settings(repo, workspace, False)
     parsed: dict = {}
     if defaults:
         try:
@@ -502,7 +508,7 @@ def serve_plan(
     特别是 ``plan.defaults.json``（**借用人姓名与手机号**）永远取不到。
     但它仍是**公开**端点 —— 见 `docs/deploy.md` §10。
     """
-    settings = _settings(repo, workspace, False, DEFAULT_MODEL, 5)
+    settings = _settings(repo, workspace, False)
     if port is not None:
         settings.plan_port = port
     try:
@@ -540,7 +546,7 @@ def sync_guide(
     dry_run: Annotated[bool, typer.Option("--dry-run")] = False,
 ) -> None:
     """把 `kb/guide.md` 上传/更新为知识库里的《指导文档（必读）》。"""
-    settings = _settings(repo, Path("workspace"), dry_run, DEFAULT_MODEL, 5)
+    settings = _settings(repo, Path("workspace"), dry_run)
     body = (Path(__file__).parent / "kb" / "guide.md").read_text(encoding="utf-8")
     title = GUIDE_TITLE
     with YuqueClient(
@@ -643,7 +649,7 @@ def reset_test_data(
         console.print(f"[red]--scope 只能是 cycle 或 all，收到 {scope!r}[/red]")
         raise typer.Exit(2)
 
-    settings = _settings(repo, workspace, False, DEFAULT_MODEL, 5)
+    settings = _settings(repo, workspace, False)
     if _inside_checkout(settings.root) and not force:
         console.print(
             f"[red]工作区落在代码检出里：{settings.root}[/red]\n"
