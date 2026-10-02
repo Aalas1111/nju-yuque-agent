@@ -21,7 +21,14 @@ import pytest
 
 from tests.fakes import FakeYuque, make_toc
 from yuque_agent import approvaldoc
-from yuque_agent.config import APPROVAL_TITLE, GUIDE_TITLE, NOTICE_TITLE, Settings
+from yuque_agent.config import (
+    APPROVAL_TITLE,
+    ARCHIVE_ZONE_TITLE,
+    GUIDE_TITLE,
+    NOTICE_TITLE,
+    WORKING_DIR_TITLE,
+    Settings,
+)
 
 
 @pytest.fixture()
@@ -222,10 +229,16 @@ def test_missing_file_is_treated_as_no_results(settings: Settings) -> None:
 
 
 # ---------------------------------------------------------------- 位置与自激
-def test_approval_doc_sits_between_the_notice_and_the_cycle(settings: Settings) -> None:
-    """位置是需求方定的：《Agent 通知》之后、活跃周期目录之前。"""
-    order = settings_archive_order(settings, cycle="0926-1002")
-    assert order == [GUIDE_TITLE, NOTICE_TITLE, APPROVAL_TITLE, "0926-1002", "归档区"]
+def test_approval_doc_sits_between_the_notice_and_the_working_dir(settings: Settings) -> None:
+    """位置是需求方定的：《Agent 通知》之后、工作目录之前。"""
+    order = settings_archive_order(settings)
+    assert order == [
+        GUIDE_TITLE,
+        NOTICE_TITLE,
+        APPROVAL_TITLE,
+        WORKING_DIR_TITLE,
+        ARCHIVE_ZONE_TITLE,
+    ]
 
 
 def test_the_archive_prompt_documents_the_new_order() -> None:
@@ -267,8 +280,8 @@ def test_it_is_pulled_up_to_just_after_the_notice(settings: Settings) -> None:
     client.toc_nodes = make_toc(
         (GUIDE_TITLE, "DOC", 1, ""),
         (NOTICE_TITLE, "DOC", 2, ""),
-        ("0926-1002", "TITLE", 0, ""),
-        ("归档区", "TITLE", 0, ""),
+        (WORKING_DIR_TITLE, "TITLE", 0, ""),
+        (ARCHIVE_ZONE_TITLE, "TITLE", 0, ""),
         (APPROVAL_TITLE, "DOC", 9, ""),
     )
 
@@ -276,7 +289,13 @@ def test_it_is_pulled_up_to_just_after_the_notice(settings: Settings) -> None:
 
     assert outcome["ok"] is True
     assert outcome["moved"] == [GUIDE_TITLE, NOTICE_TITLE, APPROVAL_TITLE]
-    assert root_order(client) == [GUIDE_TITLE, NOTICE_TITLE, APPROVAL_TITLE, "0926-1002", "归档区"]
+    assert root_order(client) == [
+        GUIDE_TITLE,
+        NOTICE_TITLE,
+        APPROVAL_TITLE,
+        WORKING_DIR_TITLE,
+        ARCHIVE_ZONE_TITLE,
+    ]
 
 
 def test_placement_is_a_no_op_when_the_order_is_already_right(settings: Settings) -> None:
@@ -286,8 +305,8 @@ def test_placement_is_a_no_op_when_the_order_is_already_right(settings: Settings
         (GUIDE_TITLE, "DOC", 1, ""),
         (NOTICE_TITLE, "DOC", 2, ""),
         (APPROVAL_TITLE, "DOC", 9, ""),
-        ("0926-1002", "TITLE", 0, ""),
-        ("归档区", "TITLE", 0, ""),
+        (WORKING_DIR_TITLE, "TITLE", 0, ""),
+        (ARCHIVE_ZONE_TITLE, "TITLE", 0, ""),
     )
 
     outcome = approvaldoc.refresh(settings, client)
@@ -303,8 +322,8 @@ def test_placement_only_touches_the_front_of_the_root(settings: Settings) -> Non
         (GUIDE_TITLE, "DOC", 1, ""),
         ("某人的散篇", "DOC", 8, ""),
         (NOTICE_TITLE, "DOC", 2, ""),
-        ("0926-1002", "TITLE", 0, ""),
-        ("归档区", "TITLE", 0, ""),
+        (WORKING_DIR_TITLE, "TITLE", 0, ""),
+        (ARCHIVE_ZONE_TITLE, "TITLE", 0, ""),
         (APPROVAL_TITLE, "DOC", 9, ""),
     )
 
@@ -315,8 +334,8 @@ def test_placement_only_touches_the_front_of_the_root(settings: Settings) -> Non
         NOTICE_TITLE,
         APPROVAL_TITLE,
         "某人的散篇",
-        "0926-1002",
-        "归档区",
+        WORKING_DIR_TITLE,
+        ARCHIVE_ZONE_TITLE,
     ]
 
 
@@ -357,11 +376,11 @@ def test_approval_doc_changes_never_count_as_kb_changes(settings: Settings) -> N
     assert APPROVAL_TITLE in settings.ignore_doc_titles
 
 
-def settings_archive_order(settings: Settings, *, cycle: str) -> list[str]:
+def settings_archive_order(settings: Settings) -> list[str]:
     """拿归档指令里那份目标顺序（不跑 LLM，直接看程序算出来的）。
 
-    顺序是**程序给的**（那是需求，不是判断）；``now`` 决定「活跃周期目录」叫什么，
-    2026-09-27 是周日，落在周期 ``0926-1002``（周六起算）。
+    顺序是**程序给的**（那是需求，不是判断）；2026-10-02 起根目录形态是
+    「三篇系统文档 + 工作目录 + 归档终点」，与日期无关。
     """
     from datetime import datetime
 
@@ -373,6 +392,4 @@ def settings_archive_order(settings: Settings, *, cycle: str) -> list[str]:
         snapshot=Snapshot(taken_at="2026-09-27T00:00:00+08:00"),
         now=datetime(2026, 9, 27, 10, 0),
     )
-    order = list(signal["root_target_order"])
-    assert cycle in order, f"活跃周期目录应该是 {cycle}，实际 {order}"
-    return order
+    return list(signal["root_target_order"])

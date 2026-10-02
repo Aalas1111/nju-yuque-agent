@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Any
 
 from . import outputs, school
-from .config import Settings, safe_join
+from .config import ARCHIVE_ZONE_TITLE, WORKING_DIR_TITLE, Settings, safe_join
 from .outputs import ContractError
 from .session import Stopwatch
 from .snapshot import DocSnapshot
@@ -143,7 +143,7 @@ def _kb_tree(ctx: RunContext, args: dict[str, Any]) -> Any:
     """知识库目录树（**实时读取**：看得见自己刚做的改动）。
 
     列出**全部**节点——含 ``DOC``。为什么文档节点也要列：归档会话的交付标准是
-    「根目录顺序 = 指导文档 → Agent 通知 → 当前周期 → 归档区」，其中**前两项是文档**；
+    「根目录顺序 = 指导文档 → Agent 通知 → 审批结果 → 工作目录 → 归档终点」，其中**前三项是文档**；
     只列目录节点的话，「排完再读一遍核对顺序」这件事根本做不到
     （2026-09-27 正式迁移实测：空库上该工具返回 ``nodes: []``，agent 只能靠工具语义猜）。
 
@@ -173,7 +173,9 @@ def _dir_list(ctx: RunContext, args: dict[str, Any]) -> Any:
     """列出某个目录下的全部文档（不只是本轮变更过的）。"""
     wanted = str(args.get("dir") or "").strip()
     if not wanted:
-        raise ToolError("dir 必填，例如 '0919-0925' 或 '归档区/0912-0918'；根目录用 '.'")
+        raise ToolError(
+            f"dir 必填，例如 '{WORKING_DIR_TITLE}' 或 '{ARCHIVE_ZONE_TITLE}'；根目录用 '.'"
+        )
     root_wanted = wanted in (".", "/", "根目录", "(根目录)")
     dir_by_doc = _doc_dirs(ctx)
     rows = []
@@ -183,7 +185,7 @@ def _dir_list(ctx: RunContext, args: dict[str, Any]) -> Any:
             continue
         # 注意：不能把 ``path == ""``（根目录下的文档）当成「匹配任意目录」。
         # 实测踩到过：之前写成 ``path == wanted or path.endswith("/"+wanted) or path == ""``，
-        # 结果 ``dir_list("归档区/0912-0918")`` 会把根目录的《指导文档》《Agent 通知》
+        # 结果 ``dir_list("不要动此目录里的文档")`` 会把根目录的《指导文档》《Agent 通知》
         # 一并返回——归档会话要是信了这个结果，就可能把系统性文档从根目录搬走。
         if root_wanted:
             matched = path == ""
@@ -305,9 +307,12 @@ def _ws_write(ctx: RunContext, args: dict[str, Any]) -> Any:
 def _emit_application(ctx: RunContext, args: dict[str, Any]) -> Any:
     """产出一份「要素齐备」的教室借用申请，交给负责提交的 cac。
 
-    分工：**LLM 给「社员原话」（校区名/教学楼名/时间），程序做查表归一化**
+    分工：**LLM 给「社员原话」（校区名/教学楼名/教室名/时间），程序做查表归一化**
     （校区名→代码、教学楼名→`JXLDM`、`HH:MM`→节次）。
     产出里的 ``activity`` 就是 `crb` 的 ``Activity`` 原样，下游可直接吃。
+
+    ``rooms`` 是**列表**：一篇文档可以同时申请多间教室（2026-10-02 需求，
+    学校端「一条申请多间教室」）。空列表 = 随机。
     """
     doc_id = _need(args, "doc_id")
     title = str(args.get("activity_name") or args.get("doc_title") or "").strip()
@@ -342,7 +347,7 @@ def _emit_application(ctx: RunContext, args: dict[str, Any]) -> Any:
 
     building_text = str(args.get("building") or "").strip()
     building_code, building_note = school.normalize_building(campus_code, building_text)
-    room_text = str(args.get("room") or "").strip()
+    rooms = _clean_rooms(args.get("rooms"))
 
     people = max(int(args.get("people") or 0), 0)
     people_source = "document" if people else "unspecified"
@@ -388,7 +393,7 @@ def _emit_application(ctx: RunContext, args: dict[str, Any]) -> Any:
             "campus": campus_code,
             "building": building_code or None,
             "room_type": None,
-            "preferred_room": room_text or None,
+            "rooms": rooms,
         },
         # ↓↓↓ 我们自己的审计轨迹
         "raw": {
@@ -398,7 +403,7 @@ def _emit_application(ctx: RunContext, args: dict[str, Any]) -> Any:
             "end": end,
             "campus": campus_text,
             "building": building_text,
-            "room": room_text,
+            "rooms": rooms,
             "people": int(args.get("people") or 0),
         },
         "derived": {
@@ -492,7 +497,7 @@ def _toc_create(ctx: RunContext, args: dict[str, Any]) -> Any:
 
 
 def _toc_move(ctx: RunContext, args: dict[str, Any]) -> Any:
-    """把一个目录节点移动到另一个目录下（例如把上一周期的目录移进归档区）。"""
+    """把一个节点移动到另一个目录下（例如把工作目录里的文档移进归档终点）。"""
     node_uuid = _need(args, "node_uuid")
     target_uuid = str(args.get("target_uuid") or "")
     prepend = bool(args.get("prepend"))
@@ -570,7 +575,7 @@ COMMON_TOOLS: tuple[Tool, ...] = (
             {
                 "dir": {
                     **STR,
-                    "description": "目录路径，如 '0919-0925' 或 '归档区/0912-0918'；根目录用 '.'",
+                    "description": (f"目录路径（如 '{WORKING_DIR_TITLE}'）；根目录用 '.'"),
                 }
             },
             ["dir"],
@@ -604,6 +609,7 @@ COMMON_TOOLS: tuple[Tool, ...] = (
         "请填**社员原话**（校区写「仙林」这类名字即可）——"
         "程序会自动把名字转成学校系统需要的代码，并在对不上时把错误告诉你。"
         "**教学楼要归一到报告里 `school.buildings` 的规范名**（社员写「仙二」「逸夫楼A」都算）；"
+        "**教室是多间就传多间**（一篇文章可同时申请多间教室，每间一个数组元素）；"
         "无法确定的（教学楼 / 教室 / 人数）就留空，空 = 随机分配。",
         _params(
             {
@@ -622,11 +628,12 @@ COMMON_TOOLS: tuple[Tool, ...] = (
                         "对不上就留空（= 随机），别编"
                     ),
                 },
-                "room": {
-                    **STR,
+                "rooms": {
+                    **STRLIST,
                     "description": (
-                        "意向教室：**按报告里 `school.rooms` 的写法规则归一**"
-                        "（下游是精确匹配，差一字符就退化成随机）；不确定就留空"
+                        "意向教室，**数组**（一间就写一个元素；多间就多个元素）："
+                        "按报告里 `school.rooms` 的写法规则归一"
+                        "（下游是精确匹配，差一字符就退化成随机）；不确定就传空数组"
                     ),
                 },
                 "people": {**INT, "description": "人数；社员没写就传 0（= 不限、不筛容量）"},
@@ -693,7 +700,7 @@ COMMON_TOOLS: tuple[Tool, ...] = (
 ARCHIVE_TOOLS: tuple[Tool, ...] = (
     Tool(
         "toc_create",
-        "在知识库目录里新建一个分组目录（例如下一周的申请目录）。",
+        "在知识库目录里新建一个分组目录（例如把工作目录建回来）。",
         _params(
             {"title": STR, "target_uuid": {**STR, "description": "父节点 uuid，留空=根目录"}},
             ["title"],
@@ -702,7 +709,8 @@ ARCHIVE_TOOLS: tuple[Tool, ...] = (
     ),
     Tool(
         "toc_move",
-        "把一个目录节点移到另一个目录下（例如把上一周期的目录移进归档区）。"
+        "把一个节点（文档或分组）移到另一个目录下"
+        "（例如把工作目录里的文档移进归档终点）。"
         "默认落在目标**末尾**；要放进**最前**就传 prepend=true。"
         "移动后位置不会自动核对——需要的话自己 kb_tree() 再看一遍。",
         _params(
@@ -782,6 +790,24 @@ def _need(args: dict[str, Any], key: str) -> Any:
     if value in (None, "", 0):
         raise ToolError(f"{key} 必填")
     return value
+
+
+def _clean_rooms(value: Any) -> list[str]:
+    """教室列表：去空、去重（保序）。空 = 随机。
+
+    非数组（比如 LLM 顺手传了个字符串）直接报错让它自己纠正——
+    **不替它拆**「A、B」这种字符串：分隔符语义（顿号/逗号/或）是判断，不是机械转换。
+    """
+    if value in (None, "", []):
+        return []
+    if isinstance(value, str):
+        raise ToolError('rooms 必须是**数组**，例如 ["新教303", "新教403"]（一间也要写成数组）。')
+    out: list[str] = []
+    for item in value if isinstance(value, (list, tuple)) else []:
+        name = str(item).strip()
+        if name and name not in out:
+            out.append(name)
+    return out
 
 
 def _doc_url(ctx: RunContext, doc_id: int) -> str:

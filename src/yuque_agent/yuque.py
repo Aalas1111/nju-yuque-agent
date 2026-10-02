@@ -54,7 +54,7 @@ class TocNode:
     depth: int
     """根节点为 1。"""
     path: str
-    """人类可读位置，如 ``归档区/0912-0918``。"""
+    """人类可读位置，如 ``不要动此目录里的文档/某文档``。"""
     order: int
     """在目录里的先后次序（0 起）。"""
 
@@ -306,7 +306,7 @@ class YuqueClient:
         不带 ``target_uuid`` 就是根目录。
 
         ``prepend`` 是 2026-09-26 实测过的（``action=prependNode`` + ``node_uuid`` 真的会把节点
-        挪到最前面）。没有它，「归档区内部最新在最上」就只能把整列节点倒着重排一遍。
+        挪到最前面）。没有它，「归档终点内部最新在最上」就只能把整列节点倒着重排一遍。
         """
         payload: dict[str, Any] = {
             "action": "prependNode" if prepend else "appendNode",

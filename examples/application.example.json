@@ -1,15 +1,15 @@
 {
-  "schema_version": "2.0",
+  "schema_version": "3.0",
   "application_id": "2026-09-23-1234567",
   "cycle": "0919-0925",
-  "_comment": "一份「要素齐备」的教室借用申请。activity 对象就是 crb 的 Activity 原样，下游可直接吃。见 docs/handoff.md。",
+  "_comment": "一份「要素齐备」的教室借用申请。activity 对象就是 crb 的 Activity 原样，下游可直接吃。见 docs/handoff.md。rooms 是数组（空数组 = 随机）；本篇示例一条申请同时申请两间教室（schema 3.0，2026-10-02）。",
   "created_at": "2026-09-20T10:18:40+08:00",
   "source": {
     "repo": "<group>/<repo>",
     "doc_id": 1234567,
     "title": "新生见面会",
     "author": "张三",
-    "dir": "0919-0925",
+    "dir": "申请文档请放在此目录下",
     "content_sha256": "25dce296a459…"
   },
   "activity": {
@@ -20,7 +20,7 @@
     "campus": "3",
     "building": "12",
     "room_type": null,
-    "preferred_room": "仙I-201"
+    "rooms": ["仙Ⅱ-218", "仙Ⅱ-219"]
   },
   "raw": {
     "activity_name": "新生见面会",
@@ -29,7 +29,7 @@
     "end": "18:00",
     "campus": "仙林",
     "building": "仙II区",
-    "room": "仙I-201",
+    "rooms": ["仙Ⅱ-218", "仙Ⅱ-219"],
     "people": 25
   },
   "derived": {
@@ -45,7 +45,7 @@
     "run_id": "20260920-101834-polling-7d44",
     "verdict": "accepted",
     "confidence": "high",
-    "notes": ["教室未填写，按随机分配处理"]
+    "notes": ["教室填了两间，按一条申请同时申请两间处理"]
   },
   "normalizations": ["「下午4点到6点」→ 16:00-18:00"],
   "warnings": []

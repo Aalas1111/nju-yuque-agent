@@ -37,7 +37,7 @@ class DocSnapshot:
     created_at: str
     author: str
     dir: str
-    """所在目录（人类可读路径，如 ``0919-0925`` / ``归档区/0912-0918``）。"""
+    """所在目录（人类可读路径，如 ``申请文档请放在此目录下``）。"""
     content_sha256: str = ""
     """正文指纹。**惰性填充**：只在「该文档本次变了」时才去读正文算一次。
 
@@ -93,12 +93,19 @@ class Changes:
     removed: list[DocSnapshot] = field(default_factory=list)
     toc_changed: bool = False
     first_run: bool = False
-    toc_only: list[DocSnapshot] = field(default_factory=list)
-    """``updated_at`` 变了但**正文哈希没变**的文档（只被挪了目录）——不算变更。"""
+    moved: list[tuple[DocSnapshot, DocSnapshot]] = field(default_factory=list)
+    """正文一个字都没变、但**换了目录**的文档（旧, 新）。
+
+    2026-10-02 之前这类变更被整条丢掉（旧名字 ``toc_only``，理由是「防周期目录归档时
+    全员误报」）。但实测踩到：文档放错目录、写完正文、移回工作目录后**再也不会触发处理**
+    ——那正是被这条筛子吞掉的。现在只丢「**新位置在归档终点**」的移动（归档会话自己做的
+    批量搬家，见 :func:`drop_archived`），其余移动都列出来交给 LLM：
+    移进工作目录 = 有人把放错的文档挪回来了，按新申请处理（规则见 `prompts/polling.md`）。
+    """
 
     @property
     def n_docs(self) -> int:
-        return len(self.added) + len(self.updated) + len(self.removed)
+        return len(self.added) + len(self.updated) + len(self.removed) + len(self.moved)
 
     @property
     def empty(self) -> bool:
@@ -253,16 +260,20 @@ def build_report(
         _doc_payload(doc) | {"last_seen_at": cur.taken_at} for doc in changes.removed
     ]
 
+    # moved：正文没变、只是换了位置。不给 preview（没读过正文），
+    # 需要判断的（比如「移进工作目录的到底是不是申请」）让 LLM 自己 doc_read。
+    moved_payload = [{**_doc_payload(new), "prev_dir": old.dir} for old, new in changes.moved]
+
     if truncated:
         notes.append(
             f"本轮变更文档数超过 max_docs={max_docs}，报告只列出了一部分；"
             "如需处理其余文档，请用 dir_list / doc_read 自行查看。"
         )
-    if changes.toc_only:
-        names = "、".join(d.title for d in changes.toc_only[:10])
+    if changes.moved:
+        names = "、".join(f"「{d.title}」" for _, d in changes.moved[:10])
         notes.append(
-            f"另外有 {len(changes.toc_only)} 篇文档的 updated_at 变了但**正文一个字都没变**"
-            f"（只是被挪了目录），已视为无变更、不列入上面：{names}"
+            f"另有 {len(changes.moved)} 篇文档**正文一个字都没变、只是被移动了目录**："
+            f"{names}——已单列在 docs.moved（处理规则见你手上提示词的「文档被移动」一节）。"
         )
 
     return {
@@ -277,14 +288,15 @@ def build_report(
             "added": added_payload,
             "updated": updated_payload,
             "removed": removed_payload,
+            "moved": moved_payload,
         },
         "counts": {
             "added": len(changes.added),
             "updated": len(changes.updated),
             "removed": len(changes.removed),
+            "moved": len(changes.moved),
         },
         "notes": notes,
-        "toc_only": [{"doc_id": d.doc_id, "title": d.title} for d in changes.toc_only],
     }
 
 
@@ -302,8 +314,9 @@ def enrich_and_refine(
 
     1. 未变化的文档：把上一轮的哈希带过来（保持快照「温热」）；
     2. 本轮变化的文档：读一次正文，算 ``sha256(title + body)``；
-       ``updated_at`` 变了但哈希没变（只被挪了目录）→ 从 ``updated`` 里拎出去，
-       记进 ``changes.toc_only``。
+       ``updated_at`` 变了但哈希没变 → 看**位置**：换了目录的记进
+       ``changes.moved``（交给 LLM 判断，规则见提示词）；位置也没换的静默丢弃
+       （纯 ``updated_at`` 抖动，什么信号都不带）。
 
     返回 ``doc_id -> 正文``，供 :func:`build_report` 生成 preview，避免重复读。
     """
@@ -356,8 +369,10 @@ def enrich_and_refine(
         previews[new.doc_id] = body
         cur.docs[new.doc_id] = replace(new, content_sha256=sha)
         if old.content_sha256 and sha == old.content_sha256:
-            # 内容一个字都没变（典型原因：文档被挪了目录）→ 不是变更，不叫醒 LLM
-            changes.toc_only.append(new)
+            if old.dir != new.dir:
+                # 正文没变、只是换了目录 → 单列进 moved 交给 LLM 判断
+                changes.moved.append((old, new))
+            # 位置也没换：只是 updated_at 抖了一下，静默丢弃
         else:
             kept.append((old, new))
     changes.updated = kept
@@ -425,9 +440,9 @@ def drop_placeholders(
 
 
 def drop_archived(changes: Changes, archive_title: str) -> list[DocSnapshot]:
-    """把**在归档区里**的文档从变更里剔除（返回被剔除的）。
+    """把**在归档终点里**的文档从变更里剔除（返回被剔除的）。
 
-    为什么要这一层（2026-09-27 负责人拍板）：归档区是终点站——那里的改动，
+    为什么要这一层（2026-09-27 负责人拍板）：归档终点是终点站——那里的改动，
     LLM 唯一的正确动作是「什么都不做」（提示词写着「一律不处理、不通知」）。
     既然它无事可做，就不该为它花 token 叫醒一次；结构性的问题留给每周六的
     归档会话（它另有一条完整目录树，不看这里的变更列表）。
@@ -470,13 +485,13 @@ def drop_archived(changes: Changes, archive_title: str) -> list[DocSnapshot]:
             kept_removed.append(doc)
     changes.removed = kept_removed
 
-    kept_toc_only: list[DocSnapshot] = []
-    for doc in changes.toc_only:
-        if in_archive(doc):
-            dropped.append(doc)
+    kept_moved: list[tuple[DocSnapshot, DocSnapshot]] = []
+    for old, new in changes.moved:
+        if in_archive(new):
+            dropped.append(new)
         else:
-            kept_toc_only.append(doc)
-    changes.toc_only = kept_toc_only
+            kept_moved.append((old, new))
+    changes.moved = kept_moved
     return dropped
 
 

@@ -70,8 +70,8 @@ def test_unchanged_docs_are_not_reported() -> None:
 
 def test_dir_change_alone_counts_as_change() -> None:
     """文档被挪到别处，对 agent 是有效信息（该不该处理会变）。"""
-    prev = snapshot_of({1: doc(1, "甲", dir="0921-0927")})
-    cur = snapshot_of({1: doc(1, "甲", dir="归档区/0914-0920")})
+    prev = snapshot_of({1: doc(1, "甲", dir="申请文档请放在此目录下")})
+    cur = snapshot_of({1: doc(1, "甲", dir="不要动此目录里的文档")})
     assert compute_changes(prev, cur).updated != []
 
 
@@ -93,7 +93,7 @@ def test_toc_change_is_recorded_but_does_not_alone_wake_the_agent() -> None:
 
 
 def test_updated_at_only_change_is_filtered_out_by_content_hash() -> None:
-    """核心回归：语雀 bump 了 updated_at 但正文一字未改 → 不算变更。"""
+    """核心回归：语雀 bump 了 updated_at 但正文一字未改、位置也没动 → 不算变更。"""
     body = "正文没变"
     real_sha = _content_sha("甲", body)
     prev = snapshot_of({1: doc(1, "甲", updated_at="t1", sha=real_sha)})
@@ -106,9 +106,41 @@ def test_updated_at_only_change_is_filtered_out_by_content_hash() -> None:
     previews = enrich_and_refine(client, prev, cur, changes)  # type: ignore[arg-type]
 
     assert changes.updated == [], "正文哈希一致 → 必须丢掉"
-    assert [d.doc_id for d in changes.toc_only] == [1]
+    assert changes.moved == [], "位置也没动 → 连移动都不算"
     assert changes.empty is True, "既然不是真变更，就不该唤醒 LLM"
     assert previews[1] == body
+
+
+def test_move_without_content_change_becomes_moved_entry() -> None:
+    """核心回归（2026-10-02 老师事故）：正文没变、只换了目录 → 单列进 moved。
+
+    以前这类被整条丢掉（`toc_only`）——文档放错目录、写完、挪回工作目录就再也没人处理。
+    现在只丢「移进归档终点」的移动（见 drop_archived），其余移动要唤醒 LLM。
+    """
+    body = "正文没变"
+    prev = snapshot_of(
+        {1: doc(1, "甲", updated_at="t1", dir="1010-1016", sha=_content_sha("甲", body))}
+    )
+    cur = snapshot_of({1: doc(1, "甲", updated_at="t2", dir="申请文档请放在此目录下")})
+    client = FakeYuque(doc_metas=[make_meta(1, "甲")], bodies={1: body})
+
+    changes = compute_changes(prev, cur)
+    enrich_and_refine(client, prev, cur, changes)  # type: ignore[arg-type]
+
+    assert changes.updated == [], "不是内容变更"
+    assert [(o.dir, n.dir) for o, n in changes.moved] == [("1010-1016", "申请文档请放在此目录下")]
+    assert changes.empty is False, "移动要唤醒 LLM（移进工作目录可能是一份没处理过的申请）"
+
+    report = build_report(
+        run_id="r1",
+        kind="polling",
+        client=client,
+        repo="g/kb",
+        cur=cur,
+        changes=changes,  # type: ignore[arg-type]
+    )
+    assert report["docs"]["moved"][0]["prev_dir"] == "1010-1016"
+    assert report["counts"]["moved"] == 1
 
 
 def test_real_content_change_survives_the_hash_filter() -> None:
@@ -120,7 +152,7 @@ def test_real_content_change_survives_the_hash_filter() -> None:
     enrich_and_refine(client, prev, cur, changes)  # type: ignore[arg-type]
 
     assert [n.doc_id for _, n in changes.updated] == [1]
-    assert changes.toc_only == []
+    assert changes.moved == []
 
 
 def test_title_change_counts_as_content_change() -> None:
@@ -287,38 +319,41 @@ def test_take_snapshot_toc_sha_changes_when_structure_changes() -> None:
     assert a.toc_sha != b.toc_sha
 
 
-# ---------------------------------------------------------------- 归档区那道筛子
+# ---------------------------------------------------------------- 归档终点那道筛子
 
 
 def test_drop_archived_removes_docs_inside_the_archive_zone() -> None:
-    """归档区里的改动**不是信号**（2026-09-27 负责人拍板）。
+    """归档终点里的改动**不是信号**（2026-09-27 负责人拍板）。
 
     那里是终点站，LLM 唯一的正确动作是「什么都不做」——不该为它花 token 叫醒一次。
     """
+    archived = "不要动此目录里的文档"
     changes = Changes(
-        added=[doc(1, "归档区里的新文档", dir="归档区/0912-0918"), doc(2, "活跃的申请")],
-        updated=[(doc(3, "归档区里被改的", dir="归档区"), doc(3, "归档区里被改的", dir="归档区"))],
-        removed=[doc(4, "归档区里被删的", dir="归档区/0919-0925")],
-        toc_only=[doc(5, "归档区里被挪的", dir="归档区/0919-0925")],
+        added=[doc(1, "归档里的新文档", dir=archived), doc(2, "活跃的申请")],
+        updated=[(doc(3, "归档里被改的", dir=archived), doc(3, "归档里被改的", dir=archived))],
+        removed=[doc(4, "归档里被删的", dir=archived)],
+        moved=[(doc(5, "归档里被挪的", dir="别处"), doc(5, "归档里被挪的", dir=archived))],
     )
 
-    dropped = drop_archived(changes, "归档区")
+    dropped = drop_archived(changes, archived)
 
     assert [d.doc_id for d in dropped] == [1, 3, 4, 5]
     assert [d.doc_id for d in changes.added] == [2], "活跃目录里的文档照旧是信号"
     assert changes.updated == []
     assert changes.removed == []
-    assert changes.toc_only == []
+    assert changes.moved == []
 
 
 def test_drop_archived_keeps_docs_that_only_mention_archive_in_the_title() -> None:
-    """只按「文档所在目录」判，不看标题——别把标题里带「归档区」的活跃文档误伤。"""
-    changes = Changes(added=[doc(1, "归档区改造方案（申请借教室开个会）", dir="0926-1002")])
-    assert drop_archived(changes, "归档区") == []
+    """只按「文档所在目录」判，不看标题——别把标题里带归档区字样的活跃文档误伤。"""
+    changes = Changes(
+        added=[doc(1, "不要动此目录里的文档改造方案（申请借教室开个会）", dir="0926-1002")]
+    )
+    assert drop_archived(changes, "不要动此目录里的文档") == []
     assert [d.doc_id for d in changes.added] == [1]
 
 
 def test_drop_archived_without_a_title_is_a_noop() -> None:
-    changes = Changes(added=[doc(1, "x", dir="归档区/0912-0918")])
+    changes = Changes(added=[doc(1, "x", dir="不要动此目录里的文档")])
     assert drop_archived(changes, "") == []
     assert len(changes.added) == 1

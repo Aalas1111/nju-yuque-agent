@@ -68,6 +68,33 @@ def test_tool_error_is_fed_back_to_the_model(settings: Settings) -> None:
     assert json.loads(tool_messages[-1]["content"])["ok"] is False
 
 
+def test_length_truncated_answer_gets_one_nudge(settings: Settings) -> None:
+    """输出被长度上限截断、没调任何工具 → 先给一次明确的「收束」指令，而不是直接报废。
+
+    2026-10-02 实测事故：模型连续 4 轮把 8192 输出预算全烧在推理上、一次工具都没调
+    （``finish_reason=length``）。程序的重试喂的是同一份输入 → 同样的死法。
+    """
+    truncated = LLMResponse(content="", finish_reason="length", usage=Usage(10, 8192, 8202))
+    env, llm, result, session_path = run(
+        settings,
+        "polling",
+        [truncated, call("done", verdict="nothing_to_do", summary="想完了")],
+    )
+    assert llm.calls == 2, "应当被拉一把再答一次"
+    assert result.stop_reason == "done"
+    assert any(e.get("t") == "nudge" for e in read_events(session_path))
+    last = llm.seen_messages[-1][-1]
+    assert last["role"] == "user" and "截断" in last["content"]
+
+
+def test_nudge_is_given_only_once(settings: Settings) -> None:
+    """连续被截断只拉一次——再断就是真失败，不无限续命。"""
+    truncated = LLMResponse(content="", finish_reason="length", usage=Usage(10, 8192, 8202))
+    env, llm, result, _ = run(settings, "polling", [truncated, truncated])
+    assert llm.calls == 2
+    assert result.stop_reason == "llm_stopped_without_done"
+
+
 def test_bad_tool_arguments_do_not_crash_the_loop(settings: Settings) -> None:
     broken = LLMResponse(
         content="",

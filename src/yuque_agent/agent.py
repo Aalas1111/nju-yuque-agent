@@ -36,6 +36,15 @@ MAX_RESULT_CHARS = 12000
 真正撞上限的只剩病态大结果（几百行的 dir_list 之类），那时截断才有意义。
 """
 
+MAX_LENGTH_NUDGES = 1
+"""输出被长度上限截断、且没调任何工具时，最多这样拉它几次（每个 run）。
+
+为什么要有（2026-10-02 实测事故）：那天模型连续 4 轮把 8192 的输出预算**全烧在
+推理上**（最长一次推理写了 3 万字），一次工具都没调就断了（``finish_reason=length``）。
+程序按失败重试，但重试喂的是同一份输入 → 同样的死法；4 次之后按机制放弃，
+社员的申请就这么**无声消失**。截断是一个**机械故障**，不是判断结果——值得给一次
+明确的「收束」指令，把无限权衡按停，而不是让它整轮报废。"""
+
 
 @dataclass
 class RunResult:
@@ -130,6 +139,7 @@ def run_agent(
     ]
 
     try:
+        nudges = 0
         for step in range(1, max_steps + 1):
             result.steps = step
             watch = Stopwatch()
@@ -150,6 +160,24 @@ def run_agent(
             )
 
             if not response.wants_tools:
+                if response.finish_reason == "length" and nudges < MAX_LENGTH_NUDGES:
+                    # 输出被截断 = 机械故障，不是判断：给一次「立刻收束」的机会。
+                    # 不回灌那段被截断的推理（那只会让它接着往下想），只发一条明确的指令。
+                    nudges += 1
+                    session.event("nudge", step=step, reason="finish_reason=length")
+                    messages.append(
+                        {
+                            "role": "user",
+                            "content": (
+                                "⚠️ 你上一条回复因为**输出长度上限**被截断了，一个字都没落地"
+                                "（没有调用任何工具）。**不要把同一段分析再展开一遍**。"
+                                "现在直接调用工具收尾：该产出的产出"
+                                "（emit_application / emit_notice），无需处理就调 done(...)，"
+                                "并给出简短的 summary。"
+                            ),
+                        }
+                    )
+                    continue
                 # LLM 自己停了，没说 done —— 也算一轮结束，但要记下来
                 result.stop_reason = "llm_stopped_without_done"
                 break

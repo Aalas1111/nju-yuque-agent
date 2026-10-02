@@ -284,12 +284,13 @@ yqa-as-service reset-test-data --workspace /var/lib/yuque-agent/workspace --scop
     那是**真的打了**，不是猜的。
   - 「申请清单」那行看得到当前周期与条数；「⚠ 清单隐私」出现时说明 `defaults` 非空（见 §10）。
 - [ ] `systemctl is-enabled yuque-agent` 是 `enabled`（开机自启）
-- [ ] `journalctl -u yuque-agent` 能看到「开始常驻：每 20s 轮询 …」
-- [ ] 让一个真社员写一篇申请，**等 1~2 分钟**，确认：
+- [ ] `journalctl -u yuque-agent` 能看到「开始常驻：每 5s 轮询 …」
+- [ ] 让一个真社员写一篇申请，**等约半分钟**，确认：
   - `outbox/applications/` 出现申请 JSON
   - `outbox/notify/pending/` 出现对应的通知（受理必有 `accepted`）
-  - 语雀《Agent 通知》多了本周期的新通知（最新的在最上面），且**根目录顺序**
-    是 `指导文档（必读） → Agent 通知 → 当前周期目录 → 归档区`（见 §10 与 `docs/design.md` §2.1）
+  - 语雀《Agent 通知》多了本周的新通知（最新的在最上面），且**根目录顺序**
+    是 `指导文档（必读） → Agent 通知 → 审批结果 → 申请文档请放在此目录下 → 不要动此目录里的文档`
+    （见 §10 与 `docs/design.md` §2.1）
 - [ ] 语雀《指导文档（必读）》里描述的通知行为（「受理了会收到 QQ」）与实际情况一致
 - [ ] 交付方（QQ 投递 / 教室借用插件）能读到 `outbox/` 并跑通一次
 

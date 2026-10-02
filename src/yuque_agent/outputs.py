@@ -15,7 +15,7 @@
   "schema_version": "2.0",
   "application_id": "2026-09-23-285808038",
   "source":   { ... 哪篇语雀文档、谁写的、内容指纹 ... },
-  "activity": { title, date, period, people, campus, building, room_type, preferred_room },
+  "activity": { title, date, period, people, campus, building, room_type, rooms },
   "raw":      { ... 社员原话，供人工复核 ... },
   "derived":  { ... 程序推导过程，如 教学楼名→JXLDM、时间→节次 ... },
   "agent":    { ... 哪个 run、置信度、agent 自己的备注 ... }
@@ -36,7 +36,11 @@ from . import clock
 from .config import Settings
 from .week import cycle_of
 
-APPLICATION_SCHEMA_VERSION = "2.0"
+APPLICATION_SCHEMA_VERSION = "3.0"
+"""3.0（2026-10-02）：``activity.preferred_room``（单个字符串）→ ``activity.rooms``（数组）。
+
+一篇文档可以同时申请多间教室（学校端本来就有「借用数量」这一档），
+所以 ``rooms`` 是列表；空列表 = 随机。字段变了，按手递合同规矩升版本号。"""
 NOTICE_SCHEMA_VERSION = "1.0"
 
 #: ``activity`` 里必须有值的字段（其余可空即「随机」）。
@@ -51,7 +55,7 @@ CRB_ACTIVITY_FIELDS = (
     "campus",
     "building",
     "room_type",
-    "preferred_room",
+    "rooms",
 )
 
 NOTICE_KINDS = (
@@ -158,6 +162,7 @@ def write_application(settings: Settings, payload: dict[str, Any]) -> dict[str, 
         "campus": record["activity"].get("campus"),
         "building": record["activity"].get("building") or "(空=随机)",
         "period": record["activity"].get("period"),
+        "rooms": record["activity"].get("rooms") or [],
         "dry_run": settings.dry_run,
     }
 

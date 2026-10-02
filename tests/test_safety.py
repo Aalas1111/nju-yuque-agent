@@ -150,6 +150,52 @@ def test_emit_application_without_people_means_no_capacity_filter(env: Ctx) -> N
     assert record["derived"]["people_source"] == "unspecified"
 
 
+def test_emit_application_carries_multiple_rooms(env: Ctx) -> None:
+    """多间教室走**一条**申请：`rooms` 数组（2026-10-02 学校端「借用数量」需求）。
+
+    去重与去空白归程序（机械操作）；保序——别把社员写的顺序打乱。
+    """
+    result = tools.execute(
+        env.ctx,
+        "emit_application",
+        {
+            "doc_id": 1,
+            "doc_title": "NOVA固定教室借用",
+            "activity_name": "NOVA固定教室借用",
+            "activity_date": "2026-10-11",
+            "start": "14:00",
+            "end": "18:00",
+            "campus": "鼓楼",
+            "building": "新教学楼",
+            "rooms": ["新教303", "新教403", "新教303", " 新教501 "],
+        },
+    )
+    assert result["ok"] is True, result
+    record = json.loads(pathlib.Path(result["result"]["path"]).read_text(encoding="utf-8"))
+    assert record["activity"]["rooms"] == ["新教303", "新教403", "新教501"], "保序 + 去重 + 去空白"
+    assert record["raw"]["rooms"] == ["新教303", "新教403", "新教501"]
+    assert record["schema_version"] == "3.0"
+
+
+def test_emit_application_rooms_must_be_a_list(env: Ctx) -> None:
+    """LLM 把 rooms 传成字符串 → 报错让它自己纠正（**不替它拆**「A、B」）。"""
+    result = tools.execute(
+        env.ctx,
+        "emit_application",
+        {
+            "doc_id": 1,
+            "activity_name": "读书会",
+            "activity_date": "2026-09-30",
+            "start": "16:10",
+            "end": "18:00",
+            "campus": "仙林",
+            "rooms": "仙Ⅰ-101、仙Ⅰ-102",
+        },
+    )
+    assert result["ok"] is False
+    assert "数组" in result["error"]
+
+
 def test_done_marks_context_finished(env: Ctx) -> None:
     assert env.ctx.finished is False
     tools.execute(env.ctx, "done", {"verdict": "nothing_to_do", "summary": "没事"})

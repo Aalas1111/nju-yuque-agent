@@ -16,7 +16,7 @@ from typing import Any
 
 from . import clock, noticedoc, outputs, school
 from .agent import RunResult, run_agent, session_path_for
-from .config import ARCHIVE_ZONE_TITLE, GUIDE_TITLE, Settings
+from .config import ARCHIVE_ZONE_TITLE, GUIDE_TITLE, WORKING_DIR_TITLE, Settings
 from .llm import LLMClient
 from .prompts import PromptLoader
 from .session import SessionRecorder
@@ -51,7 +51,7 @@ ARCHIVE_RETRY_COOLDOWN_SECONDS = 30 * 60
 """归档失败后的冷却时间（2026-09-27 定）。
 
 归档是唯一的结构维护窗口，失败一次就意味着整周目录形态是错的；但它一轮约 2 万 token，
-失败后必须冷却，不能让 20s 一轮的轮询把它变成热循环。
+失败后必须冷却，不能让 5s 一轮的轮询把它变成热循环。
 """
 
 ARCHIVE_MAX_FAILURES = 3
@@ -213,7 +213,7 @@ class Runner:
     #: / ``"archived_only"``，真的跑了就是空串。
     #:
     #: 为什么要有这个字段：``poll_once`` 返回 ``None`` 有**三种**原因——「没变化」、
-    #: 「还在静默期」、「变的只有归档区（程序已忽略）」。调用方如果一律说「知识库没有变化」，
+    #: 「还在静默期」、「变的只有归档终点（程序已忽略）」。调用方如果一律说「知识库没有变化」，
     #: 就会在后两种情形说假话。实测踩到过：写完文档立刻 ``yqa once``，被报「没有变化」，
     #: 让人以为程序坏了。
     last_skip: str = ""
@@ -403,7 +403,7 @@ class Runner:
                 max_reads=self.settings.max_doc_reads_per_round,
             )
             changes.updated = []
-            changes.toc_only = []
+            changes.moved = []
         else:
             # 第二道筛子：用正文哈希确认「到底有没有改内容」。
             # （语雀挪目录也会 bump updated_at；不确认就会给社员误发「你改了文档」）
@@ -419,8 +419,8 @@ class Runner:
             # 复用上面已经读到的正文，**零额外请求**。
             dropped = drop_placeholders(changes, previews, self.settings.placeholder_titles)
             self.state.placeholder_dropped = len(dropped)
-            # 第四道筛子：**归档区里的改动不是信号**（那是终点站，LLM 对它无事可做）。
-            # 省的是 token，不省判断——「该不该处理」在归档区里没有判断空间。
+            # 第四道筛子：**归档终点里的改动不是信号**（那是终点站，LLM 对它无事可做）。
+            # 省的是 token，不省判断——「该不该处理」在归档终点里没有判断空间。
             archived = drop_archived(changes, ARCHIVE_ZONE_TITLE)
 
             # ---- 静默期判定：到这里 changes 已经只剩下「真的可能要做点什么」的了 ----
@@ -455,7 +455,7 @@ class Runner:
         if changes.empty and not force:
             # 注意：**首次运行也是静默的**——那时报告本来就是空的（只建基线），
             # 叫醒 LLM 只会得到一句「无事可做」，纯粹是白烧 token。
-            # 归档区里的改动也算「无事可做」，但**不能报成「知识库没有变化」**：
+            # 归档终点里的改动也算「无事可做」，但**不能报成「知识库没有变化」**：
             # 与静默期那条同理，提示语必须构造上是真的。
             self.last_skip = "archived_only" if archived else "no_change"
             return None
@@ -484,7 +484,7 @@ class Runner:
             titles = "、".join(f"「{d.title}」" for d in archived[:5])
             report["notes"].append(
                 f"另有 {len(archived)} 篇文档在「{ARCHIVE_ZONE_TITLE}」里被改动：{titles}"
-                "——程序已把它们从变更里剔除（归档区是终点站，不需要你处理）。"
+                "——程序已把它们从变更里剔除（归档终点是终点站，不需要你处理）。"
             )
         if collapsed > 1:
             report["notes"].append(
@@ -579,7 +579,14 @@ class Runner:
         # docs 用**这次刚拿的快照**：state.snapshot 是上一次轮询的基线（冷启动时是空的），
         # 拿它当工具上下文会和 payload 里的新鲜目录树对不上。
         result = self._execute(run_id=run_id, kind="archive", payload=payload, docs=current.docs)
-        self._note_archive_outcome(result, moment=moment, cycle_title=str(payload["cycle_title"]))
+        # 「本周期归档做过了」的水位线仍按周期算（纯日历算术；目录结构本身
+        # 2026-10-02 起已经与周期无关了）。
+        cycle = cycle_targets(
+            moment,
+            start_weekday=self.settings.archive_weekday,
+            start_hour=self.settings.archive_hour,
+        )[0].title
+        self._note_archive_outcome(result, moment=moment, cycle_title=cycle)
         return result
 
     def _note_archive_outcome(
@@ -588,7 +595,7 @@ class Runner:
         """归档失败也要记账：不推水位线 + 冷却后再试（见 :meth:`Watcher.archive_due`）。
 
         为什么不能像轮询那样「认赔」：归档是**唯一**的结构维护窗口，失败一次就意味着
-        整周目录形态是错的（当周目录没建 / 上个周期没进归档区）。但它一轮约 2 万 token，
+        整周目录形态是错的（工作目录没建 / 文档没进归档终点）。但它一轮约 2 万 token，
         所以失败后冷却 :data:`ARCHIVE_RETRY_COOLDOWN_SECONDS`、每周期最多试
         :data:`ARCHIVE_MAX_FAILURES` 次；到上限才推进水位线（本周期放弃，等下周六）。
         """
@@ -700,31 +707,33 @@ def build_archive_instruction(
 ) -> dict[str, Any]:
     """给归档会话的「指令」。
 
-    日历计算由**程序**做（这是纯粹的算术，不该让 LLM 猜）；
-    但「现在这棵目录树和目标形态差在哪里、该怎么动」归 LLM。
+    「现在这棵目录树和目标形态差在哪里、该怎么动」归 LLM；
+    但目标形态本身（根目录顺序）是**需求**，由程序给。
     """
     today = now.date()
-    current, previous = cycle_targets(
-        now,
-        start_weekday=settings.archive_weekday,
-        start_hour=settings.archive_hour,
-    )
-
     root_nodes = [n for n in snapshot.toc if n.get("depth") == 1]
     root_titles = [str(n.get("title") or "") for n in root_nodes]
     archive_node = next(
         (n for n in root_nodes if str(n.get("title") or "") == ARCHIVE_ZONE_TITLE), None
     )
+    working_node = next(
+        (n for n in root_nodes if str(n.get("title") or "") == WORKING_DIR_TITLE), None
+    )
+    notes: list[str] = []
+    if archive_node is None:
+        notes.append(
+            f"根目录还没有「{ARCHIVE_ZONE_TITLE}」分组，请先用 toc_create 建一个（如果确实需要）。"
+        )
+    if working_node is None:
+        notes.append(f"根目录还没有「{WORKING_DIR_TITLE}」，请先把它建出来。")
     return {
         "kind": "archive",
         "at": snapshot.taken_at,
         "repo": {"namespace": settings.repo, "toc_sha": snapshot.toc_sha},
         "today": today.isoformat(),
         "weekday": "周" + "一二三四五六日"[today.weekday()],
-        "cycle_title": current.title,
-        "cycle_start": current.start.isoformat(),
-        "cycle_end": current.end.isoformat(),
-        "previous_cycle_title": previous.title,
+        "working_dir_title": WORKING_DIR_TITLE,
+        "archive_zone_title": ARCHIVE_ZONE_TITLE,
         "archive_node_uuid": (archive_node or {}).get("uuid", ""),
         "toc": snapshot.toc,
         "root_titles": root_titles,
@@ -733,23 +742,18 @@ def build_archive_instruction(
         "root_target_order": [
             GUIDE_TITLE,
             settings.notice_title,
-            # 《审批结果》插在《Agent 通知》与活跃周期目录之间（需求方定的位置）。
+            # 《审批结果》插在《Agent 通知》与工作目录之间（需求方定的位置）。
             settings.approval_title,
-            current.title,
+            WORKING_DIR_TITLE,
             ARCHIVE_ZONE_TITLE,
         ],
         "archive_zone_rule": (
-            "归档区永远在根目录最末；它内部按时间从新到旧、从上往下（刚归档的那个周期在最上面）"
+            f"「{ARCHIVE_ZONE_TITLE}」不分日期子目录：归档的文档直接平铺在里面，"
+            "近期的在上、早的在下（新归档的用 prepend 放到最上面）"
         ),
         "guide_doc_body": guide_body,
         "counts": {"docs_known": len(snapshot.docs)},
-        "notes": (
-            []
-            if archive_node
-            else [
-                f"根目录还没有「{ARCHIVE_ZONE_TITLE}」分组，请先用 toc_create 建一个（如果确实需要）。"
-            ]
-        ),
+        "notes": notes,
     }
 
 

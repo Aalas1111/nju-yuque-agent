@@ -4,11 +4,11 @@
 那个知识库里写文档、删文档。**只对测试副本知识库用**——别对着生产库跑
 （上线后的生产库就是 ``--repo`` 所指的那个）。
 
-开发期用它在「当前申请目录」里造出各种形态的申请，验证整条链路：
+开发期用它在「工作目录」里造出各种形态的申请，验证整条链路：
 **写文档 → 程序轮询发现变更 → 唤醒 LLM → 产出申请 JSON / 通知事件 → 留痕**。
 
 ```bash
-# 写一篇（默认写进当前申请目录）
+# 写一篇（默认写进工作目录）
 uv run python scripts/kb_sim.py --repo <group>/<test-repo> write --title "新生见面会" \
   --body-file tests/scenarios/t1_standard.md
 
@@ -33,9 +33,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from yuque_agent import clock  # noqa: E402
-from yuque_agent.config import Settings  # noqa: E402
-from yuque_agent.week import cycle_of  # noqa: E402
+from yuque_agent.config import WORKING_DIR_TITLE, Settings  # noqa: E402
 from yuque_agent.yuque import YuqueClient, YuqueError  # noqa: E402
 
 MANIFEST = Path("workspace/_sim_manifest.json")
@@ -70,7 +68,7 @@ def cmd_write(args: argparse.Namespace) -> None:
     if not body:
         raise SystemExit("需要 --body 或 --body-file")
 
-    target_dir = args.dir or cycle_of(clock.today()).title
+    target_dir = args.dir or WORKING_DIR_TITLE
     with _client(settings) as client:
         node_uuid = _dir_node(client, target_dir)
         created = client.create_doc(title=args.title, body=body)
@@ -136,7 +134,9 @@ def main() -> None:
     w.add_argument("--title", required=True)
     w.add_argument("--body", default="")
     w.add_argument("--body-file", default="")
-    w.add_argument("--dir", default="", help="目标目录标题，默认=今天所在的那一周")
+    w.add_argument(
+        "--dir", default="", help="目标目录标题，默认=工作目录（申请文档请放在此目录下）"
+    )
     w.set_defaults(func=cmd_write)
 
     e = sub.add_parser("edit", help="改一篇已有文档的正文")

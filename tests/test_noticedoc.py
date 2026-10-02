@@ -1,4 +1,4 @@
-"""《Agent 通知》文档：本周期通知的对外窗口。
+"""《Agent 通知》文档：本周通知的对外窗口。
 
 它是**程序维护**的：内容 = 本周期内 agent 发出去的处理通知（重建，不是追加），
 所以「周期翻转时清空」不需要额外动作——重建出来自然就是空的。
@@ -140,8 +140,8 @@ def test_render_is_newest_first_and_says_people_words(settings: Settings) -> Non
 
 def test_render_of_an_empty_cycle_says_so(settings: Settings) -> None:
     body = noticedoc.render(settings, "0926-1002")
-    assert "本周期还没有通知" in body
-    assert body.startswith("> 本周期内"), "正文不该再有 `# Agent 通知`（语雀标题已经有一个了）"
+    assert "本周还没有通知" in body
+    assert body.startswith("> 本周内"), "正文不该再有 `# Agent 通知`（语雀标题已经有一个了）"
 
 
 def test_render_matches_what_yuque_gives_back(settings: Settings) -> None:
@@ -201,7 +201,7 @@ def test_refresh_is_idempotent_across_cycles(settings: Settings) -> None:
     emit(settings, seq=1, kind="accepted", created_at="2026-09-26T20:20:00+08:00")
     assert noticedoc.notices_for_cycle(settings, "0926-1002"), "前提：本周期有通知"
     assert noticedoc.notices_for_cycle(settings, "1003-1009") == []
-    assert "本周期还没有通知" in noticedoc.render(settings, "1003-1009")
+    assert "本周还没有通知" in noticedoc.render(settings, "1003-1009")
 
 
 def test_refresh_does_not_write_in_dry_run(settings: Settings) -> None:

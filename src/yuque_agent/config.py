@@ -40,7 +40,16 @@ class ConfigError(RuntimeError):
 GUIDE_TITLE = "指导文档（必读）"
 NOTICE_TITLE = "Agent 通知"
 APPROVAL_TITLE = "审批结果"
-ARCHIVE_ZONE_TITLE = "归档区"
+WORKING_DIR_TITLE = "申请文档请放在此目录下"
+"""**唯一**的用户工作目录：社员把申请文档写在这里。
+
+名字就是说明书——2026-10-02 起不再使用日期周期目录（老师反馈：`0926-1002` 这种名字
+会被误读成「活动日期」，而用户根本不需要关心申请周期）。"""
+ARCHIVE_ZONE_TITLE = "不要动此目录里的文档"
+"""归档终点站：归档后的文档一律不再处理。
+
+2026-10-02 从「归档区」改名——同样因为名字误导（老师以为归档区的日期子目录=活动日期）。
+归档会话每周把工作目录里的文档**直接**移进这里，不再建日期子目录。"""
 
 #: **语雀里那份文档模板的标题**（在语雀的模板设置里人工填的，OpenAPI 设不了，见 D2）。
 #: 从模板新建、又没改名的文档，标题就是它——那是机器给的名字，不是活动名。
@@ -103,17 +112,17 @@ class Settings:
     token: str = ""
 
     workspace: Path = field(default_factory=lambda: Path("workspace"))
-    interval: int = 20
+    interval: int = 5
     """轮询间隔（秒）。没变化的一轮只花 2 次 API 调用、**0 token**，所以可以调得很勤
-    （2026-09-27 起生产用 20s，见 `deploy/yuque-agent.service`）。"""
+    （2026-10-02 负责人拍板：从 20s 调快到 5s，社员保存后 ~25 秒内就被处理）。"""
 
-    quiet_seconds: int = 45
+    quiet_seconds: int = 15
     """**静默期**：发现变化后先不叫醒 LLM；计时从**首次**看到变化起算，满这么久才一次性处理。
 
-    ⚠️ 计时**不因后续变更重置**——连着改 2 分钟，照样在首见后约 45s 放行
+    ⚠️ 计时**不因后续变更重置**——连着改 2 分钟，照样在首见后约 15s 放行
     （`tests/test_debounce.py::test_burst_of_edits_triggers_exactly_one_llm_call` 钉住）。
     叫醒时刻是「距首见 ≥ ``quiet_seconds`` 的**第一拍**」（每轮轮询检查一次）：
-    20s 一拍（生产）时 45s 实际约 60s，40s 一拍时约 80s。
+    5s 一拍（生产）时 15s 实际约 20s（含轮询本身的延迟，总计 ≤ 半分钟）。
     报告里的 ``pending_polls`` 数的是「见过这批变更的轮询次数」，**含叫醒的那一轮**。
 
     为什么要它：语雀手工建一篇文档会**分几次**产生变更——先是一个无标题空文档，
@@ -228,7 +237,7 @@ class Settings:
             repo=os.environ.get("YQA_REPO", ""),
             host=os.environ.get("YQA_HOST", DEFAULT_HOST),
             workspace=Path(os.environ.get("YQA_WORKSPACE", "workspace")),
-            interval=int(os.environ.get("YQA_INTERVAL", "20")),
+            interval=int(os.environ.get("YQA_INTERVAL", "5")),
             model=os.environ.get("YQA_MODEL", DEFAULT_MODEL),
             api_base=os.environ.get("YQA_API_BASE", DEFAULT_API_BASE),
             plan_admin=os.environ.get("YQA_PLAN_ADMIN", ""),

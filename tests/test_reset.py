@@ -19,26 +19,20 @@ import pytest
 from typer.testing import CliRunner
 
 from tests.fakes import FakeYuque, make_meta, make_toc
-from yuque_agent import cli, clock
-from yuque_agent.config import Settings
-from yuque_agent.week import cycle_targets
-
-#: 夹具里的文档必须落在**当前**周期目录里——`--scope cycle` 的语义就是「清掉当前周期」。
-#: 写死周期名会让测试在周期翻转那天自己坏掉（2026-09-26 真的坏过一次）。
-CYCLE, PREV_CYCLE = (week.title for week in cycle_targets(clock.now()))
+from yuque_agent import cli
+from yuque_agent.config import ARCHIVE_ZONE_TITLE, WORKING_DIR_TITLE, Settings
 
 
 def build_client() -> FakeYuque:
-    """一个典型的「测试完」的知识库：周期目录里有 2 篇申请，归档区 1 篇，外加 2 篇系统文档。"""
+    """一个典型的「测试完」的知识库：工作目录里 2 篇申请，归档终点 1 篇，外加 2 篇系统文档。"""
     toc = make_toc(
         ("指导文档（必读）", "DOC", 100, ""),
         ("Agent 通知", "DOC", 101, ""),
-        (CYCLE, "TITLE", 0, ""),
-        ("测试甲", "DOC", 1, CYCLE),
-        ("测试乙", "DOC", 2, CYCLE),
-        ("归档区", "TITLE", 0, ""),
-        (PREV_CYCLE, "TITLE", 0, "归档区"),
-        ("老申请", "DOC", 3, PREV_CYCLE),
+        (WORKING_DIR_TITLE, "TITLE", 0, ""),
+        ("测试甲", "DOC", 1, WORKING_DIR_TITLE),
+        ("测试乙", "DOC", 2, WORKING_DIR_TITLE),
+        (ARCHIVE_ZONE_TITLE, "TITLE", 0, ""),
+        ("老申请", "DOC", 3, ARCHIVE_ZONE_TITLE),
     )
     return FakeYuque(
         toc_nodes=toc,
@@ -88,12 +82,12 @@ def env(tmp_path, monkeypatch) -> dict[str, Any]:
     state = {
         "version": 1,
         "rounds": 3,
-        "last_archive_title": CYCLE,
+        "last_archive_title": "0926-1002",
         "snapshot": {
             "docs": {
                 "100": snap(100, "指导文档（必读）"),
-                "1": snap(1, "测试甲", CYCLE),
-                "2": snap(2, "测试乙", CYCLE),
+                "1": snap(1, "测试甲", WORKING_DIR_TITLE),
+                "2": snap(2, "测试乙", WORKING_DIR_TITLE),
             }
         },
     }
@@ -175,19 +169,19 @@ def test_dry_run_deletes_nothing(env: dict[str, Any]) -> None:
 def test_dry_run_lists_what_would_be_deleted(env: dict[str, Any]) -> None:
     out = run_reset(env).output
     assert "测试甲" in out and "测试乙" in out
-    assert "老申请" not in out, "默认 scope=cycle，不该动归档区"
+    assert "老申请" not in out, "默认 scope=cycle，不该动归档终点"
 
 
 # ---------------------------------------------------------------- --yes 真删
 
 
-def test_yes_deletes_cycle_docs_and_spares_system_docs(env: dict[str, Any]) -> None:
+def test_yes_deletes_working_dir_docs_and_spares_system_docs(env: dict[str, Any]) -> None:
     result = run_reset(env, "--yes")
 
     assert result.exit_code == 0
     assert sorted(deleted_ids(env)) == [1, 2]
     assert 100 not in deleted_ids(env) and 101 not in deleted_ids(env), "系统文档永不删"
-    assert 3 not in deleted_ids(env), "scope=cycle 不该动归档区"
+    assert 3 not in deleted_ids(env), "scope=cycle 不该动归档终点"
 
 
 def test_scope_all_also_clears_the_archive(env: dict[str, Any]) -> None:
@@ -263,7 +257,7 @@ def test_state_file_is_not_deleted(env: dict[str, Any]) -> None:
     run_reset(env, "--yes")
     assert env["settings"].state_file.exists()
     state = json.loads(env["settings"].state_file.read_text(encoding="utf-8"))
-    assert state["last_archive_title"] == CYCLE, "归档水位线要保住"
+    assert state["last_archive_title"] == "0926-1002", "归档水位线要保住"
 
 
 # ---------------------------------------------------------------- Agent 通知
@@ -275,8 +269,8 @@ def test_notice_doc_is_never_deleted(env: dict[str, Any]) -> None:
 
 
 def test_notice_doc_is_rebuilt_empty_after_local_wipes(env: dict[str, Any]) -> None:
-    """本地通知清空了，《Agent 通知》就该只剩「本周期还没有通知」——它是重建出来的。"""
+    """本地通知清空了，《Agent 通知》就该只剩「本周还没有通知」——它是重建出来的。"""
     run_reset(env, "--yes")
     bodies = [c[1]["body"] for c in env["client"].calls if c[0] == "update_doc"]
     assert len(bodies) == 1, f"应当恰好重写一次通知文档，实际 {len(bodies)} 次"
-    assert "本周期还没有通知" in bodies[0]
+    assert "本周还没有通知" in bodies[0]
