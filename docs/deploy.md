@@ -56,7 +56,7 @@
 
 /home/yuque/.yuque/                  凭证（目录 700，文件 600，yuque 所有）
 ├── auth.json                        {"token": "<语雀写权限令牌>"}
-└── agent.env                        DEEPSEEK_API_KEY=<key>
+└── agent.env                        YQA_REPO / YQA_LLM_KEY（阿里 Coding Plan）等
 
 /etc/systemd/system/yuque-agent.service
 /etc/sudoers.d/<协作账号>             按需（给协作方开账号时才建）
@@ -96,7 +96,6 @@ cd /opt/yuque-agent && uv sync
 install -d -m 700 -o yuque -g yuque /home/yuque/.yuque
 printf '{"token": "<语雀写权限令牌>"}\n' > /home/yuque/.yuque/auth.json
 cat > /home/yuque/.yuque/agent.env <<'ENV'
-DEEPSEEK_API_KEY=<key>                 # 备用；优先级低于 YQA_LLM_KEY（上面那套 YQA_* 生效后它不再被读到）
 YQA_API_BASE=https://coding.dashscope.aliyuncs.com/v1
 YQA_MODEL=qwen3.7-plus
 YQA_LLM_KEY=<sk-sp-…（百炼控制台 → 订阅 → Coding Plan）>

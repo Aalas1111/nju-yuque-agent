@@ -141,8 +141,12 @@ uv sync
 uv run yqa doctor                 # 先看自检表，尤其「时区」与「知识库 / 写权限」两行
 export YQA_REPO=<group>/<repo>         # 知识库 namespace（必填，没有默认库）
 export YQA_TOKEN=<语雀写权限令牌>      # 或放 ~/.yuque/auth.json
-export DEEPSEEK_API_KEY=<key>
-uv run yqa run --interval 20 --quiet-seconds 45
+export YQA_LLM_KEY=<key>               # 或 DEEPSEEK_API_KEY（优先级更低；见上表）
+# 走阿里 Coding Plan 时的完整一套（2026-10-02 生产在用）：
+# export YQA_API_BASE=https://coding.dashscope.aliyuncs.com/v1
+# export YQA_MODEL=qwen3.7-plus
+# export YQA_MAX_TOKENS=65536          # 不设人为输出上限（默认 8192 只够 DeepSeek）
+uv run yqa run --interval 5 --quiet-seconds 15
 ```
 
 | 项 | 要求 |
