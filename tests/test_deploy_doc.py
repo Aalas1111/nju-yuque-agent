@@ -48,6 +48,9 @@ def test_agent_unit_pins_the_things_that_actually_matter() -> None:
         # 时区靠程序自己钉死，但 HOME 得对，否则 uv / 凭证找不到
         "Environment=HOME=/home/yuque": "服务账号的家目录（凭证在它下面）",
         "EnvironmentFile=/home/yuque/.yuque/agent.env": "LLM key 从这儿进来",
+        # 本服务专属覆盖（2026-10-02：阿里 Coding Plan 的 key/地址/模型只进这里——
+        # agent.env 是四个单元共读的，放那儿会把 QQ 桥的会话 LLM 一起带跑偏）
+        "EnvironmentFile=-/home/yuque/.yuque/yuque-agent.env": "本服务专属覆盖文件",
         # 不加这个，每次正常停止都会在日志里留一串假 Failed（真故障被淹掉）
         "SuccessExitStatus=143": "SIGTERM 是正常停止，不是故障",
         # 加固：这个进程不需要新特权、也不该写自己的代码

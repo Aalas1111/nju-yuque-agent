@@ -147,6 +147,15 @@ class Settings:
     model: str = DEFAULT_MODEL
     api_base: str = DEFAULT_API_BASE
     api_key: str = ""
+    max_output_tokens: int = 8192
+    """单次 LLM 回复的输出上限（``YQA_MAX_TOKENS``）。**这是硬上限**。
+
+    为什么可配：推理型模型会把输出预算烧在思考上、以 ``finish_reason=length``
+    被截断（2026-10-02 实测事故：模型连烧 4 轮 8192、一次工具都没调，申请就此丢了）。
+    生产换阿里 Coding Plan 后配 ``65536``（实测该端点接受）——**不设人为上限**，
+    真被截断时还有 ``agent.MAX_LENGTH_NUDGES`` 那条兜底。
+    默认 8192 是给「万一还指着别的服务商」留的安全值（如 DeepSeek 的输出上限就是 8192）。
+    """
     max_steps: int = 24
     """单次 run 里 LLM↔tool 往返步数上限（防死循环）。"""
 
@@ -240,6 +249,7 @@ class Settings:
             interval=int(os.environ.get("YQA_INTERVAL", "5")),
             model=os.environ.get("YQA_MODEL", DEFAULT_MODEL),
             api_base=os.environ.get("YQA_API_BASE", DEFAULT_API_BASE),
+            max_output_tokens=int(os.environ.get("YQA_MAX_TOKENS", "8192")),
             plan_admin=os.environ.get("YQA_PLAN_ADMIN", ""),
             plan_port=int(os.environ.get("YQA_PLAN_PORT", "8787")),
         )

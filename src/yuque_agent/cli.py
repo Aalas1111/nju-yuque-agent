@@ -220,7 +220,12 @@ def _clients(settings: Settings) -> tuple[YuqueClient, LLMClient]:
         YuqueClient(
             host=settings.host, token=settings.token, repo=settings.repo, dry_run=settings.dry_run
         ),
-        LLMClient(base_url=settings.api_base, api_key=settings.api_key, model=settings.model),
+        LLMClient(
+            base_url=settings.api_base,
+            api_key=settings.api_key,
+            model=settings.model,
+            max_tokens=settings.max_output_tokens,
+        ),
     )
 
 

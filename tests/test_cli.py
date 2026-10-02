@@ -285,3 +285,28 @@ def test_repo_falls_back_to_the_env_var(wired, monkeypatch) -> None:
 
     assert result.exit_code == 0, result.output
     assert wired["settings"].repo == "g/kb"
+
+
+# ------------------------------------------------- 输出上限可配（2026-10-02，换阿里）
+
+
+def test_max_output_tokens_flows_into_the_llm_client(monkeypatch) -> None:
+    """要放开输出上限就配 `YQA_MAX_TOKENS` —— 它必须真的到 LLMClient 手上。
+
+    2026-10-02 生产换阿里 Coding Plan 时靠的就是这条链（8192 → 65536）。
+    断掉的话不会有任何报错，只会被**静默夹回**旧上限 —— 而那个上限正是
+    「模型想得太久就被截断」事故的根源。
+    """
+    monkeypatch.setenv("YQA_REPO", "g/kb")
+    monkeypatch.setenv("YQA_TOKEN", "t")
+    monkeypatch.setenv("YQA_LLM_KEY", "k")
+    monkeypatch.delenv("YQA_MAX_TOKENS", raising=False)
+    assert Settings.from_env().max_output_tokens == 8192, "默认保持保守值（DeepSeek 上限就是它）"
+
+    monkeypatch.setenv("YQA_MAX_TOKENS", "65536")
+    client, llm = cli._clients(Settings.from_env())
+    try:
+        assert llm.max_tokens == 65536
+    finally:
+        client.close()
+        llm.close()
